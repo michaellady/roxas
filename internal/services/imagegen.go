@@ -5,9 +5,7 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
-	"time"
 )
 
 // DALLEClient interface for DALL-E API calls
