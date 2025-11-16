@@ -54,7 +54,13 @@ jobs:
 
       - name: Terraform Init
         working-directory: terraform
-        run: terraform init
+        run: terraform init -backend-config=backend-dev.hcl
+
+      - name: Setup Terraform Workspace
+        working-directory: terraform
+        run: |
+          terraform workspace new dev-pr-${{ github.event.pull_request.number }} || \
+          terraform workspace select dev-pr-${{ github.event.pull_request.number }}
 
       - name: Terraform Plan
         working-directory: terraform
