@@ -74,28 +74,73 @@ echo "Body: $BODY"
 echo ""
 
 # Validate response
-if [ "$HTTP_CODE" -eq 200 ]; then
-  # Check if response contains success indicator
-  if echo "$BODY" | grep -q "successfully\|success"; then
-    echo -e "${GREEN}✓ E2E Test PASSED${NC}"
-    echo -e "${GREEN}  - HTTP 200 received${NC}"
-    echo -e "${GREEN}  - Success message confirmed${NC}"
-    exit 0
+if [ "$HTTP_CODE" -ne 200 ]; then
+  echo -e "${RED}✗ E2E Test FAILED${NC}"
+  if [ "$HTTP_CODE" -eq 401 ]; then
+    echo -e "${RED}  - Authentication failed (invalid webhook secret?)${NC}"
+  elif [ "$HTTP_CODE" -eq 500 ]; then
+    echo -e "${RED}  - Internal server error (check Lambda logs)${NC}"
   else
-    echo -e "${RED}✗ E2E Test FAILED${NC}"
-    echo -e "${RED}  - HTTP 200 received but success message missing${NC}"
-    exit 1
+    echo -e "${RED}  - Unexpected HTTP status: $HTTP_CODE${NC}"
   fi
-elif [ "$HTTP_CODE" -eq 401 ]; then
-  echo -e "${RED}✗ E2E Test FAILED${NC}"
-  echo -e "${RED}  - Authentication failed (invalid webhook secret?)${NC}"
-  exit 1
-elif [ "$HTTP_CODE" -eq 500 ]; then
-  echo -e "${RED}✗ E2E Test FAILED${NC}"
-  echo -e "${RED}  - Internal server error (check Lambda logs)${NC}"
-  exit 1
-else
-  echo -e "${RED}✗ E2E Test FAILED${NC}"
-  echo -e "${RED}  - Unexpected HTTP status: $HTTP_CODE${NC}"
   exit 1
 fi
+
+# HTTP 200 received, now validate response body
+if ! echo "$BODY" | grep -q "successfully\|success"; then
+  echo -e "${RED}✗ E2E Test FAILED${NC}"
+  echo -e "${RED}  - HTTP 200 received but success message missing${NC}"
+  exit 1
+fi
+
+echo -e "${GREEN}✓ Step 1: Webhook accepted${NC}"
+
+# Extract LinkedIn URL from JSON response
+# Response format: {"message": "...", "linkedin_url": "https://..."}
+LINKEDIN_URL=$(echo "$BODY" | grep -o '"linkedin_url":"[^"]*"' | sed 's/"linkedin_url":"\(.*\)"/\1/')
+
+if [ -z "$LINKEDIN_URL" ]; then
+  echo -e "${RED}✗ E2E Test FAILED${NC}"
+  echo -e "${RED}  - No linkedin_url in response${NC}"
+  exit 1
+fi
+
+echo -e "${GREEN}✓ Step 2: LinkedIn URL extracted${NC}"
+echo "  LinkedIn URL: $LINKEDIN_URL"
+echo ""
+
+# Validate it's a LinkedIn URL
+if ! echo "$LINKEDIN_URL" | grep -q "linkedin.com"; then
+  echo -e "${RED}✗ E2E Test FAILED${NC}"
+  echo -e "${RED}  - Invalid LinkedIn URL format: $LINKEDIN_URL${NC}"
+  exit 1
+fi
+
+echo -e "${GREEN}✓ Step 3: Valid LinkedIn URL format${NC}"
+
+# Try to verify the LinkedIn post exists
+echo -e "${YELLOW}Verifying LinkedIn post...${NC}"
+LINKEDIN_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -L "$LINKEDIN_URL")
+
+if [ "$LINKEDIN_STATUS" -eq 200 ] || [ "$LINKEDIN_STATUS" -eq 302 ] || [ "$LINKEDIN_STATUS" -eq 301 ]; then
+  echo -e "${GREEN}✓ Step 4: LinkedIn post accessible (HTTP $LINKEDIN_STATUS)${NC}"
+elif [ "$LINKEDIN_STATUS" -eq 999 ]; then
+  # LinkedIn often returns 999 for automated requests without proper headers
+  echo -e "${YELLOW}⚠ Step 4: LinkedIn returned 999 (bot protection)${NC}"
+  echo -e "${YELLOW}  This is expected for automated requests${NC}"
+  echo -e "${YELLOW}  Post URL is valid but verification skipped${NC}"
+else
+  echo -e "${YELLOW}⚠ Step 4: Could not verify post (HTTP $LINKEDIN_STATUS)${NC}"
+  echo -e "${YELLOW}  Post may require authentication to view${NC}"
+fi
+
+echo ""
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${GREEN}✓ E2E Test PASSED${NC}"
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${GREEN}  ✓ Webhook accepted (HTTP 200)${NC}"
+echo -e "${GREEN}  ✓ Success message confirmed${NC}"
+echo -e "${GREEN}  ✓ LinkedIn URL extracted and validated${NC}"
+echo -e "${GREEN}  ✓ Post created at: $LINKEDIN_URL${NC}"
+echo ""
+exit 0
