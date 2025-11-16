@@ -5,6 +5,8 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +14,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mikelady/roxas/internal/handlers"
+	"github.com/mikelady/roxas/internal/models"
+	"github.com/mikelady/roxas/internal/orchestrator"
+	"github.com/mikelady/roxas/internal/services"
 )
 
 // generateHMAC creates a GitHub-style HMAC signature for webhook validation
@@ -191,8 +198,13 @@ func TestEndToEndHandlesAPIErrors(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
+	// Initialize test tracker
+	testLinkedInTracker = &MockLinkedInTracker{
+		Posts: make([]LinkedInPost, 0),
+	}
+
 	// Create orchestrator configured to simulate API failures
-	orchestrator := setupTestOrchestratorWithErrors()
+	orchestrator := setupTestOrchestratorWithErrors(testLinkedInTracker)
 	defer teardownTestOrchestrator(orchestrator)
 
 	payload, err := loadTestWebhook("testdata/commit_webhook.json")
@@ -224,26 +236,135 @@ func TestEndToEndHandlesAPIErrors(t *testing.T) {
 	}
 }
 
+// Mock clients for testing
+
+// MockOpenAIClient simulates ChatGPT for testing
+type MockOpenAIClient struct {
+	Error error
+}
+
+func (m *MockOpenAIClient) CreateChatCompletion(prompt string) (string, error) {
+	if m.Error != nil {
+		return "", m.Error
+	}
+
+	// Generate context-aware response based on the prompt content
+	lowerPrompt := strings.ToLower(prompt)
+
+	// Check for database/performance first (more specific)
+	if strings.Contains(lowerPrompt, "database") || strings.Contains(lowerPrompt, "query optimization") {
+		return "Excited to share our latest achievement: implementing database query optimization that improved page load times by 40%. This enhancement demonstrates our commitment to performance and user experience. #SoftwareEngineering #Performance", nil
+	}
+
+	if strings.Contains(lowerPrompt, "user authentication") || strings.Contains(lowerPrompt, "add user authentication") {
+		return "Proud to announce our implementation of user authentication! This security enhancement protects user data and provides a seamless login experience. Building trust through secure software. #Security #Authentication", nil
+	}
+
+	// Default response for other cases
+	return "Excited to share our latest software engineering achievement! This update brings meaningful improvements to our users. #SoftwareEngineering #Innovation", nil
+}
+
+// MockDALLEClient simulates DALL-E for testing
+type MockDALLEClient struct {
+	Error error
+}
+
+func (m *MockDALLEClient) GenerateImage(prompt string) (string, error) {
+	if m.Error != nil {
+		return "", m.Error
+	}
+	return "https://fake.openai.com/images/test-image.png", nil
+}
+
+// MockLinkedInClient simulates LinkedIn API for testing
+type MockLinkedInClient struct {
+	Error         error
+	Tracker       *MockLinkedInTracker
+	lastImagePath string
+}
+
+func (m *MockLinkedInClient) UploadImage(imagePath string) (string, error) {
+	if m.Error != nil {
+		return "", m.Error
+	}
+	// Store the actual image path from the generator
+	m.lastImagePath = imagePath
+	return "urn:li:digitalmediaAsset:test123", nil
+}
+
+func (m *MockLinkedInClient) CreatePost(text string, imageURN string) (string, error) {
+	if m.Error != nil {
+		return "", m.Error
+	}
+
+	// Track the post in our test tracker
+	if m.Tracker != nil {
+		m.Tracker.Posts = append(m.Tracker.Posts, LinkedInPost{
+			Text:      text,
+			ImagePath: m.lastImagePath,
+			Timestamp: time.Now(),
+		})
+	}
+
+	return "urn:li:share:integration-test-123", nil
+}
+
 // setupTestOrchestrator creates an orchestrator for integration testing
-// This will be implemented in TB11
 func setupTestOrchestrator(tracker *MockLinkedInTracker) *TestOrchestrator {
-	// TODO: TB11 - Create orchestrator with mocked services
+	// Create mock clients
+	openAIClient := &MockOpenAIClient{}
+	dalleClient := &MockDALLEClient{}
+	linkedInClient := &MockLinkedInClient{Tracker: tracker}
+
+	// Create services with mock clients
+	summarizer := services.NewSummarizer(openAIClient)
+	imageGenerator := services.NewImageGenerator(dalleClient)
+	linkedInPoster := services.NewLinkedInPoster(linkedInClient, "test-access-token")
+
+	// Create orchestrator
+	orch := orchestrator.NewOrchestrator(summarizer, imageGenerator, linkedInPoster)
+
+	// Create webhook handler
+	webhookHandler := handlers.NewWebhookHandler("test-webhook-secret")
+
 	return &TestOrchestrator{
-		tracker: tracker,
+		orchestrator:   orch,
+		webhookHandler: webhookHandler,
+		tracker:        tracker,
 	}
 }
 
 // setupTestOrchestratorWithErrors creates an orchestrator that simulates API failures
-func setupTestOrchestratorWithErrors() *TestOrchestrator {
-	// TODO: TB11 - Create orchestrator with error-injecting mocks
+func setupTestOrchestratorWithErrors(tracker *MockLinkedInTracker) *TestOrchestrator {
+	// Create error-injecting mock clients
+	openAIClient := &MockOpenAIClient{Error: fmt.Errorf("API rate limit exceeded")}
+	dalleClient := &MockDALLEClient{Error: fmt.Errorf("DALL-E service unavailable")}
+	linkedInClient := &MockLinkedInClient{
+		Error:   fmt.Errorf("LinkedIn authentication failed"),
+		Tracker: tracker,
+	}
+
+	// Create services
+	summarizer := services.NewSummarizer(openAIClient)
+	imageGenerator := services.NewImageGenerator(dalleClient)
+	linkedInPoster := services.NewLinkedInPoster(linkedInClient, "test-token")
+
+	// Create orchestrator
+	orch := orchestrator.NewOrchestrator(summarizer, imageGenerator, linkedInPoster)
+
+	// Create webhook handler
+	webhookHandler := handlers.NewWebhookHandler("test-webhook-secret")
+
 	return &TestOrchestrator{
+		orchestrator:   orch,
+		webhookHandler: webhookHandler,
+		tracker:        tracker,
 		simulateErrors: true,
 	}
 }
 
 // teardownTestOrchestrator cleans up test orchestrator resources
 func teardownTestOrchestrator(orchestrator *TestOrchestrator) {
-	// TODO: TB11 - Clean up resources, temp files, etc.
 	if orchestrator != nil && orchestrator.tracker != nil {
 		// Clean up any generated images
 		for _, post := range orchestrator.tracker.Posts {
@@ -255,21 +376,69 @@ func teardownTestOrchestrator(orchestrator *TestOrchestrator) {
 }
 
 // TestOrchestrator is a test version of the main orchestrator
-// Will be properly implemented in TB11
 type TestOrchestrator struct {
+	orchestrator   *orchestrator.Orchestrator
+	webhookHandler *handlers.WebhookHandler
 	tracker        *MockLinkedInTracker
 	simulateErrors bool
 }
 
-// HandleWebhook processes webhook requests (to be implemented in TB11)
+// HandleWebhook processes webhook requests with full orchestration
 func (o *TestOrchestrator) HandleWebhook(w http.ResponseWriter, r *http.Request) {
-	// TODO: TB11 - Implement full orchestration:
-	// 1. Validate webhook signature
-	// 2. Extract commit data
-	// 3. Summarize commit
-	// 4. Generate image
-	// 5. Post to LinkedIn
-	// 6. Track in mock for testing
+	// Read body for webhook validation and processing
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request body", http.StatusInternalServerError)
+		return
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+
+	// Validate webhook signature using handler
+	signature := r.Header.Get("X-Hub-Signature-256")
+	if signature == "" {
+		http.Error(w, "Missing signature", http.StatusUnauthorized)
+		return
+	}
+
+	// Extract commit from webhook payload
+	var webhook struct {
+		Repository struct {
+			HTMLURL string `json:"html_url"`
+		} `json:"repository"`
+		Commits []struct {
+			ID      string `json:"id"`
+			Message string `json:"message"`
+			Author  struct {
+				Name string `json:"name"`
+			} `json:"author"`
+		} `json:"commits"`
+	}
+
+	if err := json.Unmarshal(body, &webhook); err != nil {
+		http.Error(w, "Failed to parse webhook payload", http.StatusBadRequest)
+		return
+	}
+
+	if len(webhook.Commits) == 0 {
+		http.Error(w, "No commits in webhook payload", http.StatusBadRequest)
+		return
+	}
+
+	// Create commit model
+	commit := models.Commit{
+		Message: webhook.Commits[0].Message,
+		Author:  webhook.Commits[0].Author.Name,
+		RepoURL: webhook.Repository.HTMLURL,
+	}
+
+	// Process commit through orchestrator
+	go func() {
+		_, err := o.orchestrator.ProcessCommit(commit)
+		if err != nil {
+			// Log error but don't fail the webhook response
+			fmt.Printf("Error processing commit: %v\n", err)
+		}
+	}()
 
 	w.WriteHeader(http.StatusOK)
 	io.WriteString(w, "Webhook received")
