@@ -84,25 +84,26 @@ jobs:
           TF_VAR_function_name: roxas-webhook-handler-dev-pr-${{ github.event.pull_request.number }}
         run: terraform apply -auto-approve tfplan
 
-      - name: Get Lambda Function URL
-        id: lambda-url
+      - name: Get Webhook URL from Terraform
+        id: deployment-info
+        working-directory: terraform
         run: |
-          FUNCTION_NAME="roxas-webhook-handler-dev-pr-${{ github.event.pull_request.number }}"
-          FUNCTION_URL=$(aws lambda get-function-url-config --function-name $FUNCTION_NAME --query 'FunctionUrl' --output text 2>/dev/null || echo "Not configured")
-          echo "url=$FUNCTION_URL" >> $GITHUB_OUTPUT
+          WEBHOOK_URL=$(terraform output -raw webhook_url)
+          FUNCTION_NAME=$(terraform output -raw lambda_function_name)
+          echo "url=$WEBHOOK_URL" >> $GITHUB_OUTPUT
           echo "function_name=$FUNCTION_NAME" >> $GITHUB_OUTPUT
 
       - name: Comment PR with deployment info
         uses: actions/github-script@v7
         with:
           script: |
-            const functionName = '${{ steps.lambda-url.outputs.function_name }}';
-            const functionUrl = '${{ steps.lambda-url.outputs.url }}';
+            const functionName = '${{ steps.deployment-info.outputs.function_name }}';
+            const webhookUrl = '${{ steps.deployment-info.outputs.url }}';
 
             const body = `### 🚀 Deployed to Dev Environment
 
             **Function:** \`${functionName}\`
-            **URL:** ${functionUrl}
+            **Webhook URL:** ${webhookUrl}
             **Region:** us-east-1
 
             This PR-specific environment will be automatically destroyed when the PR is closed.`;
