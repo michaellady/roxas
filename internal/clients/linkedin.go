@@ -13,22 +13,24 @@ import (
 
 // LinkedInClient is the real production client for LinkedIn API
 type LinkedInClient struct {
-	accessToken string
-	baseURL     string
-	client      *http.Client
-	personURN   string // LinkedIn person URN (e.g., urn:li:person:ABC123)
+	accessToken    string
+	baseURL        string
+	client         *http.Client
+	personURN      string // LinkedIn person URN (e.g., urn:li:person:ABC123)
+	linkedInVersion string // LinkedIn API version (YYYYMM format)
 }
 
 // NewLinkedInClient creates a new LinkedIn API client
 func NewLinkedInClient(accessToken string, baseURL string) *LinkedInClient {
 	if baseURL == "" {
-		baseURL = "https://api.linkedin.com/v2"
+		baseURL = "https://api.linkedin.com"
 	}
 
 	client := &LinkedInClient{
-		accessToken: accessToken,
-		baseURL:     baseURL,
-		client:      &http.Client{},
+		accessToken:     accessToken,
+		baseURL:         baseURL,
+		client:          &http.Client{},
+		linkedInVersion: "202510", // LinkedIn API version (October 2025)
 	}
 
 	// Fetch the person URN from /me endpoint
@@ -102,121 +104,116 @@ func (c *LinkedInClient) UploadImage(imagePath string) (string, error) {
 		return "", fmt.Errorf("failed to read image file: %w", err)
 	}
 
-	// Step 1: Register upload (simplified for MVP - using assets endpoint)
-	registerURL := c.baseURL + "/assets?action=registerUpload"
+	// Step 1: Initialize upload using new Images API
+	initURL := c.baseURL + "/rest/images?action=initializeUpload"
 
-	registerRequest := map[string]interface{}{
-		"registerUploadRequest": map[string]interface{}{
-			"recipes": []string{
-				"urn:li:digitalmediaRecipe:feedshare-image",
-			},
+	initRequest := map[string]interface{}{
+		"initializeUploadRequest": map[string]interface{}{
 			"owner": c.personURN,
-			"serviceRelationships": []map[string]interface{}{
-				{
-					"relationshipType": "OWNER",
-					"identifier":       "urn:li:userGeneratedContent",
-				},
-			},
 		},
 	}
 
-	jsonData, err := json.Marshal(registerRequest)
+	jsonData, err := json.Marshal(initRequest)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal register request: %w", err)
+		return "", fmt.Errorf("failed to marshal init request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", registerURL, bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", initURL, bytes.NewBuffer(jsonData))
 	if err != nil {
-		return "", fmt.Errorf("failed to create register request: %w", err)
+		return "", fmt.Errorf("failed to create init request: %w", err)
 	}
 
 	req.Header.Set("Authorization", "Bearer "+c.accessToken)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Linkedin-Version", c.linkedInVersion)
+	req.Header.Set("X-Restli-Protocol-Version", "2.0.0")
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to register upload: %w", err)
+		return "", fmt.Errorf("failed to initialize upload: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("failed to read register response: %w", err)
+		return "", fmt.Errorf("failed to read init response: %w", err)
 	}
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return "", fmt.Errorf("register upload failed %d: %s", resp.StatusCode, string(body))
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("initialize upload failed %d: %s", resp.StatusCode, string(body))
 	}
 
-	var registerResponse struct {
+	var initResponse struct {
 		Value struct {
-			Asset              string `json:"asset"`
-			UploadMechanism    map[string]interface{} `json:"uploadMechanism"`
+			UploadURL          string `json:"uploadUrl"`
+			Image              string `json:"image"`
+			UploadURLExpiresAt int64  `json:"uploadUrlExpiresAt"`
 		} `json:"value"`
-		Asset string `json:"asset"` // Alternative response format
 	}
 
-	if err := json.Unmarshal(body, &registerResponse); err != nil {
-		return "", fmt.Errorf("failed to parse register response: %w", err)
+	if err := json.Unmarshal(body, &initResponse); err != nil {
+		return "", fmt.Errorf("failed to parse init response: %w", err)
 	}
 
-	// Get asset URN from response
-	assetURN := registerResponse.Value.Asset
-	if assetURN == "" {
-		assetURN = registerResponse.Asset
+	uploadURL := initResponse.Value.UploadURL
+	imageURN := initResponse.Value.Image
+
+	if uploadURL == "" || imageURN == "" {
+		return "", fmt.Errorf("missing upload URL or image URN in response: %s", string(body))
 	}
 
-	// For mock servers in tests, return simple asset URN
-	if assetURN == "" && (resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated) {
-		// Mock response - extract from body
-		var mockResponse map[string]interface{}
-		json.Unmarshal(body, &mockResponse)
-		if asset, ok := mockResponse["asset"].(string); ok {
-			return asset, nil
-		}
-		return "urn:li:digitalmediaAsset:mock-asset", nil
+	// Step 2: Upload image binary to the upload URL
+	// Re-read the image file for uploading
+	imageData, err := os.ReadFile(imagePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to re-read image file: %w", err)
 	}
 
-	if assetURN == "" {
-		return "", fmt.Errorf("no asset URN in response")
+	uploadReq, err := http.NewRequest("POST", uploadURL, bytes.NewBuffer(imageData))
+	if err != nil {
+		return "", fmt.Errorf("failed to create upload request: %w", err)
 	}
 
-	// Step 2: Upload binary (simplified for MVP - skipping actual binary upload to uploadUrl)
-	// In production, would upload to the uploadUrl from uploadMechanism
-	// For now, we return the asset URN which is sufficient for testing
+	uploadReq.Header.Set("Authorization", "Bearer "+c.accessToken)
+	uploadReq.Header.Set("Content-Type", "application/octet-stream")
 
-	return assetURN, nil
+	uploadResp, err := c.client.Do(uploadReq)
+	if err != nil {
+		return "", fmt.Errorf("failed to upload image: %w", err)
+	}
+	defer uploadResp.Body.Close()
+
+	if uploadResp.StatusCode != http.StatusCreated && uploadResp.StatusCode != http.StatusOK {
+		uploadBody, _ := io.ReadAll(uploadResp.Body)
+		return "", fmt.Errorf("image upload failed %d: %s", uploadResp.StatusCode, string(uploadBody))
+	}
+
+	return imageURN, nil
 }
 
-// CreatePost creates a LinkedIn UGC post with optional image
+// CreatePost creates a LinkedIn post using the new Posts API
 func (c *LinkedInClient) CreatePost(text string, imageURN string) (string, error) {
-	url := c.baseURL + "/ugcPosts"
+	url := c.baseURL + "/rest/posts"
 
-	// Build post request
+	// Build post request using new Posts API format
 	postRequest := map[string]interface{}{
-		"author": c.personURN,
+		"author":         c.personURN,
+		"commentary":     text,
+		"visibility":     "PUBLIC",
 		"lifecycleState": "PUBLISHED",
-		"specificContent": map[string]interface{}{
-			"com.linkedin.ugc.ShareContent": map[string]interface{}{
-				"shareCommentary": map[string]interface{}{
-					"text": text,
-				},
-				"shareMediaCategory": "NONE",
-			},
+		"distribution": map[string]interface{}{
+			"feedDistribution":    "MAIN_FEED",
+			"targetEntities":      []interface{}{},
+			"thirdPartyDistributionChannels": []interface{}{},
 		},
-		"visibility": map[string]interface{}{
-			"com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC",
-		},
+		"isReshareDisabledByAuthor": false,
 	}
 
 	// Add media if image URN provided
 	if imageURN != "" {
-		shareContent := postRequest["specificContent"].(map[string]interface{})["com.linkedin.ugc.ShareContent"].(map[string]interface{})
-		shareContent["shareMediaCategory"] = "IMAGE"
-		shareContent["media"] = []map[string]interface{}{
-			{
-				"status": "READY",
-				"media":  imageURN,
+		postRequest["content"] = map[string]interface{}{
+			"media": map[string]interface{}{
+				"id": imageURN,
 			},
 		}
 	}
@@ -233,6 +230,7 @@ func (c *LinkedInClient) CreatePost(text string, imageURN string) (string, error
 
 	req.Header.Set("Authorization", "Bearer "+c.accessToken)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("LinkedIn-Version", c.linkedInVersion)
 	req.Header.Set("X-Restli-Protocol-Version", "2.0.0")
 
 	resp, err := c.client.Do(req)
@@ -247,24 +245,27 @@ func (c *LinkedInClient) CreatePost(text string, imageURN string) (string, error
 	}
 
 	// Handle non-success responses
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+	if resp.StatusCode != http.StatusCreated {
 		return "", fmt.Errorf("create post failed %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Parse response to get post ID
-	var postResponse struct {
-		ID string `json:"id"`
+	// Get post ID from x-restli-id header (new Posts API returns ID in header)
+	postID := resp.Header.Get("x-restli-id")
+	if postID == "" {
+		// Fallback: try to parse from body
+		var postResponse struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(body, &postResponse); err == nil && postResponse.ID != "" {
+			postID = postResponse.ID
+		}
 	}
 
-	if err := json.Unmarshal(body, &postResponse); err != nil {
-		return "", fmt.Errorf("failed to parse post response: %w", err)
+	if postID == "" {
+		return "", fmt.Errorf("no post ID in response (header or body)")
 	}
 
-	if postResponse.ID == "" {
-		return "", fmt.Errorf("no post ID in response")
-	}
-
-	return postResponse.ID, nil
+	return postID, nil
 }
 
 // uploadBinary uploads the binary image content to LinkedIn
