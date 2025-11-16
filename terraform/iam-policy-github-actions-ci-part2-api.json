@@ -1,0 +1,16 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "APIGatewayV2Management",
+      "Effect": "Allow",
+      "Action": [
+        "apigatewayv2:*"
+      ],
+      "Resource": [
+        "arn:aws:apigateway:us-east-1::/apis",
+        "arn:aws:apigateway:us-east-1::/apis/*"
+      ]
+    }
+  ]
+}
