@@ -1,0 +1,59 @@
+name: PR Cleanup Dev
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  cleanup-dev:
+    name: Destroy Dev Environment
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_DEV }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_DEV }}
+          aws-region: us-east-1
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+
+      - name: Terraform Destroy
+        working-directory: terraform
+        env:
+          TF_VAR_openai_api_key: ${{ secrets.TF_VAR_openai_api_key_dev }}
+          TF_VAR_linkedin_access_token: ${{ secrets.TF_VAR_linkedin_access_token_dev }}
+          TF_VAR_webhook_secret: ${{ secrets.TF_VAR_webhook_secret_dev }}
+          TF_VAR_function_name: roxas-webhook-handler-dev-pr-${{ github.event.pull_request.number }}
+        run: terraform destroy -var-file=dev.tfvars -auto-approve
+
+      - name: Comment PR with cleanup status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const functionName = 'roxas-webhook-handler-dev-pr-${{ github.event.pull_request.number }}';
+
+            const body = `### 🧹 Dev Environment Cleaned Up
+
+            **Function:** \`${functionName}\`
+            **Status:** Destroyed
+
+            All AWS resources for this PR have been removed.`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });

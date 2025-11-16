@@ -1,0 +1,104 @@
+name: PR Deploy to Dev
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  deploy-dev:
+    name: Deploy to Dev Environment
+    runs-on: ubuntu-latest
+
+    # Prevent concurrent deployments for the same PR
+    concurrency:
+      group: deploy-dev-pr-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.3'
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build Lambda deployment package
+        run: make build
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_DEV }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_DEV }}
+          aws-region: us-east-1
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+
+      - name: Terraform Plan
+        working-directory: terraform
+        env:
+          TF_VAR_openai_api_key: ${{ secrets.TF_VAR_openai_api_key_dev }}
+          TF_VAR_linkedin_access_token: ${{ secrets.TF_VAR_linkedin_access_token_dev }}
+          TF_VAR_webhook_secret: ${{ secrets.TF_VAR_webhook_secret_dev }}
+          TF_VAR_function_name: roxas-webhook-handler-dev-pr-${{ github.event.pull_request.number }}
+        run: terraform plan -var-file=dev.tfvars -out=tfplan
+
+      - name: Terraform Apply
+        working-directory: terraform
+        env:
+          TF_VAR_openai_api_key: ${{ secrets.TF_VAR_openai_api_key_dev }}
+          TF_VAR_linkedin_access_token: ${{ secrets.TF_VAR_linkedin_access_token_dev }}
+          TF_VAR_webhook_secret: ${{ secrets.TF_VAR_webhook_secret_dev }}
+          TF_VAR_function_name: roxas-webhook-handler-dev-pr-${{ github.event.pull_request.number }}
+        run: terraform apply -auto-approve tfplan
+
+      - name: Get Lambda Function URL
+        id: lambda-url
+        run: |
+          FUNCTION_NAME="roxas-webhook-handler-dev-pr-${{ github.event.pull_request.number }}"
+          FUNCTION_URL=$(aws lambda get-function-url-config --function-name $FUNCTION_NAME --query 'FunctionUrl' --output text 2>/dev/null || echo "Not configured")
+          echo "url=$FUNCTION_URL" >> $GITHUB_OUTPUT
+          echo "function_name=$FUNCTION_NAME" >> $GITHUB_OUTPUT
+
+      - name: Comment PR with deployment info
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const functionName = '${{ steps.lambda-url.outputs.function_name }}';
+            const functionUrl = '${{ steps.lambda-url.outputs.url }}';
+
+            const body = `### 🚀 Deployed to Dev Environment
+
+            **Function:** \`${functionName}\`
+            **URL:** ${functionUrl}
+            **Region:** us-east-1
+
+            This PR-specific environment will be automatically destroyed when the PR is closed.`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
