@@ -117,23 +117,28 @@ func Handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 	// Initialize orchestrator
 	orch := orchestrator.NewOrchestrator(summarizer, imageGenerator, linkedInPoster)
 
-	// Process commit asynchronously (in Lambda, this is still synchronous but non-blocking response)
-	go func() {
-		postURL, err := orch.ProcessCommit(*commit)
-		if err != nil {
-			log.Printf("Error processing commit: %v", err)
-			return
-		}
-		log.Printf("Successfully posted to LinkedIn: %s", postURL)
-	}()
+	// Process commit synchronously (Lambda freezes goroutines when handler returns)
+	postURL, err := orch.ProcessCommit(*commit)
+	if err != nil {
+		log.Printf("Error processing commit: %v", err)
+		return events.APIGatewayProxyResponse{
+			StatusCode: 500,
+			Headers: map[string]string{
+				"Content-Type": "application/json",
+			},
+			Body: fmt.Sprintf(`{"error": "Failed to process commit: %v"}`, err),
+		}, nil
+	}
 
-	// Return 200 immediately
+	log.Printf("Successfully posted to LinkedIn: %s", postURL)
+
+	// Return 200 with success
 	return events.APIGatewayProxyResponse{
 		StatusCode: 200,
 		Headers: map[string]string{
 			"Content-Type": "application/json",
 		},
-		Body: `{"message": "Webhook received and processing"}`,
+		Body: fmt.Sprintf(`{"message": "Webhook processed successfully", "linkedin_url": "%s"}`, postURL),
 	}, nil
 }
 
