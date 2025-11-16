@@ -10,6 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     environment: dev
 
+    permissions:
+      pull-requests: write
+      contents: read
+
     # Prevent concurrent deployments for the same PR
     concurrency:
       group: deploy-dev-pr-${{ github.event.pull_request.number }}
