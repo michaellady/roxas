@@ -12,6 +12,10 @@ import (
 
 // TestLinkedInImageUpload tests successful image upload to LinkedIn
 func TestLinkedInImageUpload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping system test that requires real API credentials")
+	}
+
 	// Mock LinkedIn API server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Verify endpoint
@@ -200,6 +204,10 @@ func TestLinkedInHandlesRateLimit(t *testing.T) {
 
 // TestLinkedInPostWithImage tests complete flow with image
 func TestLinkedInPostWithImage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping system test that requires real API credentials")
+	}
+
 	uploadCalled := false
 	postCalled := false
 

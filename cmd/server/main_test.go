@@ -14,14 +14,18 @@ import (
 
 // TestLambdaHandlerValidWebhook tests successful webhook processing
 func TestLambdaHandlerValidWebhook(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping system test that requires real API credentials")
+	}
+
 	// Set required environment variables
 	os.Setenv("OPENAI_API_KEY", "test-openai-key")
 	os.Setenv("LINKEDIN_ACCESS_TOKEN", "test-linkedin-token")
-	os.Setenv("GITHUB_WEBHOOK_SECRET", "test-secret")
+	os.Setenv("WEBHOOK_SECRET", "test-secret")
 	defer func() {
 		os.Unsetenv("OPENAI_API_KEY")
 		os.Unsetenv("LINKEDIN_ACCESS_TOKEN")
-		os.Unsetenv("GITHUB_WEBHOOK_SECRET")
+		os.Unsetenv("WEBHOOK_SECRET")
 	}()
 
 	// Create valid GitHub webhook payload
@@ -64,7 +68,7 @@ func TestLambdaHandlerValidWebhook(t *testing.T) {
 // TestLambdaHandlerInvalidSignature tests rejection of invalid signatures
 func TestLambdaHandlerInvalidSignature(t *testing.T) {
 	// Set required environment variables
-	os.Setenv("GITHUB_WEBHOOK_SECRET", "test-secret")
+	os.Setenv("WEBHOOK_SECRET", "test-secret")
 	defer os.Unsetenv("GITHUB_WEBHOOK_SECRET")
 
 	payload := `{"commits": []}`
@@ -98,7 +102,7 @@ func TestLambdaHandlerMissingEnvVars(t *testing.T) {
 	// Clear environment variables
 	os.Unsetenv("OPENAI_API_KEY")
 	os.Unsetenv("LINKEDIN_ACCESS_TOKEN")
-	os.Unsetenv("GITHUB_WEBHOOK_SECRET")
+	os.Unsetenv("WEBHOOK_SECRET")
 
 	payload := `{"commits": []}`
 
@@ -124,11 +128,11 @@ func TestLambdaHandlerLoadsFromEnv(t *testing.T) {
 	// Set specific env var values
 	os.Setenv("OPENAI_API_KEY", "sk-test-key-123")
 	os.Setenv("LINKEDIN_ACCESS_TOKEN", "linkedin-token-456")
-	os.Setenv("GITHUB_WEBHOOK_SECRET", "webhook-secret-789")
+	os.Setenv("WEBHOOK_SECRET", "webhook-secret-789")
 	defer func() {
 		os.Unsetenv("OPENAI_API_KEY")
 		os.Unsetenv("LINKEDIN_ACCESS_TOKEN")
-		os.Unsetenv("GITHUB_WEBHOOK_SECRET")
+		os.Unsetenv("WEBHOOK_SECRET")
 	}()
 
 	// Get config (this will be implemented)
@@ -149,13 +153,17 @@ func TestLambdaHandlerLoadsFromEnv(t *testing.T) {
 
 // TestLambdaHandlerReturns200 tests proper HTTP response format
 func TestLambdaHandlerReturns200(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping system test that requires real API credentials")
+	}
+
 	os.Setenv("OPENAI_API_KEY", "test-key")
 	os.Setenv("LINKEDIN_ACCESS_TOKEN", "test-token")
-	os.Setenv("GITHUB_WEBHOOK_SECRET", "test-secret")
+	os.Setenv("WEBHOOK_SECRET", "test-secret")
 	defer func() {
 		os.Unsetenv("OPENAI_API_KEY")
 		os.Unsetenv("LINKEDIN_ACCESS_TOKEN")
-		os.Unsetenv("GITHUB_WEBHOOK_SECRET")
+		os.Unsetenv("WEBHOOK_SECRET")
 	}()
 
 	payload := `{
@@ -196,7 +204,7 @@ func TestLambdaHandlerReturns200(t *testing.T) {
 
 // TestLambdaHandlerParsesWebhookPayload tests webhook payload parsing
 func TestLambdaHandlerParsesWebhookPayload(t *testing.T) {
-	os.Setenv("GITHUB_WEBHOOK_SECRET", "test-secret")
+	os.Setenv("WEBHOOK_SECRET", "test-secret")
 	defer os.Unsetenv("GITHUB_WEBHOOK_SECRET")
 
 	// Create webhook with specific commit message
@@ -235,7 +243,7 @@ func TestLambdaHandlerParsesWebhookPayload(t *testing.T) {
 
 // TestLambdaHandlerMissingSignature tests handling of requests without signature
 func TestLambdaHandlerMissingSignature(t *testing.T) {
-	os.Setenv("GITHUB_WEBHOOK_SECRET", "test-secret")
+	os.Setenv("WEBHOOK_SECRET", "test-secret")
 	defer os.Unsetenv("GITHUB_WEBHOOK_SECRET")
 
 	request := events.APIGatewayProxyRequest{

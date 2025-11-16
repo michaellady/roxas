@@ -32,14 +32,14 @@ func loadConfig() Config {
 	return Config{
 		OpenAIAPIKey:        os.Getenv("OPENAI_API_KEY"),
 		LinkedInAccessToken: os.Getenv("LINKEDIN_ACCESS_TOKEN"),
-		WebhookSecret:       os.Getenv("GITHUB_WEBHOOK_SECRET"),
+		WebhookSecret:       os.Getenv("WEBHOOK_SECRET"),
 	}
 }
 
 // validateConfig checks if all required environment variables are set
 func validateConfig(config Config) error {
 	if config.WebhookSecret == "" {
-		return fmt.Errorf("GITHUB_WEBHOOK_SECRET is required")
+		return fmt.Errorf("WEBHOOK_SECRET is required")
 	}
 	// OpenAI and LinkedIn tokens are optional for signature validation
 	// but required for processing

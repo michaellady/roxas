@@ -13,9 +13,17 @@ provider "aws" {
   region = var.aws_region
 }
 
+# Local values for resource naming
+locals {
+  function_name_full = "${var.function_name}-${var.environment}"
+  common_tags = merge(var.tags, {
+    Environment = var.environment
+  })
+}
+
 # IAM Role for Lambda Execution
 resource "aws_iam_role" "lambda_exec" {
-  name = "${var.function_name}-exec-role"
+  name = "${local.function_name_full}-exec-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -30,7 +38,7 @@ resource "aws_iam_role" "lambda_exec" {
     ]
   })
 
-  tags = var.tags
+  tags = local.common_tags
 }
 
 # Attach basic Lambda execution policy
@@ -41,16 +49,16 @@ resource "aws_iam_role_policy_attachment" "lambda_basic" {
 
 # CloudWatch Log Group for Lambda
 resource "aws_cloudwatch_log_group" "lambda_logs" {
-  name              = "/aws/lambda/${var.function_name}"
+  name              = "/aws/lambda/${local.function_name_full}"
   retention_in_days = var.log_retention_days
 
-  tags = var.tags
+  tags = local.common_tags
 }
 
 # Lambda Function
 resource "aws_lambda_function" "roxas" {
   filename         = var.lambda_zip_path
-  function_name    = var.function_name
+  function_name    = local.function_name_full
   role             = aws_iam_role.lambda_exec.arn
   handler          = "bootstrap"
   source_code_hash = filebase64sha256(var.lambda_zip_path)
@@ -62,7 +70,7 @@ resource "aws_lambda_function" "roxas" {
     variables = {
       OPENAI_API_KEY        = var.openai_api_key
       LINKEDIN_ACCESS_TOKEN = var.linkedin_access_token
-      GITHUB_WEBHOOK_SECRET = var.github_webhook_secret
+      WEBHOOK_SECRET        = var.webhook_secret
       LOG_LEVEL             = var.log_level
     }
   }
@@ -72,16 +80,16 @@ resource "aws_lambda_function" "roxas" {
     aws_iam_role_policy_attachment.lambda_basic
   ]
 
-  tags = var.tags
+  tags = local.common_tags
 }
 
 # API Gateway HTTP API
 resource "aws_apigatewayv2_api" "webhook" {
-  name          = "${var.function_name}-api"
+  name          = "${local.function_name_full}-api"
   protocol_type = "HTTP"
-  description   = "GitHub webhook handler for Roxas"
+  description   = "GitHub webhook handler for Roxas (${var.environment})"
 
-  tags = var.tags
+  tags = local.common_tags
 }
 
 # API Gateway Stage
@@ -104,15 +112,15 @@ resource "aws_apigatewayv2_stage" "default" {
     })
   }
 
-  tags = var.tags
+  tags = local.common_tags
 }
 
 # CloudWatch Log Group for API Gateway
 resource "aws_cloudwatch_log_group" "api_logs" {
-  name              = "/aws/apigateway/${var.function_name}"
+  name              = "/aws/apigateway/${local.function_name_full}"
   retention_in_days = var.log_retention_days
 
-  tags = var.tags
+  tags = local.common_tags
 }
 
 # API Gateway Integration with Lambda
