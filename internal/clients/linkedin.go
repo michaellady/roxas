@@ -46,39 +46,45 @@ func NewLinkedInClient(accessToken string, baseURL string) *LinkedInClient {
 
 // getPersonURN fetches the authenticated user's LinkedIn person URN
 func (c *LinkedInClient) getPersonURN() (string, error) {
-	req, err := http.NewRequest("GET", c.baseURL+"/me", nil)
+	// Try OpenID Connect userinfo endpoint (requires openid + profile scopes)
+	req, err := http.NewRequest("GET", "https://api.linkedin.com/v2/userinfo", nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Authorization", "Bearer "+c.accessToken)
-	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to call /me endpoint: %w", err)
+		return "", fmt.Errorf("failed to call /userinfo endpoint: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("/me endpoint returned %d: %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("/userinfo endpoint returned %d: %s", resp.StatusCode, string(body))
 	}
 
 	var result struct {
-		ID string `json:"id"`
+		Sub string `json:"sub"` // OpenID Connect subject identifier
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("failed to decode /me response: %w", err)
+		return "", fmt.Errorf("failed to decode /userinfo response: %w", err)
 	}
 
-	if result.ID == "" {
-		return "", fmt.Errorf("no ID found in /me response")
+	if result.Sub == "" {
+		return "", fmt.Errorf("no sub found in /userinfo response")
+	}
+
+	// sub format is already a URN like "urn:li:person:ABC123" or just the ID
+	// If it's already a URN, use it; otherwise format it
+	if len(result.Sub) > 0 && result.Sub[:7] == "urn:li:" {
+		return result.Sub, nil
 	}
 
 	// Format as LinkedIn person URN
-	return "urn:li:person:" + result.ID, nil
+	return "urn:li:person:" + result.Sub, nil
 }
 
 // UploadImage uploads an image to LinkedIn and returns the asset URN
