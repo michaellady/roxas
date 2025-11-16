@@ -25,12 +25,60 @@ func NewLinkedInClient(accessToken string, baseURL string) *LinkedInClient {
 		baseURL = "https://api.linkedin.com/v2"
 	}
 
-	return &LinkedInClient{
+	client := &LinkedInClient{
 		accessToken: accessToken,
 		baseURL:     baseURL,
 		client:      &http.Client{},
-		personURN:   "urn:li:person:PLACEHOLDER", // TODO: Get from /me endpoint or config
 	}
+
+	// Fetch the person URN from /me endpoint
+	personURN, err := client.getPersonURN()
+	if err != nil {
+		// Log error but don't fail - will fail later when trying to post
+		fmt.Printf("Warning: Failed to get LinkedIn person URN: %v\n", err)
+		client.personURN = "urn:li:person:UNKNOWN"
+	} else {
+		client.personURN = personURN
+	}
+
+	return client
+}
+
+// getPersonURN fetches the authenticated user's LinkedIn person URN
+func (c *LinkedInClient) getPersonURN() (string, error) {
+	req, err := http.NewRequest("GET", c.baseURL+"/me", nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.accessToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to call /me endpoint: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("/me endpoint returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		ID string `json:"id"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("failed to decode /me response: %w", err)
+	}
+
+	if result.ID == "" {
+		return "", fmt.Errorf("no ID found in /me response")
+	}
+
+	// Format as LinkedIn person URN
+	return "urn:li:person:" + result.ID, nil
 }
 
 // UploadImage uploads an image to LinkedIn and returns the asset URN
