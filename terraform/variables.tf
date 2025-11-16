@@ -4,8 +4,17 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
+variable "environment" {
+  description = "Environment name (dev or prod)"
+  type        = string
+  validation {
+    condition     = contains(["dev", "prod"], var.environment)
+    error_message = "Environment must be either 'dev' or 'prod'."
+  }
+}
+
 variable "function_name" {
-  description = "Name of the Lambda function"
+  description = "Name of the Lambda function (will be suffixed with environment)"
   type        = string
   default     = "roxas-webhook-handler"
 }
@@ -53,8 +62,8 @@ variable "linkedin_access_token" {
   sensitive   = true
 }
 
-variable "github_webhook_secret" {
-  description = "GitHub webhook secret for HMAC validation"
+variable "webhook_secret" {
+  description = "Webhook secret for HMAC validation"
   type        = string
   sensitive   = true
 }
@@ -63,8 +72,7 @@ variable "tags" {
   description = "Common tags for all resources"
   type        = map(string)
   default = {
-    Project     = "Roxas"
-    ManagedBy   = "Terraform"
-    Environment = "production"
+    Project   = "Roxas"
+    ManagedBy = "Terraform"
   }
 }
