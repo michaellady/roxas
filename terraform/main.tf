@@ -7,6 +7,11 @@ terraform {
       version = "~> 5.0"
     }
   }
+
+  # Remote state backend for safe concurrent deployments
+  # State is stored in S3 with DynamoDB locking to prevent corruption
+  # Backend config is provided via -backend-config flags in workflows
+  backend "s3" {}
 }
 
 provider "aws" {
