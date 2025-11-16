@@ -8,8 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/mikelady/roxas/internal/models"
 )
 
 // generateHMAC creates a GitHub-style HMAC signature
