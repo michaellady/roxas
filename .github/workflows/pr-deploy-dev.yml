@@ -8,6 +8,7 @@ jobs:
   deploy-dev:
     name: Deploy to Dev Environment
     runs-on: ubuntu-latest
+    environment: dev
 
     # Prevent concurrent deployments for the same PR
     concurrency:

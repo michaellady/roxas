@@ -8,6 +8,7 @@ jobs:
   cleanup-dev:
     name: Destroy Dev Environment
     runs-on: ubuntu-latest
+    environment: dev
 
     steps:
       - name: Checkout code
