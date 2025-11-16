@@ -14,6 +14,10 @@ import (
 
 // TestLambdaHandlerValidWebhook tests successful webhook processing
 func TestLambdaHandlerValidWebhook(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping system test that requires real API credentials")
+	}
+
 	// Set required environment variables
 	os.Setenv("OPENAI_API_KEY", "test-openai-key")
 	os.Setenv("LINKEDIN_ACCESS_TOKEN", "test-linkedin-token")
@@ -149,6 +153,10 @@ func TestLambdaHandlerLoadsFromEnv(t *testing.T) {
 
 // TestLambdaHandlerReturns200 tests proper HTTP response format
 func TestLambdaHandlerReturns200(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping system test that requires real API credentials")
+	}
+
 	os.Setenv("OPENAI_API_KEY", "test-key")
 	os.Setenv("LINKEDIN_ACCESS_TOKEN", "test-token")
 	os.Setenv("GITHUB_WEBHOOK_SECRET", "test-secret")

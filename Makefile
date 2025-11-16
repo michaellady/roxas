@@ -1,12 +1,16 @@
-.PHONY: test test-int build deploy e2e clean
+.PHONY: test test-int test-system build deploy e2e clean
 
-# Run all unit tests
+# Run unit tests (fast, no external API calls)
 test:
-	go test -v ./internal/... ./cmd/...
+	go test -v -short ./internal/... ./cmd/...
 
 # Run integration tests
 test-int:
 	go test -v ./tests/...
+
+# Run system tests (requires real API credentials)
+test-system:
+	go test -v ./internal/... ./cmd/...
 
 # Build Lambda binary and create deployment package
 build:
