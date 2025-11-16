@@ -47,9 +47,9 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_DEV }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_DEV }}
-          aws-region: us-east-1
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Terraform Init
         working-directory: terraform
@@ -58,18 +58,18 @@ jobs:
       - name: Terraform Plan
         working-directory: terraform
         env:
-          TF_VAR_openai_api_key: ${{ secrets.TF_VAR_openai_api_key_dev }}
-          TF_VAR_linkedin_access_token: ${{ secrets.TF_VAR_linkedin_access_token_dev }}
-          TF_VAR_webhook_secret: ${{ secrets.TF_VAR_webhook_secret_dev }}
+          TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          TF_VAR_linkedin_access_token: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
+          TF_VAR_webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
           TF_VAR_function_name: roxas-webhook-handler-dev-pr-${{ github.event.pull_request.number }}
         run: terraform plan -var-file=dev.tfvars -out=tfplan
 
       - name: Terraform Apply
         working-directory: terraform
         env:
-          TF_VAR_openai_api_key: ${{ secrets.TF_VAR_openai_api_key_dev }}
-          TF_VAR_linkedin_access_token: ${{ secrets.TF_VAR_linkedin_access_token_dev }}
-          TF_VAR_webhook_secret: ${{ secrets.TF_VAR_webhook_secret_dev }}
+          TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          TF_VAR_linkedin_access_token: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
+          TF_VAR_webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
           TF_VAR_function_name: roxas-webhook-handler-dev-pr-${{ github.event.pull_request.number }}
         run: terraform apply -auto-approve tfplan
 
