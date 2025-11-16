@@ -1,0 +1,23 @@
+{
+  "repository": {
+    "html_url": "https://github.com/test/roxas-integration-test",
+    "full_name": "test/roxas-integration-test"
+  },
+  "commits": [
+    {
+      "id": "abc123def456",
+      "message": "feat: implement database query optimization\n\nImproved query performance by adding composite indexes and optimizing JOIN operations. This reduces page load time by 40% for large datasets.",
+      "author": {
+        "name": "Test Developer",
+        "email": "test@example.com"
+      },
+      "timestamp": "2025-11-15T20:00:00Z",
+      "url": "https://github.com/test/roxas-integration-test/commit/abc123def456"
+    }
+  ],
+  "ref": "refs/heads/main",
+  "head_commit": {
+    "id": "abc123def456",
+    "message": "feat: implement database query optimization\n\nImproved query performance by adding composite indexes and optimizing JOIN operations. This reduces page load time by 40% for large datasets."
+  }
+}
