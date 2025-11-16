@@ -60,7 +60,7 @@ Create a LinkedIn post that:
 4. Highlights measurable impact (performance, cost, reliability, security)
 5. Emphasizes open source benefits (transparency, no vendor lock-in, community)
 6. Length: 500-1000 characters
-7. Tone: Professional but conversational, technical but accessible
+7. Tone: professional but conversational, technical but accessible
 8. Focus on WHY this matters to businesses and users, not just WHAT changed
 9. End with 3-5 relevant hashtags
 
