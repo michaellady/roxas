@@ -30,5 +30,6 @@ bootstrap
 .terraform.lock.hcl
 
 # Build artifacts
+bin/
 dist/
 *.zip

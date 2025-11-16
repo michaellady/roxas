@@ -8,9 +8,12 @@ test:
 test-int:
 	go test -v ./tests/...
 
-# Build Lambda binary
+# Build Lambda binary and create deployment package
 build:
-	GOOS=linux GOARCH=amd64 go build -o bootstrap cmd/server/main.go
+	mkdir -p bin
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/bootstrap cmd/server/main.go
+	cd bin && zip bootstrap.zip bootstrap
+	@ls -lh bin/bootstrap.zip | awk '{print "✓ Built bin/bootstrap.zip (" $$5 ")"}'
 
 # Deploy to AWS
 deploy:
@@ -22,5 +25,6 @@ e2e:
 
 # Clean build artifacts
 clean:
+	rm -rf bin
 	rm -f bootstrap
 	rm -f *.zip
