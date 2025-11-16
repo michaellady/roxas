@@ -59,7 +59,10 @@ func buildImagePrompt(summary string) string {
 	lowerSummary := strings.ToLower(summary)
 	var theme string
 
-	if strings.Contains(lowerSummary, "performance") || strings.Contains(lowerSummary, "optimization") {
+	if (strings.Contains(lowerSummary, "database") || strings.Contains(lowerSummary, "data")) &&
+		(strings.Contains(lowerSummary, "performance") || strings.Contains(lowerSummary, "optimization")) {
+		theme = "database performance optimization with data flow visualization"
+	} else if strings.Contains(lowerSummary, "performance") || strings.Contains(lowerSummary, "optimization") {
 		theme = "performance improvement with upward trending graphs"
 	} else if strings.Contains(lowerSummary, "security") || strings.Contains(lowerSummary, "authentication") {
 		theme = "secure infrastructure with lock and shield symbols"
