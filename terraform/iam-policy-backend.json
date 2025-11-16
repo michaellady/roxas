@@ -2,32 +2,60 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "TerraformS3StateAccess",
+      "Sid": "TerraformS3StateAccessDev",
       "Effect": "Allow",
       "Action": [
         "s3:GetObject",
         "s3:PutObject",
         "s3:DeleteObject"
       ],
-      "Resource": "arn:aws:s3:::roxas-terraform-state/*"
+      "Resource": "arn:aws:s3:::roxas-terraform-state-dev/*"
     },
     {
-      "Sid": "TerraformS3BucketAccess",
+      "Sid": "TerraformS3BucketAccessDev",
       "Effect": "Allow",
       "Action": [
         "s3:ListBucket"
       ],
-      "Resource": "arn:aws:s3:::roxas-terraform-state"
+      "Resource": "arn:aws:s3:::roxas-terraform-state-dev"
     },
     {
-      "Sid": "TerraformDynamoDBLocking",
+      "Sid": "TerraformDynamoDBLockingDev",
       "Effect": "Allow",
       "Action": [
         "dynamodb:GetItem",
         "dynamodb:PutItem",
         "dynamodb:DeleteItem"
       ],
-      "Resource": "arn:aws:dynamodb:us-east-1:*:table/roxas-terraform-locks"
+      "Resource": "arn:aws:dynamodb:us-east-1:*:table/roxas-terraform-locks-dev"
+    },
+    {
+      "Sid": "TerraformS3StateAccessProd",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": "arn:aws:s3:::roxas-terraform-state-prod/*"
+    },
+    {
+      "Sid": "TerraformS3BucketAccessProd",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket"
+      ],
+      "Resource": "arn:aws:s3:::roxas-terraform-state-prod"
+    },
+    {
+      "Sid": "TerraformDynamoDBLockingProd",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:DeleteItem"
+      ],
+      "Resource": "arn:aws:dynamodb:us-east-1:*:table/roxas-terraform-locks-prod"
     }
   ]
 }

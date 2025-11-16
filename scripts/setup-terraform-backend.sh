@@ -5,13 +5,19 @@ set -e
 # Creates S3 bucket and DynamoDB table for Terraform state storage and locking
 #
 # Usage:
-#   AWS_PROFILE=admin ./scripts/setup-terraform-backend.sh
-#   or with default credentials:
-#   ./scripts/setup-terraform-backend.sh
+#   # For dev environment
+#   ENVIRONMENT=dev ./scripts/setup-terraform-backend.sh
+#
+#   # For prod environment
+#   ENVIRONMENT=prod ./scripts/setup-terraform-backend.sh
+#
+#   # With specific AWS profile
+#   AWS_PROFILE=dev-admin ENVIRONMENT=dev ./scripts/setup-terraform-backend.sh
 #
 # Requirements:
 #   - AWS CLI installed
 #   - AWS credentials with permissions to create S3 buckets and DynamoDB tables
+#   - ENVIRONMENT variable set to 'dev' or 'prod'
 
 # Colors for output
 RED='\033[0;31m'
@@ -20,9 +26,22 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Configuration
-S3_BUCKET="roxas-terraform-state"
-DYNAMODB_TABLE="roxas-terraform-locks"
+# Check ENVIRONMENT variable
+if [ -z "$ENVIRONMENT" ]; then
+  echo -e "${RED}Error: ENVIRONMENT variable is required${NC}"
+  echo "Usage: ENVIRONMENT=dev ./scripts/setup-terraform-backend.sh"
+  echo "       ENVIRONMENT=prod ./scripts/setup-terraform-backend.sh"
+  exit 1
+fi
+
+if [[ "$ENVIRONMENT" != "dev" && "$ENVIRONMENT" != "prod" ]]; then
+  echo -e "${RED}Error: ENVIRONMENT must be 'dev' or 'prod'${NC}"
+  exit 1
+fi
+
+# Configuration - environment-specific naming
+S3_BUCKET="roxas-terraform-state-${ENVIRONMENT}"
+DYNAMODB_TABLE="roxas-terraform-locks-${ENVIRONMENT}"
 AWS_REGION="us-east-1"
 
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -134,17 +153,20 @@ echo "1. Add backend configuration to terraform/main.tf"
 echo "2. Run 'terraform init' to migrate to remote backend"
 echo "3. Update IAM permissions for github-actions-ci user"
 echo ""
-echo -e "${YELLOW}Backend configuration:${NC}"
+echo -e "${YELLOW}Backend configuration for ${ENVIRONMENT}:${NC}"
 echo ""
-cat <<'EOF'
+cat <<EOF
 terraform {
   backend "s3" {
-    bucket         = "roxas-terraform-state"
+    bucket         = "${S3_BUCKET}"
     key            = "terraform.tfstate"
-    region         = "us-east-1"
+    region         = "${AWS_REGION}"
     encrypt        = true
-    dynamodb_table = "roxas-terraform-locks"
+    dynamodb_table = "${DYNAMODB_TABLE}"
   }
 }
 EOF
+echo ""
+echo -e "${BLUE}Note:${NC} You'll need to create separate backend configs for dev and prod"
+echo "or use backend configuration variables in your workflows."
 echo ""

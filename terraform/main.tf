@@ -10,13 +10,8 @@ terraform {
 
   # Remote state backend for safe concurrent deployments
   # State is stored in S3 with DynamoDB locking to prevent corruption
-  backend "s3" {
-    bucket         = "roxas-terraform-state"
-    key            = "terraform.tfstate"
-    region         = "us-east-1"
-    encrypt        = true
-    dynamodb_table = "roxas-terraform-locks"
-  }
+  # Backend config is provided via -backend-config flags in workflows
+  backend "s3" {}
 }
 
 provider "aws" {
