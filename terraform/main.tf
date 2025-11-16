@@ -7,6 +7,16 @@ terraform {
       version = "~> 5.0"
     }
   }
+
+  # Remote state backend for safe concurrent deployments
+  # State is stored in S3 with DynamoDB locking to prevent corruption
+  backend "s3" {
+    bucket         = "roxas-terraform-state"
+    key            = "terraform.tfstate"
+    region         = "us-east-1"
+    encrypt        = true
+    dynamodb_table = "roxas-terraform-locks"
+  }
 }
 
 provider "aws" {
