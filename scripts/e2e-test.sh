@@ -97,7 +97,7 @@ echo -e "${GREEN}✓ Step 1: Webhook accepted${NC}"
 
 # Extract LinkedIn URL from JSON response
 # Response format: {"message": "...", "linkedin_url": "https://..."}
-LINKEDIN_URL=$(echo "$BODY" | grep -o '"linkedin_url":"[^"]*"' | sed 's/"linkedin_url":"\(.*\)"/\1/')
+LINKEDIN_URL=$(echo "$BODY" | grep -o '"linkedin_url"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"\([^"]*\)"/\1/')
 
 if [ -z "$LINKEDIN_URL" ]; then
   echo -e "${RED}✗ E2E Test FAILED${NC}"
