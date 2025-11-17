@@ -24,14 +24,14 @@ Strategy: Apex domain with path-based routing
 Account: Prod AWS (598821842404)
 ```
 
-### Development (getroxas.com)
+### Development (roxasapp.com)
 ```
-URLs: https://pr-{NUMBER}.getroxas.com/webhook
+URLs: https://pr-{NUMBER}.roxasapp.com/webhook
 Strategy: Wildcard subdomain per PR
 Account: Dev AWS (539402214167)
 Examples:
-  - PR #1: https://pr-1.getroxas.com/webhook
-  - PR #2: https://pr-2.getroxas.com/webhook
+  - PR #1: https://pr-1.roxasapp.com/webhook
+  - PR #2: https://pr-2.roxasapp.com/webhook
 ```
 
 ## Architecture
@@ -57,12 +57,12 @@ Lambda: roxas-webhook-handler-prod
 ```
 GitHub Webhook (auto-updated by CI/CD)
   ↓
-https://pr-123.getroxas.com/webhook
+https://pr-123.roxasapp.com/webhook
   ↓
-Route53 A Record (pr-123.getroxas.com → API Gateway domain)
+Route53 A Record (pr-123.roxasapp.com → API Gateway domain)
   ↓
-API Gateway Custom Domain (pr-123.getroxas.com)
-  + Wildcard ACM Certificate (*.getroxas.com)
+API Gateway Custom Domain (pr-123.roxasapp.com)
+  + Wildcard ACM Certificate (*.roxasapp.com)
   ↓
 API Gateway Stage ($default)
   ↓
@@ -78,7 +78,7 @@ When PR closes: Terraform destroys all resources
 **custom_domain.tf** (new file)
 - `aws_acm_certificate.webhook` - SSL/TLS certificates
   - Prod: Single cert for roxas.ai
-  - Dev: Wildcard cert for *.getroxas.com
+  - Dev: Wildcard cert for *.roxasapp.com
 - `aws_route53_record.cert_validation` - DNS validation records
 - `aws_acm_certificate_validation.webhook` - Wait for validation
 - `aws_apigatewayv2_domain_name.webhook` - Custom domain configuration
@@ -108,7 +108,7 @@ hosted_zone_id        = "Z04315832ENRI8EX7SUBL"
 **dev.tfvars** (modified)
 ```hcl
 custom_domain_enabled = true
-domain_name           = "getroxas.com"
+domain_name           = "roxasapp.com"
 hosted_zone_id        = "Z06579361DMB1AK1VDFFZ"
 ```
 
@@ -117,7 +117,7 @@ hosted_zone_id        = "Z06579361DMB1AK1VDFFZ"
 **pr-deploy-dev.yml** (modified)
 - Added `TF_VAR_pr_number: ${{ github.event.pull_request.number }}`
 - Added `TF_VAR_custom_domain_enabled: true`
-- Terraform creates `pr-{NUMBER}.getroxas.com` dynamically
+- Terraform creates `pr-{NUMBER}.roxasapp.com` dynamically
 
 **main-deploy-prod.yml** (modified)
 - Added `TF_VAR_custom_domain_enabled: true`
@@ -139,7 +139,7 @@ ns-1271.awsdns-30.org
 
 Hosted Zone ID: `Z04315832ENRI8EX7SUBL`
 
-### getroxas.com (Development)
+### roxasapp.com (Development)
 **Status:** ✅ Registered and hosted zone created
 **Account:** Prod AWS (598821842404) - will use dev hosted zone via nameservers
 
@@ -154,8 +154,8 @@ Hosted Zone ID: `Z06579361DMB1AK1VDFFZ`
 - Managed by: AWS Certificate Manager (ACM)
 
 ### Development Certificate
-- Domain: `*.getroxas.com` (wildcard)
-- SAN: `getroxas.com` (base domain)
+- Domain: `*.roxasapp.com` (wildcard)
+- SAN: `roxasapp.com` (base domain)
 - Type: DV (Domain Validated) via DNS
 - Region: us-east-1 (required for API Gateway)
 - Covers: All PR subdomains (pr-1, pr-2, pr-3, etc.)
@@ -174,8 +174,8 @@ dig roxas.ai NS +short
 # ns-611.awsdns-12.net
 # ns-1271.awsdns-30.org
 
-# Check getroxas.com nameservers
-dig getroxas.com NS +short
+# Check roxasapp.com nameservers
+dig roxasapp.com NS +short
 ```
 
 ### Test Production Deployment
@@ -192,14 +192,14 @@ dig getroxas.com NS +short
 2. GitHub Actions deploys to dev-pr-{NUMBER}
 3. Certificate created and validated (one-time, ~5-10 minutes)
 4. Custom domain configured for PR subdomain
-5. Test webhook: `curl https://pr-{NUMBER}.getroxas.com/webhook`
+5. Test webhook: `curl https://pr-{NUMBER}.roxasapp.com/webhook`
 6. PR deployment comment shows stable URL
 7. Close PR → resources cleaned up automatically
 
 ## Benefits
 
 ✅ **Stable URLs** - Never change across deployments
-✅ **Professional** - Branded domains (roxas.ai, getroxas.com)
+✅ **Professional** - Branded domains (roxas.ai, roxasapp.com)
 ✅ **Isolated Testing** - Each PR has unique URL
 ✅ **Parallel PRs** - Multiple PRs can test simultaneously
 ✅ **Auto Cleanup** - PR close removes subdomain
@@ -212,7 +212,7 @@ dig getroxas.com NS +short
 ### Added Costs
 - **Route53 Hosted Zones**: $0.50/month per zone
   - roxas.ai: $0.50/month
-  - getroxas.com: $0.50/month
+  - roxasapp.com: $0.50/month
   - **Total**: $1.00/month
 - **Route53 DNS Queries**: $0.40 per million queries
   - Webhook traffic is low volume
@@ -221,7 +221,7 @@ dig getroxas.com NS +short
 - **API Gateway Custom Domains**: FREE
 - **Domain Registration**:
   - roxas.ai: ~$95/year (already purchased)
-  - getroxas.com: ~$13/year (already purchased)
+  - roxasapp.com: ~$13/year (already purchased)
 
 ### Removed Costs
 None (API Gateway still used with custom domain)
@@ -247,7 +247,7 @@ None (API Gateway still used with custom domain)
 
 ### Development Testing
 1. Create a test PR
-2. Verify PR subdomain created: `pr-{NUMBER}.getroxas.com`
+2. Verify PR subdomain created: `pr-{NUMBER}.roxasapp.com`
 3. Test webhook endpoint
 4. Close PR and verify cleanup
 

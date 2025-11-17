@@ -1,18 +1,18 @@
 # Custom Domain Configuration for Stable Webhook URLs
 #
 # Production: roxas.ai with /webhooks path
-# Development: pr-{NUMBER}.getroxas.com per PR
+# Development: pr-{NUMBER}.roxasapp.com per PR
 
 # Local values for domain configuration
 locals {
   # Determine the full domain name based on environment
   full_domain_name = var.environment == "prod" ? "roxas.ai" : (
-    var.pr_number != "" ? "pr-${var.pr_number}.getroxas.com" : ""
+    var.pr_number != "" ? "pr-${var.pr_number}.roxasapp.com" : ""
   )
 
   # Hosted zone IDs (hardcoded for now, can be data sources later)
   prod_hosted_zone_id = "Z04315832ENRI8EX7SUBL"  # roxas.ai
-  dev_hosted_zone_id  = "Z06579361DMB1AK1VDFFZ"  # getroxas.com
+  dev_hosted_zone_id  = "Z0661346HM6QI34BGFZ"   # roxasapp.com
 
   # Select the correct hosted zone based on environment
   hosted_zone_id = var.environment == "prod" ? local.prod_hosted_zone_id : local.dev_hosted_zone_id
@@ -29,10 +29,10 @@ locals {
 resource "aws_acm_certificate" "webhook" {
   count = local.create_custom_domain ? 1 : 0
 
-  domain_name = var.environment == "prod" ? "roxas.ai" : "*.getroxas.com"
+  domain_name = var.environment == "prod" ? "roxas.ai" : "*.roxasapp.com"
 
   # For dev wildcard cert, also include the base domain
-  subject_alternative_names = var.environment == "prod" ? [] : ["getroxas.com"]
+  subject_alternative_names = var.environment == "prod" ? [] : ["roxasapp.com"]
 
   validation_method = "DNS"
 
