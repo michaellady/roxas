@@ -1,3 +1,5 @@
+// Package services implements the core business logic for roxas.
+// This includes GPT-4 summarization, DALL-E image generation, and LinkedIn posting.
 package services
 
 import (
