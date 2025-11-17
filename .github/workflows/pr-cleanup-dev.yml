@@ -40,8 +40,9 @@ jobs:
           TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           TF_VAR_linkedin_access_token: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
           TF_VAR_webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
-          TF_VAR_function_name: roxas-webhook-handler-dev-pr-${{ github.event.pull_request.number }}
-        run: terraform destroy -var-file=dev.tfvars -auto-approve
+          TF_VAR_function_name: roxas-webhook-handler-pr-${{ github.event.pull_request.number }}
+          TF_VAR_environment: dev
+        run: terraform destroy -auto-approve
 
       - name: Delete Terraform Workspace
         working-directory: terraform

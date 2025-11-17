@@ -72,8 +72,9 @@ jobs:
           TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           TF_VAR_linkedin_access_token: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
           TF_VAR_webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
-          TF_VAR_function_name: roxas-webhook-handler-dev-pr-${{ github.event.pull_request.number }}
-        run: terraform plan -var-file=dev.tfvars -out=tfplan
+          TF_VAR_function_name: roxas-webhook-handler-pr-${{ github.event.pull_request.number }}
+          TF_VAR_environment: dev
+        run: terraform plan -out=tfplan
 
       - name: Terraform Apply
         working-directory: terraform
@@ -81,7 +82,8 @@ jobs:
           TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           TF_VAR_linkedin_access_token: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
           TF_VAR_webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
-          TF_VAR_function_name: roxas-webhook-handler-dev-pr-${{ github.event.pull_request.number }}
+          TF_VAR_function_name: roxas-webhook-handler-pr-${{ github.event.pull_request.number }}
+          TF_VAR_environment: dev
         run: terraform apply -auto-approve tfplan
 
       - name: Get Webhook URL from Terraform
