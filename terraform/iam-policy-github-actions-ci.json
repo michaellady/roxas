@@ -43,6 +43,7 @@
         "iam:DetachRolePolicy",
         "iam:ListAttachedRolePolicies",
         "iam:ListRolePolicies",
+        "iam:ListInstanceProfilesForRole",
         "iam:PassRole",
         "iam:TagRole",
         "iam:UntagRole"
