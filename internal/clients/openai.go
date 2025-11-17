@@ -1,3 +1,5 @@
+// Package clients provides HTTP clients for external API integrations.
+// This includes OpenAI (GPT-4, DALL-E) and LinkedIn API clients.
 package clients
 
 import (

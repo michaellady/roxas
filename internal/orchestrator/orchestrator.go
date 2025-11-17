@@ -1,3 +1,5 @@
+// Package orchestrator coordinates the end-to-end workflow from GitHub commit to LinkedIn post.
+// It chains together summarization, image generation, and social media posting services.
 package orchestrator
 
 import (

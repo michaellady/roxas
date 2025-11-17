@@ -1,3 +1,5 @@
+// Package handlers provides HTTP request handlers for the Lambda function.
+// This includes GitHub webhook validation and payload processing.
 package handlers
 
 import (
