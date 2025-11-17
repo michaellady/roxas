@@ -15,9 +15,7 @@ output "api_gateway_endpoint" {
 
 output "webhook_url" {
   description = "Full webhook URL to configure in GitHub"
-  value = local.create_custom_domain ? (
-    var.environment == "prod" ? "https://roxas.ai/webhooks/webhook" : "https://${local.full_domain_name}/webhook"
-  ) : "${aws_apigatewayv2_api.webhook.api_endpoint}/webhook"
+  value = local.create_custom_domain ? "https://${local.full_domain_name}/webhook" : "${aws_apigatewayv2_api.webhook.api_endpoint}/webhook"
 }
 
 output "api_gateway_id" {

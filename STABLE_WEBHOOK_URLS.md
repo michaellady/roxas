@@ -19,7 +19,7 @@ Implemented custom domains with stable URLs:
 
 ### Production (roxas.ai)
 ```
-URL: https://roxas.ai/webhooks/webhook
+URL: https://roxas.ai/webhook
 Strategy: Apex domain with path-based routing
 Account: Prod AWS (598821842404)
 ```
@@ -40,7 +40,7 @@ Examples:
 ```
 GitHub Webhook
   ↓
-https://roxas.ai/webhooks/webhook
+https://roxas.ai/webhook
   ↓
 Route53 A Record (roxas.ai → API Gateway domain)
   ↓
@@ -183,7 +183,7 @@ dig roxasapp.com NS +short
 2. GitHub Actions deploys to prod
 3. Certificate created and validated (~5-10 minutes)
 4. Custom domain configured
-5. Test webhook: `curl https://roxas.ai/webhooks/webhook`
+5. Test webhook: `curl https://roxas.ai/webhook`
 6. Update GitHub webhook settings to new URL
 7. Test with real commit
 
@@ -240,7 +240,7 @@ None (API Gateway still used with custom domain)
 ### After Merge
 1. Monitor prod deployment in GitHub Actions
 2. Verify certificate creation and validation
-3. Test webhook endpoint: `https://roxas.ai/webhooks/webhook`
+3. Test webhook endpoint: `https://roxas.ai/webhook`
 4. Update GitHub webhook settings in repository
 5. Test with real commit
 6. Monitor CloudWatch logs for any issues

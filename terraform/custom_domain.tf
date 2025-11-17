@@ -1,7 +1,7 @@
 # Custom Domain Configuration for Stable Webhook URLs
 #
-# Production: roxas.ai with /webhooks path
-# Development: pr-{NUMBER}.roxasapp.com per PR
+# Production: roxas.ai/webhook
+# Development: pr-{NUMBER}.roxasapp.com/webhook
 
 # Local values for domain configuration
 locals {
@@ -97,9 +97,9 @@ resource "aws_apigatewayv2_api_mapping" "webhook" {
   domain_name = aws_apigatewayv2_domain_name.webhook[0].id
   stage       = aws_apigatewayv2_stage.default.id
 
-  # For production, map /webhooks path to the API
-  # For dev, use root path
-  api_mapping_key = var.environment == "prod" ? "webhooks" : null
+  # No path mapping - use root path for both prod and dev
+  # This allows the API Gateway route (POST /webhook) to work directly
+  api_mapping_key = null
 }
 
 # Route53 A Record for Custom Domain
