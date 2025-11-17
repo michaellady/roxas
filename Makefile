@@ -23,9 +23,11 @@ build:
 deploy:
 	cd terraform && terraform apply
 
-# End-to-end test with real webhook
+# End-to-end test with real webhook against deployed Lambda
+# Requires: LAMBDA_URL and WEBHOOK_SECRET environment variables
+# Example: LAMBDA_URL=https://... WEBHOOK_SECRET=... make e2e
 e2e:
-	@echo "E2E test not yet implemented"
+	@./scripts/e2e-test.sh
 
 # Clean build artifacts
 clean:

@@ -66,7 +66,7 @@ resource "aws_lambda_function" "roxas" {
   function_name    = local.function_name_full
   role             = aws_iam_role.lambda_exec.arn
   handler          = "bootstrap"
-  source_code_hash = filebase64sha256(var.lambda_zip_path)
+  source_code_hash = fileexists(var.lambda_zip_path) ? filebase64sha256(var.lambda_zip_path) : null
   runtime          = "provided.al2023"
   timeout          = var.lambda_timeout
   memory_size      = var.lambda_memory_size
