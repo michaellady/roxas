@@ -74,6 +74,8 @@ jobs:
           TF_VAR_webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
           TF_VAR_function_name: roxas-webhook-handler-pr-${{ github.event.pull_request.number }}
           TF_VAR_environment: dev
+          TF_VAR_pr_number: ${{ github.event.pull_request.number }}
+          TF_VAR_custom_domain_enabled: true
         run: terraform plan -out=tfplan
 
       - name: Terraform Apply
@@ -84,6 +86,8 @@ jobs:
           TF_VAR_webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
           TF_VAR_function_name: roxas-webhook-handler-pr-${{ github.event.pull_request.number }}
           TF_VAR_environment: dev
+          TF_VAR_pr_number: ${{ github.event.pull_request.number }}
+          TF_VAR_custom_domain_enabled: true
         run: terraform apply -auto-approve tfplan
 
       - name: Get Webhook URL from Terraform

@@ -4,6 +4,11 @@
 environment = "prod"
 aws_region  = "us-east-1"
 
+# Custom Domain Configuration
+custom_domain_enabled = true
+domain_name           = "roxas.ai"
+hosted_zone_id        = "Z04315832ENRI8EX7SUBL"
+
 # Function configuration
 function_name      = "roxas-webhook-handler"
 lambda_timeout     = 60

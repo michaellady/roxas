@@ -4,6 +4,12 @@
 environment = "dev"
 aws_region  = "us-east-1"
 
+# Custom Domain Configuration
+# Note: pr_number will be provided by GitHub Actions
+custom_domain_enabled = true
+domain_name           = "roxasapp.com"
+hosted_zone_id        = "Z0661346HM6QI34BGFZ"
+
 # Function configuration
 function_name      = "roxas-webhook-handler"
 lambda_timeout     = 60

@@ -76,3 +76,28 @@ variable "tags" {
     ManagedBy = "Terraform"
   }
 }
+
+# Custom Domain Configuration
+variable "custom_domain_enabled" {
+  description = "Enable custom domain for API Gateway"
+  type        = bool
+  default     = true
+}
+
+variable "domain_name" {
+  description = "Custom domain name for the webhook endpoint"
+  type        = string
+  default     = ""
+}
+
+variable "hosted_zone_id" {
+  description = "Route53 hosted zone ID for the domain"
+  type        = string
+  default     = ""
+}
+
+variable "pr_number" {
+  description = "Pull request number for dev environment (used for subdomain)"
+  type        = string
+  default     = ""
+}

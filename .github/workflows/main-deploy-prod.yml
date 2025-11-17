@@ -80,6 +80,7 @@ jobs:
           TF_VAR_webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
           TF_VAR_function_name: roxas-webhook-handler-prod
           TF_VAR_environment: prod
+          TF_VAR_custom_domain_enabled: true
         run: terraform plan -out=tfplan
 
       - name: Terraform Apply
@@ -90,6 +91,7 @@ jobs:
           TF_VAR_webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
           TF_VAR_function_name: roxas-webhook-handler-prod
           TF_VAR_environment: prod
+          TF_VAR_custom_domain_enabled: true
         run: terraform apply -auto-approve tfplan
 
       - name: Get Webhook URL from Terraform
