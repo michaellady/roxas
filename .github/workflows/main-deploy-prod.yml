@@ -1,0 +1,108 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy-prod:
+    name: Deploy to Production Environment
+    runs-on: ubuntu-latest
+    environment: prod
+
+    permissions:
+      contents: read
+
+    # Prevent concurrent deployments to prod
+    concurrency:
+      group: deploy-prod
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.3'
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run unit tests
+        run: make test
+
+      - name: Run integration tests
+        run: make test-int
+
+      - name: Build Lambda deployment package
+        run: make build
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init -backend-config=backend-prod.hcl
+
+      - name: Setup Terraform Workspace
+        working-directory: terraform
+        run: |
+          terraform workspace new prod || \
+          terraform workspace select prod
+
+      - name: Terraform Plan
+        working-directory: terraform
+        env:
+          TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          TF_VAR_linkedin_access_token: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
+          TF_VAR_webhook_secret: ${{ secrets.WEBHOOK_SECRET_PROD }}
+          TF_VAR_function_name: roxas-webhook-handler-prod
+          TF_VAR_environment: prod
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        working-directory: terraform
+        env:
+          TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          TF_VAR_linkedin_access_token: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
+          TF_VAR_webhook_secret: ${{ secrets.WEBHOOK_SECRET_PROD }}
+          TF_VAR_function_name: roxas-webhook-handler-prod
+          TF_VAR_environment: prod
+        run: terraform apply -auto-approve tfplan
+
+      - name: Get Webhook URL from Terraform
+        id: deployment-info
+        working-directory: terraform
+        run: |
+          WEBHOOK_URL=$(terraform output -raw webhook_url)
+          FUNCTION_NAME=$(terraform output -raw lambda_function_name)
+          echo "url=$WEBHOOK_URL" >> $GITHUB_OUTPUT
+          echo "function_name=$FUNCTION_NAME" >> $GITHUB_OUTPUT
+
+      - name: Run E2E Test
+        env:
+          LAMBDA_URL: ${{ steps.deployment-info.outputs.url }}
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET_PROD }}
+        run: make e2e
