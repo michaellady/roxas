@@ -80,6 +80,105 @@ graph TB
 
 ### Infrastructure
 
+**AWS Architecture (Per Environment):**
+
+```mermaid
+graph TB
+    subgraph "External"
+        GitHub[GitHub Webhook<br/>POST /webhook]
+        Client[External Client<br/>HTTPS Request]
+    end
+
+    subgraph "Route 53"
+        R53_Prod[roxas.ai<br/>A Record]
+        R53_Dev[pr-N.roxasapp.com<br/>A Record]
+        HostedZone_Prod[Hosted Zone<br/>roxas.ai]
+        HostedZone_Dev[Hosted Zone<br/>roxasapp.com]
+
+        R53_Prod -.-> HostedZone_Prod
+        R53_Dev -.-> HostedZone_Dev
+    end
+
+    subgraph "ACM - Certificate Manager"
+        ACM_Prod[SSL Certificate<br/>roxas.ai]
+        ACM_Dev[SSL Certificate<br/>*.roxasapp.com]
+        Validation_Prod[DNS Validation<br/>CNAME Records]
+        Validation_Dev[DNS Validation<br/>CNAME Records]
+
+        ACM_Prod -.-> Validation_Prod
+        ACM_Dev -.-> Validation_Dev
+        Validation_Prod -.-> HostedZone_Prod
+        Validation_Dev -.-> HostedZone_Dev
+    end
+
+    subgraph "API Gateway v2"
+        CustomDomain_Prod[Custom Domain<br/>roxas.ai]
+        CustomDomain_Dev[Custom Domain<br/>pr-N.roxasapp.com]
+        API[HTTP API<br/>roxas-webhook-handler]
+        Stage[Stage: $default<br/>Auto-deploy enabled]
+        Integration[Lambda Integration<br/>AWS_PROXY]
+        Route[Route: POST /webhook]
+        APILogs[CloudWatch Log Group<br/>/aws/apigateway/...]
+
+        CustomDomain_Prod --> API
+        CustomDomain_Dev --> API
+        API --> Stage
+        Stage --> Route
+        Route --> Integration
+        Stage -.Logs.-> APILogs
+    end
+
+    subgraph "Lambda"
+        Function[Lambda Function<br/>roxas-webhook-handler<br/>Runtime: Go 1.x custom<br/>Memory: 256MB<br/>Timeout: 60s]
+        LambdaRole[IAM Role<br/>Lambda Execution Role]
+        LambdaPolicy[IAM Policy<br/>AWSLambdaBasicExecutionRole]
+        Permission[Lambda Permission<br/>AllowAPIGatewayInvoke]
+        LambdaLogs[CloudWatch Log Group<br/>/aws/lambda/roxas-webhook-handler<br/>Retention: 7 days]
+        EnvVars[Environment Variables<br/>OPENAI_API_KEY<br/>LINKEDIN_ACCESS_TOKEN<br/>WEBHOOK_SECRET<br/>LOG_LEVEL]
+
+        Function --> LambdaRole
+        LambdaRole --> LambdaPolicy
+        Function -.Logs.-> LambdaLogs
+        Function -.Config.-> EnvVars
+        Integration --> Permission
+        Permission --> Function
+    end
+
+    subgraph "External APIs"
+        OpenAI[OpenAI API<br/>GPT-4 + DALL-E]
+        LinkedIn[LinkedIn API<br/>Posts & Media Upload]
+    end
+
+    subgraph "Terraform State"
+        S3_State[S3 Bucket<br/>roxas-terraform-state-{env}<br/>Versioning enabled]
+        DynamoDB_Lock[DynamoDB Table<br/>roxas-terraform-locks-{env}<br/>Locking for state]
+    end
+
+    Client --> R53_Prod
+    Client --> R53_Dev
+    GitHub --> R53_Prod
+    R53_Prod --> CustomDomain_Prod
+    R53_Dev --> CustomDomain_Dev
+    CustomDomain_Prod -.Certificate.-> ACM_Prod
+    CustomDomain_Dev -.Certificate.-> ACM_Dev
+    Function --> OpenAI
+    Function --> LinkedIn
+
+    style GitHub fill:#24292e,color:#fff
+    style Function fill:#ff9900,color:#000
+    style API fill:#ff4f8b,color:#fff
+    style OpenAI fill:#10a37f,color:#fff
+    style LinkedIn fill:#0077b5,color:#fff
+    style S3_State fill:#569a31,color:#fff
+    style DynamoDB_Lock fill:#4053d6,color:#fff
+    style ACM_Prod fill:#dd344c,color:#fff
+    style ACM_Dev fill:#dd344c,color:#fff
+    style R53_Prod fill:#8c4fff,color:#fff
+    style R53_Dev fill:#8c4fff,color:#fff
+```
+
+**Multi-Environment Overview:**
+
 ```mermaid
 graph TB
     subgraph "GitHub"
@@ -87,24 +186,24 @@ graph TB
         Actions[GitHub Actions<br/>CI/CD Pipeline]
     end
 
-    subgraph "AWS - Dev Account"
-        APIGW_Dev[API Gateway<br/>Dev Endpoint]
-        Lambda_Dev[Lambda Function<br/>roxas-webhook-handler-dev]
-        CW_Dev[CloudWatch Logs<br/>Dev Monitoring]
-        S3_Dev[S3 Bucket<br/>Terraform State Dev]
+    subgraph "AWS Dev Account: 539402214167"
+        S3_Dev[S3: roxas-terraform-state-dev]
+        DDB_Dev[DynamoDB: roxas-terraform-locks-dev]
+        R53_Dev[Route53: roxasapp.com<br/>pr-*.roxasapp.com]
+        Lambda_Dev[Lambda: roxas-webhook-handler-dev-pr-N]
+        APIGW_Dev[API Gateway: pr-N.roxasapp.com]
 
         APIGW_Dev --> Lambda_Dev
-        Lambda_Dev --> CW_Dev
     end
 
-    subgraph "AWS - Prod Account"
-        APIGW_Prod[API Gateway<br/>Prod Endpoint]
-        Lambda_Prod[Lambda Function<br/>roxas-webhook-handler-prod]
-        CW_Prod[CloudWatch Logs<br/>Prod Monitoring]
-        S3_Prod[S3 Bucket<br/>Terraform State Prod]
+    subgraph "AWS Prod Account: 598821842404"
+        S3_Prod[S3: roxas-terraform-state-prod]
+        DDB_Prod[DynamoDB: roxas-terraform-locks-prod]
+        R53_Prod[Route53: roxas.ai]
+        Lambda_Prod[Lambda: roxas-webhook-handler-prod]
+        APIGW_Prod[API Gateway: roxas.ai]
 
         APIGW_Prod --> Lambda_Prod
-        Lambda_Prod --> CW_Prod
     end
 
     Repo -->|Webhook| APIGW_Prod
