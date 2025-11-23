@@ -166,6 +166,100 @@ graph TB
     style LinkedIn fill:#0077b5,color:#fff
 ```
 
+### Shared RDS for PR Deployments
+
+**Problem:** Each PR deployment previously provisioned a dedicated RDS instance, taking ~6 minutes and costing $12/month per PR.
+
+**Solution:** Shared RDS instance where each PR gets its own database (not a whole RDS instance).
+
+**Benefits:**
+- **Deploy Time:** 6 min → 30 sec (200x faster!)
+- **Cost:** Same for 1 PR, saves $12/month per additional PR
+- **Isolation:** Strong isolation via separate PostgreSQL databases
+- **Simplicity:** No application code changes needed
+
+```mermaid
+graph TB
+    subgraph "PR Lifecycle"
+        PR_Open[PR Opened/Updated]
+        PR_Close[PR Closed]
+    end
+
+    subgraph "GitHub Actions"
+        Deploy[Deploy Workflow]
+        Cleanup[Cleanup Workflow]
+    end
+
+    subgraph "Terraform"
+        TF_Create[Create Database<br/>CREATE DATABASE pr_N]
+        TF_Destroy[Drop Database<br/>DROP DATABASE pr_N]
+    end
+
+    subgraph "Shared RDS Instance"
+        subgraph "PostgreSQL 15"
+            Master[Master DB<br/>roxas_shared]
+            PR22[PR Database<br/>pr_22]
+            PR156[PR Database<br/>pr_156]
+            PR289[PR Database<br/>pr_289]
+        end
+
+        Connections[100 Connections<br/>~20 per PR]
+        Storage[20 GB Storage<br/>Expandable]
+    end
+
+    subgraph "Lambda Functions"
+        Lambda22[Lambda PR-22<br/>→ pr_22]
+        Lambda156[Lambda PR-156<br/>→ pr_156]
+        Lambda289[Lambda PR-289<br/>→ pr_289]
+    end
+
+    PR_Open --> Deploy
+    Deploy --> TF_Create
+    TF_Create --> PR22
+    TF_Create --> PR156
+    TF_Create --> PR289
+
+    PR22 -.-> Lambda22
+    PR156 -.-> Lambda156
+    PR289 -.-> Lambda289
+
+    PR_Close --> Cleanup
+    Cleanup --> TF_Destroy
+    TF_Destroy -.->|DROP| PR22
+
+    style PR22 fill:#4caf50,color:#fff
+    style PR156 fill:#4caf50,color:#fff
+    style PR289 fill:#4caf50,color:#fff
+    style Master fill:#2196f3,color:#fff
+    style Lambda22 fill:#ff9900,color:#000
+    style Lambda156 fill:#ff9900,color:#000
+    style Lambda289 fill:#ff9900,color:#000
+```
+
+**Database Isolation Strategy:**
+
+| Approach | Isolation | Cleanup | Selected |
+|----------|-----------|---------|----------|
+| Separate Databases | ✅ Strong | ✅ Simple (DROP DATABASE) | **✅ YES** |
+| Separate Schemas | ⚠️ Medium | ⚠️ Complex | ❌ No |
+| Row-Level Security | ❌ Weak | ❌ Complex | ❌ No |
+
+**Database Naming:**
+- Master: `roxas_shared` (RDS default database)
+- PR databases: `pr_{number}` (e.g., `pr_22`, `pr_156`)
+- Connection: `postgres://roxas_app:PWD@shared-rds:5432/pr_{PR_NUMBER}`
+
+**Resource Limits:**
+- **Connections:** 100 total (db.t4g.micro), ~20 per PR = 5 concurrent PRs
+- **Storage:** 20 GB (monitoring at 80% = 16 GB)
+- **Scaling:** Upgrade to db.t4g.small for 4-10 PRs (~$24/month)
+
+**Security:**
+- Application user: `roxas_app` (owns all PR databases)
+- Master user: `postgres` (admin, in Secrets Manager)
+- Network: Private subnets only
+- SSL/TLS: Required (`sslmode=require`)
+
 ## Quick Start
 
 ### Prerequisites
