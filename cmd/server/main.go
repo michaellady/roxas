@@ -225,6 +225,15 @@ func main() {
 				dbPool = pool
 				log.Println("Database connection pool initialized successfully")
 
+				// Run database migrations
+				log.Println("Running database migrations...")
+				if err := database.RunMigrations(pool); err != nil {
+					log.Printf("FATAL: Database migration failed: %v", err)
+					log.Println("Lambda will not start with migration failures")
+					os.Exit(1)
+				}
+				log.Println("Database migrations completed successfully")
+
 				// Ensure cleanup on Lambda shutdown (best-effort)
 				defer dbPool.Close()
 			}
