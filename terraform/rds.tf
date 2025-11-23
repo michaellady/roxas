@@ -14,26 +14,9 @@ resource "aws_db_subnet_group" "main" {
   }
 }
 
-# DB Parameter Group (PostgreSQL 15 optimizations)
-resource "aws_db_parameter_group" "main" {
-  name_prefix = "${var.function_name}-${var.environment}-"
-  family      = "postgres15"
-  description = "Custom parameter group for PostgreSQL 15"
-
-  # Dynamic parameters only (static params like shared_buffers require DB restart)
-  parameter {
-    name  = "max_connections"
-    value = "100"
-  }
-
-  tags = merge(local.common_tags, {
-    Name = "${var.function_name}-${var.environment}-pg"
-  })
-
-  lifecycle {
-    create_before_destroy = true
-  }
-}
+# Using default parameter group for simplicity
+# Custom parameters can be added later if needed
+# Default max_connections for db.t4g.micro is sufficient for MVP
 
 # Generate random password for database
 resource "random_password" "db_password" {
@@ -66,8 +49,7 @@ resource "aws_db_instance" "main" {
   vpc_security_group_ids = [aws_security_group.rds.id]
   publicly_accessible    = false
 
-  # Parameter and option groups
-  parameter_group_name = aws_db_parameter_group.main.name
+  # Using default parameter group (no custom parameters needed for MVP)
 
   # Backup configuration
   backup_retention_period = var.db_backup_retention_days
