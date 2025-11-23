@@ -71,7 +71,7 @@ resource "aws_route_table_association" "public" {
 }
 
 # fck-nat: Cost-effective NAT instance (instead of $32/month NAT Gateway)
-# Uses t4g.nano ARM instance (~$3/month) for Lambda internet access
+# Uses t4g.nano ARM instance (~$3/month on-demand) for Lambda internet access
 module "fck_nat" {
   source  = "RaJiska/fck-nat/aws"
   version = "1.4.0"
@@ -80,7 +80,7 @@ module "fck_nat" {
   vpc_id             = aws_vpc.main.id
   subnet_id          = aws_subnet.public[0].id
   instance_type      = "t4g.nano"
-  use_spot_instances = true
+  use_spot_instances = false  # Spot capacity not always available
 
   tags = local.common_tags
 }
