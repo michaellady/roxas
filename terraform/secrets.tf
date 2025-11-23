@@ -26,10 +26,11 @@ resource "aws_secretsmanager_secret_version" "database" {
   })
 }
 
-# IAM Policy for Lambda to read database secrets
-resource "aws_iam_policy" "lambda_secrets" {
-  name_prefix = "${var.function_name}-${var.environment}-secrets-"
-  description = "Allow Lambda to read database secrets"
+# Inline IAM Policy for Lambda to read database secrets
+# Using inline policy to avoid IAM:CreatePolicy permission requirement
+resource "aws_iam_role_policy" "lambda_secrets" {
+  name_prefix = "secrets-access-"
+  role        = aws_iam_role.lambda_exec.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -44,12 +45,4 @@ resource "aws_iam_policy" "lambda_secrets" {
       }
     ]
   })
-
-  tags = local.common_tags
-}
-
-# Attach secrets policy to Lambda execution role
-resource "aws_iam_role_policy_attachment" "lambda_secrets" {
-  role       = aws_iam_role.lambda_exec.name
-  policy_arn = aws_iam_policy.lambda_secrets.arn
 }

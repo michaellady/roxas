@@ -20,12 +20,7 @@ resource "aws_db_parameter_group" "main" {
   family      = "postgres15"
   description = "Custom parameter group for PostgreSQL 15"
 
-  # Optimize for small instance
-  parameter {
-    name  = "shared_buffers"
-    value = "{DBInstanceClassMemory/32768}"
-  }
-
+  # Dynamic parameters only (static params like shared_buffers require DB restart)
   parameter {
     name  = "max_connections"
     value = "100"
