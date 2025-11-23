@@ -74,3 +74,41 @@ output "public_subnet_ids" {
   description = "IDs of public subnets"
   value       = aws_subnet.public[*].id
 }
+
+# Shared RDS Outputs (only available in dev-shared workspace)
+output "shared_rds_endpoint" {
+  description = "Shared RDS instance endpoint (dev-shared workspace only)"
+  value       = local.create_shared_rds ? aws_db_instance.shared[0].endpoint : null
+}
+
+output "shared_rds_address" {
+  description = "Shared RDS instance address (dev-shared workspace only)"
+  value       = local.create_shared_rds ? aws_db_instance.shared[0].address : null
+}
+
+output "shared_rds_port" {
+  description = "Shared RDS instance port (dev-shared workspace only)"
+  value       = local.create_shared_rds ? aws_db_instance.shared[0].port : null
+}
+
+output "shared_rds_master_db" {
+  description = "Shared RDS master database name (dev-shared workspace only)"
+  value       = local.create_shared_rds ? aws_db_instance.shared[0].db_name : null
+}
+
+output "shared_rds_username" {
+  description = "Shared RDS application username (dev-shared workspace only)"
+  value       = local.create_shared_rds ? aws_db_instance.shared[0].username : null
+  sensitive   = true
+}
+
+output "shared_rds_secret_arn" {
+  description = "ARN of Secrets Manager secret for shared RDS credentials (dev-shared workspace only)"
+  value       = local.create_shared_rds ? aws_secretsmanager_secret.shared_db_credentials[0].arn : null
+  sensitive   = true
+}
+
+output "shared_rds_connection_string_template" {
+  description = "Connection string template for PR databases (replace {PR_NUMBER} with actual PR number)"
+  value       = local.create_shared_rds ? "postgres://${aws_db_instance.shared[0].username}:PASSWORD@${aws_db_instance.shared[0].address}:${aws_db_instance.shared[0].port}/pr_{PR_NUMBER}?sslmode=require" : null
+}
