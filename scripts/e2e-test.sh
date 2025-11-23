@@ -54,29 +54,35 @@ PAYLOAD=$(cat "$PAYLOAD_FILE")
 SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | sed 's/^.* //')
 
 # VPC Lambda warmup: Send a warmup request to initialize ENIs
-echo -e "${YELLOW}Warming up Lambda (VPC cold start)...${NC}"
-for i in {1..3}; do
+# Note: This may timeout if Lambda needs NAT Gateway for internet access
+echo -e "${YELLOW}Warming up Lambda (VPC cold start, may take 30-60s)...${NC}"
+for i in {1..2}; do
   WARMUP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$LAMBDA_URL" \
     -H "Content-Type: application/json" \
     -H "X-Hub-Signature-256: sha256=$SIGNATURE" \
     -H "X-GitHub-Event: push" \
-    -d "$PAYLOAD" --max-time 30)
+    -d "$PAYLOAD" --max-time 60 || echo "000")
 
-  if [ "$WARMUP_CODE" -eq 200 ] || [ "$WARMUP_CODE" -eq 401 ]; then
-    echo -e "${GREEN}✓ Lambda warmed up (HTTP $WARMUP_CODE)${NC}"
+  echo -e "${YELLOW}  Warmup attempt $i: HTTP $WARMUP_CODE${NC}"
+
+  if [ "$WARMUP_CODE" -eq 200 ] || [ "$WARMUP_CODE" -eq 401 ] || [ "$WARMUP_CODE" -eq 500 ]; then
+    echo -e "${GREEN}✓ Lambda responded (HTTP $WARMUP_CODE) - ENIs initialized${NC}"
     break
   fi
 
-  if [ $i -lt 3 ]; then
-    echo -e "${YELLOW}  Warmup attempt $i failed (HTTP $WARMUP_CODE), retrying in 10s...${NC}"
-    sleep 10
+  if [ $i -lt 2 ]; then
+    echo -e "${YELLOW}  Warmup failed/timeout, waiting 15s before retry...${NC}"
+    sleep 15
+  else
+    echo -e "${YELLOW}⚠ Warmup attempts exhausted, proceeding with test anyway${NC}"
+    echo -e "${YELLOW}  (Lambda may still be initializing)${NC}"
   fi
 done
 echo ""
 
 # Send webhook request with retry logic
-MAX_RETRIES=5
-RETRY_DELAYS=(5 10 15 20 30)  # Delays in seconds between retries
+MAX_RETRIES=6
+RETRY_DELAYS=(10 15 20 30 45 60)  # Longer delays for VPC Lambda
 HTTP_CODE=0
 
 for attempt in $(seq 0 $((MAX_RETRIES - 1))); do
@@ -88,12 +94,12 @@ for attempt in $(seq 0 $((MAX_RETRIES - 1))); do
 
   echo -e "${YELLOW}Sending webhook request (attempt $((attempt + 1))/$MAX_RETRIES)...${NC}"
 
-  # Send webhook request
+  # Send webhook request with longer timeout for VPC Lambda
   RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$LAMBDA_URL" \
     -H "Content-Type: application/json" \
     -H "X-Hub-Signature-256: sha256=$SIGNATURE" \
     -H "X-GitHub-Event: push" \
-    -d "$PAYLOAD" --max-time 30 || echo -e "\n000")
+    -d "$PAYLOAD" --max-time 60 || echo -e "\n000")
 
   # Extract HTTP status code (last line)
   HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
