@@ -11,7 +11,7 @@ locals {
   )
 
   # Hosted zone IDs (hardcoded for now, can be data sources later)
-  prod_hosted_zone_id = "Z04315832ENRI8EX7SUBL"  # roxas.ai
+  prod_hosted_zone_id = "Z04315832ENRI8EX7SUBL" # roxas.ai
   dev_hosted_zone_id  = "Z0661346HM6QI34BGFZ"   # roxasapp.com
 
   # Select the correct hosted zone based on environment

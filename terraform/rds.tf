@@ -53,12 +53,12 @@ resource "aws_db_instance" "main" {
   identifier_prefix = "${var.function_name}-${var.environment}-"
 
   # Engine configuration
-  engine               = "postgres"
-  engine_version       = var.db_engine_version
-  instance_class       = var.db_instance_class
-  allocated_storage    = var.db_allocated_storage
-  storage_type         = "gp3"
-  storage_encrypted    = true
+  engine            = "postgres"
+  engine_version    = var.db_engine_version
+  instance_class    = var.db_instance_class
+  allocated_storage = var.db_allocated_storage
+  storage_type      = "gp3"
+  storage_encrypted = true
 
   # Database configuration
   db_name  = var.db_name
@@ -76,12 +76,12 @@ resource "aws_db_instance" "main" {
 
   # Backup configuration
   backup_retention_period = var.db_backup_retention_days
-  backup_window          = "03:00-04:00"  # UTC
-  maintenance_window     = "Mon:04:00-Mon:05:00"  # UTC
+  backup_window           = "03:00-04:00"         # UTC
+  maintenance_window      = "Mon:04:00-Mon:05:00" # UTC
 
   # Protection and monitoring
-  deletion_protection = var.environment == "prod" ? true : false
-  skip_final_snapshot = var.environment == "dev" ? true : false
+  deletion_protection       = var.environment == "prod" ? true : false
+  skip_final_snapshot       = var.environment == "dev" ? true : false
   final_snapshot_identifier = var.environment == "prod" ? "${var.function_name}-${var.environment}-final-snapshot-${formatdate("YYYY-MM-DD-hhmm", timestamp())}" : null
 
   enabled_cloudwatch_logs_exports = ["postgresql", "upgrade"]
@@ -98,9 +98,9 @@ resource "aws_db_instance" "main" {
 
   lifecycle {
     # Prevent accidental deletion in production
-    prevent_destroy = false  # Set to true after initial creation
-    ignore_changes  = [
-      final_snapshot_identifier,  # Timestamp will always change
+    prevent_destroy = false # Set to true after initial creation
+    ignore_changes = [
+      final_snapshot_identifier, # Timestamp will always change
     ]
   }
 }

@@ -2,7 +2,7 @@
 # For multi-account deployment, use dev.tfvars or prod.tfvars instead
 # DO NOT commit files with real credentials (*.tfvars is in .gitignore)
 
-environment   = "dev"  # or "prod"
+environment   = "dev" # or "prod"
 aws_region    = "us-east-1"
 function_name = "roxas-webhook-handler"
 
