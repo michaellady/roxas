@@ -146,6 +146,51 @@ cp .env.example .env
 # See "Environment Variables" section below
 ```
 
+### Database Setup
+
+Roxas requires PostgreSQL for multi-tenant data storage.
+
+**Local PostgreSQL Setup (Development Only):**
+
+```bash
+# Install PostgreSQL (macOS)
+brew install postgresql@16
+
+# Start PostgreSQL
+brew services start postgresql@16
+
+# Create local databases
+createdb roxas_dev   # For local development
+createdb roxas_test  # For running tests
+
+# Set DATABASE_URL in .env
+echo "DATABASE_URL=postgres://postgres:postgres@localhost:5432/roxas_dev?sslmode=disable" >> .env
+```
+
+**Note:** Production uses AWS RDS PostgreSQL (managed service), not a local database. RDS setup is automated via Terraform.
+
+**Run Migrations:**
+
+```bash
+# Install golang-migrate CLI
+brew install golang-migrate
+
+# Run migrations
+cd db
+migrate -path migrations -database "${DATABASE_URL}" up
+
+# Verify tables created
+psql ${DATABASE_URL} -c "\dt"
+```
+
+**Database Schema:**
+- `users` - User accounts with authentication
+- `repositories` - GitHub repositories tracked per user
+- `commits` - Commit metadata (lightweight storage)
+- `posts` - Generated social media content per platform
+
+See `db/migrations/` for complete schema definitions.
+
 ### Local Development
 
 ```bash
