@@ -28,6 +28,22 @@ locals {
   common_tags = merge(var.tags, {
     Environment = var.environment
   })
+
+  # Only create shared RDS in dev-shared workspace
+  create_shared_rds = var.environment == "dev" && terraform.workspace == "dev-shared"
+}
+
+# Shared RDS Module
+# Only instantiated in dev-shared workspace for PR deployments
+module "shared_rds" {
+  count  = local.create_shared_rds ? 1 : 0
+  source = "./modules/shared-rds"
+
+  environment            = var.environment
+  private_subnet_ids     = aws_subnet.private[*].id
+  rds_security_group_id  = aws_security_group.rds.id
+  db_engine_version      = var.db_engine_version
+  common_tags            = local.common_tags
 }
 
 # IAM Role for Lambda Execution

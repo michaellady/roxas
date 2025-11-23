@@ -1,32 +1,16 @@
-# Shared RDS Instance for PR Deployments
-#
-# This RDS instance is shared across all PR environments in the dev account.
-# Each PR gets its own database (CREATE DATABASE pr_N) within this instance,
-# rather than a dedicated RDS instance per PR.
-#
-# Benefits:
-# - Deploy time: 6 min → 30 sec (200x faster!)
-# - Cost: Same for 1 PR, saves $12/month per additional PR
-# - Isolation: Strong via separate PostgreSQL databases
-# - Simplicity: No application code changes needed
-
-# Only create shared RDS in dev environment and NOT for PR-specific workspaces
-locals {
-  # Shared RDS is created only in "dev-shared" workspace
-  create_shared_rds = var.environment == "dev" && terraform.workspace == "dev-shared"
-}
+# Shared RDS Module
+# Provides a single RDS instance shared across multiple PR deployments
+# Each PR gets its own database (CREATE DATABASE pr_N) instead of a dedicated RDS instance
 
 # DB Subnet Group for shared RDS
 resource "aws_db_subnet_group" "shared" {
-  count = local.create_shared_rds ? 1 : 0
-
   name       = "roxas-shared-pr-rds-subnet-group"
-  subnet_ids = aws_subnet.private[*].id
+  subnet_ids = var.private_subnet_ids
 
-  tags = merge(local.common_tags, {
+  tags = merge(var.common_tags, {
     Name        = "roxas-shared-pr-rds-subnet-group"
     Purpose     = "shared-pr-rds"
-    Environment = "dev"
+    Environment = var.environment
   })
 
   lifecycle {
@@ -36,8 +20,6 @@ resource "aws_db_subnet_group" "shared" {
 
 # Generate random password for shared RDS
 resource "random_password" "shared_db_password" {
-  count = local.create_shared_rds ? 1 : 0
-
   length  = 32
   special = true
   # Exclude characters that might cause issues in connection strings
@@ -46,8 +28,6 @@ resource "random_password" "shared_db_password" {
 
 # Shared RDS PostgreSQL Instance
 resource "aws_db_instance" "shared" {
-  count = local.create_shared_rds ? 1 : 0
-
   identifier = "roxas-shared-pr-rds"
 
   # Engine configuration
@@ -61,12 +41,12 @@ resource "aws_db_instance" "shared" {
   # Database configuration
   db_name  = "roxas_shared" # Master database
   username = "roxas_app"    # Application user with CREATE DATABASE privilege
-  password = random_password.shared_db_password[0].result
+  password = random_password.shared_db_password.result
   port     = 5432
 
   # Network configuration
-  db_subnet_group_name   = aws_db_subnet_group.shared[0].name
-  vpc_security_group_ids = [aws_security_group.rds.id]
+  db_subnet_group_name   = aws_db_subnet_group.shared.name
+  vpc_security_group_ids = [var.rds_security_group_id]
   publicly_accessible    = false
   multi_az               = false # Single-AZ for dev cost savings
 
@@ -74,25 +54,21 @@ resource "aws_db_instance" "shared" {
   # max_connections for db.t4g.micro = 100 (sufficient for ~20 connections per PR)
 
   # Backup configuration
-  backup_retention_period = 1                 # Minimal retention for dev
-  backup_window           = "03:00-04:00"     # UTC
-  maintenance_window      = "Mon:04:00-Mon:05:00" # UTC
+  backup_retention_period = 1                     # Minimal retention for dev
+  backup_window           = "03:00-04:00"         # UTC
+  maintenance_window      = "mon:04:00-mon:05:00" # UTC
 
   # Protection and monitoring
-  deletion_protection     = false # Allow destruction for dev
-  skip_final_snapshot     = true  # No final snapshot needed for dev
-  enabled_cloudwatch_logs_exports = ["postgresql", "upgrade"]
+  deletion_protection                 = false # Allow destruction for dev
+  skip_final_snapshot                 = true  # No final snapshot needed for dev
+  enabled_cloudwatch_logs_exports     = ["postgresql", "upgrade"]
+  performance_insights_enabled        = false
+  auto_minor_version_upgrade          = true
 
-  # Performance Insights (disabled to save costs)
-  performance_insights_enabled = false
-
-  # Auto minor version upgrades
-  auto_minor_version_upgrade = true
-
-  tags = merge(local.common_tags, {
+  tags = merge(var.common_tags, {
     Name        = "roxas-shared-pr-rds"
     Purpose     = "shared-pr-rds"
-    Environment = "dev"
+    Environment = var.environment
     Description = "Shared RDS instance for all PR deployments"
   })
 
@@ -100,7 +76,6 @@ resource "aws_db_instance" "shared" {
     prevent_destroy = false
     ignore_changes = [
       # Ignore password changes after initial creation
-      # Password is managed through Secrets Manager
       password,
     ]
   }
@@ -108,37 +83,31 @@ resource "aws_db_instance" "shared" {
 
 # Store shared RDS credentials in Secrets Manager
 resource "aws_secretsmanager_secret" "shared_db_credentials" {
-  count = local.create_shared_rds ? 1 : 0
-
   name_prefix             = "roxas-shared-pr-rds-credentials-"
   description             = "Credentials for shared PR RDS instance"
   recovery_window_in_days = 0 # Immediate deletion for dev
 
-  tags = merge(local.common_tags, {
+  tags = merge(var.common_tags, {
     Name        = "roxas-shared-pr-rds-credentials"
     Purpose     = "shared-pr-rds"
-    Environment = "dev"
+    Environment = var.environment
   })
 }
 
 resource "aws_secretsmanager_secret_version" "shared_db_credentials" {
-  count = local.create_shared_rds ? 1 : 0
-
-  secret_id = aws_secretsmanager_secret.shared_db_credentials[0].id
+  secret_id = aws_secretsmanager_secret.shared_db_credentials.id
   secret_string = jsonencode({
-    username = aws_db_instance.shared[0].username
-    password = random_password.shared_db_password[0].result
+    username = aws_db_instance.shared.username
+    password = random_password.shared_db_password.result
     engine   = "postgres"
-    host     = aws_db_instance.shared[0].address
-    port     = aws_db_instance.shared[0].port
-    dbname   = aws_db_instance.shared[0].db_name
+    host     = aws_db_instance.shared.address
+    port     = aws_db_instance.shared.port
+    dbname   = aws_db_instance.shared.db_name
   })
 }
 
 # CloudWatch alarm for high connection count
 resource "aws_cloudwatch_metric_alarm" "shared_rds_connections" {
-  count = local.create_shared_rds ? 1 : 0
-
   alarm_name          = "roxas-shared-pr-rds-high-connections"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 2
@@ -150,19 +119,17 @@ resource "aws_cloudwatch_metric_alarm" "shared_rds_connections" {
   alarm_description   = "Alert when shared RDS connections exceed 80"
 
   dimensions = {
-    DBInstanceIdentifier = aws_db_instance.shared[0].id
+    DBInstanceIdentifier = aws_db_instance.shared.id
   }
 
-  tags = merge(local.common_tags, {
+  tags = merge(var.common_tags, {
     Purpose     = "shared-pr-rds"
-    Environment = "dev"
+    Environment = var.environment
   })
 }
 
 # CloudWatch alarm for storage space
 resource "aws_cloudwatch_metric_alarm" "shared_rds_storage" {
-  count = local.create_shared_rds ? 1 : 0
-
   alarm_name          = "roxas-shared-pr-rds-low-storage"
   comparison_operator = "LessThanThreshold"
   evaluation_periods  = 1
@@ -174,11 +141,11 @@ resource "aws_cloudwatch_metric_alarm" "shared_rds_storage" {
   alarm_description   = "Alert when shared RDS free storage drops below 4 GB"
 
   dimensions = {
-    DBInstanceIdentifier = aws_db_instance.shared[0].id
+    DBInstanceIdentifier = aws_db_instance.shared.id
   }
 
-  tags = merge(local.common_tags, {
+  tags = merge(var.common_tags, {
     Purpose     = "shared-pr-rds"
-    Environment = "dev"
+    Environment = var.environment
   })
 }
