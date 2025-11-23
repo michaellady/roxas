@@ -15,16 +15,21 @@ import (
 	"github.com/aws/aws-lambda-go/lambda"
 
 	"github.com/mikelady/roxas/internal/clients"
+	"github.com/mikelady/roxas/internal/database"
 	"github.com/mikelady/roxas/internal/models"
 	"github.com/mikelady/roxas/internal/orchestrator"
 	"github.com/mikelady/roxas/internal/services"
 )
+
+// Global database pool (reused across Lambda invocations)
+var dbPool *database.Pool
 
 // Config holds application configuration from environment variables
 type Config struct {
 	OpenAIAPIKey        string
 	LinkedInAccessToken string
 	WebhookSecret       string
+	DBSecretName        string
 }
 
 // loadConfig loads configuration from environment variables
@@ -33,6 +38,7 @@ func loadConfig() Config {
 		OpenAIAPIKey:        os.Getenv("OPENAI_API_KEY"),
 		LinkedInAccessToken: os.Getenv("LINKEDIN_ACCESS_TOKEN"),
 		WebhookSecret:       os.Getenv("WEBHOOK_SECRET"),
+		DBSecretName:        os.Getenv("DB_SECRET_NAME"),
 	}
 }
 
@@ -197,6 +203,36 @@ func extractCommitFromWebhook(payload []byte) (*models.Commit, error) {
 }
 
 func main() {
+	ctx := context.Background()
+
+	// Load configuration
+	config := loadConfig()
+
+	// Initialize database connection if secret name is provided
+	if config.DBSecretName != "" {
+		log.Printf("Loading database credentials from Secrets Manager: %s", config.DBSecretName)
+
+		dbConfig, err := database.LoadConfigFromSecretsManager(ctx, config.DBSecretName)
+		if err != nil {
+			log.Printf("Warning: Failed to load database config: %v", err)
+			log.Println("Continuing without database connection")
+		} else {
+			pool, err := database.NewPool(ctx, dbConfig)
+			if err != nil {
+				log.Printf("Warning: Failed to create database pool: %v", err)
+				log.Println("Continuing without database connection")
+			} else {
+				dbPool = pool
+				log.Println("Database connection pool initialized successfully")
+
+				// Ensure cleanup on Lambda shutdown (best-effort)
+				defer dbPool.Close()
+			}
+		}
+	} else {
+		log.Println("DB_SECRET_NAME not set, skipping database initialization")
+	}
+
 	// Start Lambda handler
 	lambda.Start(Handler)
 }
