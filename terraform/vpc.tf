@@ -70,6 +70,42 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
+# fck-nat: Cost-effective NAT instance (instead of $32/month NAT Gateway)
+# Uses t4g.nano ARM instance (~$3/month) for Lambda internet access
+module "fck_nat" {
+  source = "RaJiska/fck-nat/aws"
+  version = "1.2.2"
+
+  name               = "${var.function_name}-${var.environment}-nat"
+  vpc_id             = aws_vpc.main.id
+  subnet_id          = aws_subnet.public[0].id
+  instance_type      = "t4g.nano"
+  use_spot_instances = true
+
+  tags = local.common_tags
+}
+
+# Route Table for Private Subnets (routes internet traffic through NAT)
+resource "aws_route_table" "private" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block           = "0.0.0.0/0"
+    network_interface_id = module.fck_nat.eni_id
+  }
+
+  tags = merge(local.common_tags, {
+    Name = "${var.function_name}-${var.environment}-private-rt"
+  })
+}
+
+# Route Table Associations for Private Subnets
+resource "aws_route_table_association" "private" {
+  count          = 2
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private.id
+}
+
 # Data source for availability zones
 data "aws_availability_zones" "available" {
   state = "available"
