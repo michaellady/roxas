@@ -22,13 +22,45 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for code changes
+        id: check-changes
+        run: |
+          # Get list of changed files in this PR
+          git fetch origin ${{ github.base_ref }}
+          CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+
+          # Files that don't require deployment
+          DOCS_PATTERN='^\.(beads/.*\.jsonl|github/.*\.md)$|^(README\.md|.*\.md|docs/|history/).*$'
+
+          # Check if ALL changes are documentation/beads only
+          NEEDS_DEPLOYMENT=false
+          while IFS= read -r file; do
+            if ! echo "$file" | grep -qE "$DOCS_PATTERN"; then
+              NEEDS_DEPLOYMENT=true
+              echo "Code change detected: $file"
+              break
+            fi
+          done <<< "$CHANGED_FILES"
+
+          echo "needs_deployment=$NEEDS_DEPLOYMENT" >> $GITHUB_OUTPUT
+
+          if [ "$NEEDS_DEPLOYMENT" = "false" ]; then
+            echo "✅ Only documentation/beads changes detected - skipping deployment"
+          else
+            echo "📦 Code changes detected - proceeding with deployment"
+          fi
 
       - name: Set up Go
+        if: steps.check-changes.outputs.needs_deployment == 'true'
         uses: actions/setup-go@v5
         with:
           go-version: '1.25.3'
 
       - name: Cache Go modules
+        if: steps.check-changes.outputs.needs_deployment == 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -39,17 +71,21 @@ jobs:
             ${{ runner.os }}-go-
 
       - name: Download dependencies
+        if: steps.check-changes.outputs.needs_deployment == 'true'
         run: go mod download
 
       - name: Build Lambda deployment package
+        if: steps.check-changes.outputs.needs_deployment == 'true'
         run: make build
 
       - name: Set up Terraform
+        if: steps.check-changes.outputs.needs_deployment == 'true'
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.9.0
 
       - name: Configure AWS credentials
+        if: steps.check-changes.outputs.needs_deployment == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -57,16 +93,19 @@ jobs:
           aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Terraform Init
+        if: steps.check-changes.outputs.needs_deployment == 'true'
         working-directory: terraform
         run: terraform init -backend-config=backend-dev.hcl
 
       - name: Setup Terraform Workspace
+        if: steps.check-changes.outputs.needs_deployment == 'true'
         working-directory: terraform
         run: |
           terraform workspace new dev-pr-${{ github.event.pull_request.number }} || \
           terraform workspace select dev-pr-${{ github.event.pull_request.number }}
 
       - name: Terraform Plan
+        if: steps.check-changes.outputs.needs_deployment == 'true'
         working-directory: terraform
         env:
           TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
@@ -79,6 +118,7 @@ jobs:
         run: terraform plan -out=tfplan
 
       - name: Terraform Apply
+        if: steps.check-changes.outputs.needs_deployment == 'true'
         working-directory: terraform
         env:
           TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
@@ -91,6 +131,7 @@ jobs:
         run: terraform apply -auto-approve tfplan
 
       - name: Get Webhook URL from Terraform
+        if: steps.check-changes.outputs.needs_deployment == 'true'
         id: deployment-info
         working-directory: terraform
         run: |
@@ -100,12 +141,14 @@ jobs:
           echo "function_name=$FUNCTION_NAME" >> $GITHUB_OUTPUT
 
       - name: Run E2E Test
+        if: steps.check-changes.outputs.needs_deployment == 'true'
         env:
           LAMBDA_URL: ${{ steps.deployment-info.outputs.url }}
           WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
         run: make e2e
 
       - name: Comment PR with deployment info
+        if: steps.check-changes.outputs.needs_deployment == 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -119,6 +162,29 @@ jobs:
             **Region:** us-east-1
 
             This PR-specific environment will be automatically destroyed when the PR is closed.`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+      - name: Comment PR - Deployment Skipped
+        if: steps.check-changes.outputs.needs_deployment == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = `### ⏭️ Deployment Skipped
+
+            Only documentation or beads database changes detected - no deployment needed.
+
+            Changed files contain only:
+            - Documentation files (\`*.md\`, \`docs/\`)
+            - Beads database files (\`.beads/*.jsonl\`)
+            - History files (\`history/\`)
+
+            The deployment check passes automatically for these changes.`;
 
             github.rest.issues.createComment({
               issue_number: context.issue.number,
