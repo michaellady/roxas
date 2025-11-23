@@ -34,11 +34,25 @@ jobs:
         working-directory: terraform
         run: terraform init -backend-config=backend-dev.hcl
 
+      - name: Check if workspace exists
+        id: check-workspace
+        working-directory: terraform
+        run: |
+          if terraform workspace list | grep -q "dev-pr-${{ github.event.pull_request.number }}"; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Workspace exists - will destroy"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Workspace doesn't exist - deployment was likely skipped"
+          fi
+
       - name: Select Terraform Workspace
+        if: steps.check-workspace.outputs.exists == 'true'
         working-directory: terraform
         run: terraform workspace select dev-pr-${{ github.event.pull_request.number }}
 
       - name: Terraform Destroy
+        if: steps.check-workspace.outputs.exists == 'true'
         working-directory: terraform
         env:
           TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
@@ -49,12 +63,14 @@ jobs:
         run: terraform destroy -auto-approve
 
       - name: Delete Terraform Workspace
+        if: steps.check-workspace.outputs.exists == 'true'
         working-directory: terraform
         run: |
           terraform workspace select default
           terraform workspace delete dev-pr-${{ github.event.pull_request.number }}
 
       - name: Comment PR with cleanup status
+        if: steps.check-workspace.outputs.exists == 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -66,6 +82,22 @@ jobs:
             **Status:** Destroyed
 
             All AWS resources for this PR have been removed.`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+      - name: Comment PR - No cleanup needed
+        if: steps.check-workspace.outputs.exists == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = `### ✅ No Cleanup Needed
+
+            No dev environment was deployed for this PR (deployment was skipped for documentation-only changes).`;
 
             github.rest.issues.createComment({
               issue_number: context.issue.number,
