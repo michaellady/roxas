@@ -623,3 +623,7 @@ TBD
 **Built with Go, AWS Lambda, OpenAI GPT-4 & DALL-E, and LinkedIn API**
 
 For questions or issues, please open a GitHub issue.
+
+## Testing Skip Logic
+
+This update tests the deployment skip logic for documentation-only changes.
