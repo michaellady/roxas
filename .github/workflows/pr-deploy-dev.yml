@@ -28,9 +28,19 @@ jobs:
       - name: Check for code changes
         id: check-changes
         run: |
-          # Get list of changed files in this PR
-          git fetch origin ${{ github.base_ref }}
-          CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+          # Get list of changed files in this push (not entire PR)
+          # Use before/after commits from the push event
+          if [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            # Regular push - check files changed since last commit
+            CHANGED_FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }})
+          else
+            # New branch - check files changed from base
+            git fetch origin ${{ github.base_ref }}
+            CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+          fi
+
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
 
           # Files that don't require deployment
           DOCS_PATTERN='^\.(beads/.*\.jsonl|github/.*\.md)$|^(README\.md|.*\.md|docs/|history/).*$'
@@ -38,10 +48,15 @@ jobs:
           # Check if ALL changes are documentation/beads only
           NEEDS_DEPLOYMENT=false
           while IFS= read -r file; do
+            if [ -z "$file" ]; then
+              continue
+            fi
             if ! echo "$file" | grep -qE "$DOCS_PATTERN"; then
               NEEDS_DEPLOYMENT=true
               echo "Code change detected: $file"
               break
+            else
+              echo "Documentation change: $file"
             fi
           done <<< "$CHANGED_FILES"
 
