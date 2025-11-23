@@ -113,7 +113,7 @@ variable "vpc_cidr" {
 variable "db_engine_version" {
   description = "PostgreSQL engine version"
   type        = string
-  default     = "15"
+  default     = "18"
 }
 
 variable "db_instance_class" {
