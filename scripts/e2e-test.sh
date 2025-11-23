@@ -115,7 +115,11 @@ for attempt in $(seq 0 $((MAX_RETRIES - 1))); do
   fi
 
   # Check if error is retryable
-  if [ "$HTTP_CODE" -eq 503 ] || [ "$HTTP_CODE" -eq 504 ] || [ "$HTTP_CODE" -eq 000 ]; then
+  # 500: Internal server error (can be transient, e.g., OpenAI API errors)
+  # 503: Service unavailable (Lambda initializing)
+  # 504: Gateway timeout
+  # 000: Connection timeout/failure
+  if [ "$HTTP_CODE" -eq 500 ] || [ "$HTTP_CODE" -eq 503 ] || [ "$HTTP_CODE" -eq 504 ] || [ "$HTTP_CODE" -eq 000 ]; then
     echo -e "${YELLOW}  Transient error (HTTP $HTTP_CODE), will retry...${NC}"
     continue
   fi
@@ -137,7 +141,9 @@ if [ "$HTTP_CODE" -ne 200 ]; then
   if [ "$HTTP_CODE" -eq 401 ]; then
     echo -e "${RED}  - Authentication failed (invalid webhook secret?)${NC}"
   elif [ "$HTTP_CODE" -eq 500 ]; then
-    echo -e "${RED}  - Internal server error (check Lambda logs)${NC}"
+    echo -e "${RED}  - Internal server error persisted after $MAX_RETRIES retries${NC}"
+    echo -e "${RED}  - This may be a transient external API error (e.g., OpenAI)${NC}"
+    echo -e "${RED}  - Check Lambda logs for details${NC}"
   elif [ "$HTTP_CODE" -eq 503 ]; then
     echo -e "${RED}  - Service unavailable (Lambda still initializing after $MAX_RETRIES retries)${NC}"
   elif [ "$HTTP_CODE" -eq 000 ]; then
