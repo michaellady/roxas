@@ -21,3 +21,8 @@ log_level          = "info"
 openai_api_key        = "REPLACE_WITH_PROD_KEY"
 linkedin_access_token = "REPLACE_WITH_PROD_TOKEN"
 webhook_secret        = "REPLACE_WITH_PROD_SECRET"
+
+# Database configuration
+db_instance_class        = "db.t4g.micro"
+db_allocated_storage     = 20
+db_backup_retention_days = 30

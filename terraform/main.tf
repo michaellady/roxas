@@ -4,7 +4,11 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = ">= 6.0.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
     }
   }
 
@@ -52,6 +56,12 @@ resource "aws_iam_role_policy_attachment" "lambda_basic" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+# Attach VPC execution policy (for Lambda to access RDS in VPC)
+resource "aws_iam_role_policy_attachment" "lambda_vpc" {
+  role       = aws_iam_role.lambda_exec.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
 # CloudWatch Log Group for Lambda
 resource "aws_cloudwatch_log_group" "lambda_logs" {
   name              = "/aws/lambda/${local.function_name_full}"
@@ -71,18 +81,26 @@ resource "aws_lambda_function" "roxas" {
   timeout          = var.lambda_timeout
   memory_size      = var.lambda_memory_size
 
+  # VPC configuration for RDS access
+  vpc_config {
+    subnet_ids         = aws_subnet.private[*].id
+    security_group_ids = [aws_security_group.lambda.id]
+  }
+
   environment {
     variables = {
       OPENAI_API_KEY        = var.openai_api_key
       LINKEDIN_ACCESS_TOKEN = var.linkedin_access_token
       WEBHOOK_SECRET        = var.webhook_secret
       LOG_LEVEL             = var.log_level
+      DB_SECRET_ARN         = aws_secretsmanager_secret.database.arn
     }
   }
 
   depends_on = [
     aws_cloudwatch_log_group.lambda_logs,
-    aws_iam_role_policy_attachment.lambda_basic
+    aws_iam_role_policy_attachment.lambda_basic,
+    aws_iam_role_policy_attachment.lambda_vpc
   ]
 
   tags = local.common_tags

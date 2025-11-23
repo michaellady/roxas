@@ -87,24 +87,61 @@ graph TB
         Actions[GitHub Actions<br/>CI/CD Pipeline]
     end
 
-    subgraph "AWS - Dev Account"
-        APIGW_Dev[API Gateway<br/>Dev Endpoint]
-        Lambda_Dev[Lambda Function<br/>roxas-webhook-handler-dev]
-        CW_Dev[CloudWatch Logs<br/>Dev Monitoring]
-        S3_Dev[S3 Bucket<br/>Terraform State Dev]
+    subgraph "AWS - Dev Account (539402214167)"
+        subgraph "VPC (10.0.0.0/16)"
+            subgraph "Public Subnets"
+                NAT_Dev[NAT Instance<br/>t4g.nano on-demand<br/>~$3/month]
+                IGW_Dev[Internet Gateway]
+            end
+
+            subgraph "Private Subnets"
+                Lambda_Dev[Lambda Function<br/>roxas-webhook-handler-dev<br/>VPC Enabled]
+                RDS_Dev[RDS PostgreSQL 15<br/>db.t4g.micro<br/>Multi-tenant DB]
+            end
+        end
+
+        APIGW_Dev[API Gateway<br/>Custom Domain<br/>pr-XX.roxasapp.com]
+        Secrets_Dev[Secrets Manager<br/>DB Credentials]
+        CW_Dev[CloudWatch Logs<br/>Lambda + RDS]
+        S3_Dev[S3 Bucket<br/>Terraform State]
 
         APIGW_Dev --> Lambda_Dev
+        Lambda_Dev --> RDS_Dev
+        Lambda_Dev --> Secrets_Dev
+        Lambda_Dev --> NAT_Dev
+        NAT_Dev --> IGW_Dev
         Lambda_Dev --> CW_Dev
     end
 
-    subgraph "AWS - Prod Account"
-        APIGW_Prod[API Gateway<br/>Prod Endpoint]
-        Lambda_Prod[Lambda Function<br/>roxas-webhook-handler-prod]
-        CW_Prod[CloudWatch Logs<br/>Prod Monitoring]
-        S3_Prod[S3 Bucket<br/>Terraform State Prod]
+    subgraph "AWS - Prod Account (598821842404)"
+        subgraph "VPC (10.0.0.0/16)"
+            subgraph "Public Subnets"
+                NAT_Prod[NAT Instance<br/>t4g.nano on-demand<br/>~$3/month]
+                IGW_Prod[Internet Gateway]
+            end
+
+            subgraph "Private Subnets"
+                Lambda_Prod[Lambda Function<br/>roxas-webhook-handler-prod<br/>VPC Enabled]
+                RDS_Prod[RDS PostgreSQL 15<br/>db.t4g.micro<br/>Multi-tenant DB]
+            end
+        end
+
+        APIGW_Prod[API Gateway<br/>Custom Domain<br/>roxas.ai]
+        Secrets_Prod[Secrets Manager<br/>DB Credentials]
+        CW_Prod[CloudWatch Logs<br/>Lambda + RDS]
+        S3_Prod[S3 Bucket<br/>Terraform State]
 
         APIGW_Prod --> Lambda_Prod
+        Lambda_Prod --> RDS_Prod
+        Lambda_Prod --> Secrets_Prod
+        Lambda_Prod --> NAT_Prod
+        NAT_Prod --> IGW_Prod
         Lambda_Prod --> CW_Prod
+    end
+
+    subgraph "External Services"
+        OpenAI[OpenAI API<br/>GPT-4 + DALL-E]
+        LinkedIn[LinkedIn API<br/>Social Posts]
     end
 
     Repo -->|Webhook| APIGW_Prod
@@ -112,10 +149,21 @@ graph TB
     Actions -->|Deploy Dev| Lambda_Dev
     Actions -->|Deploy Prod| Lambda_Prod
 
+    Lambda_Dev -->|via NAT| OpenAI
+    Lambda_Dev -->|via NAT| LinkedIn
+    Lambda_Prod -->|via NAT| OpenAI
+    Lambda_Prod -->|via NAT| LinkedIn
+
     style Repo fill:#24292e,color:#fff
     style Actions fill:#2088ff,color:#fff
     style Lambda_Dev fill:#ff9900,color:#000
     style Lambda_Prod fill:#ff9900,color:#000
+    style RDS_Dev fill:#527fff,color:#fff
+    style RDS_Prod fill:#527fff,color:#fff
+    style NAT_Dev fill:#ec7211,color:#fff
+    style NAT_Prod fill:#ec7211,color:#fff
+    style OpenAI fill:#10a37f,color:#fff
+    style LinkedIn fill:#0077b5,color:#fff
 ```
 
 ## Quick Start
