@@ -1,0 +1,4 @@
+# This directory will contain database migration files
+# Migration files should follow the naming convention:
+# YYYYMMDDHHMMSS_description.up.sql
+# YYYYMMDDHHMMSS_description.down.sql
