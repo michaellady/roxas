@@ -53,19 +53,71 @@ PAYLOAD=$(cat "$PAYLOAD_FILE")
 # GitHub sends: X-Hub-Signature-256: sha256=<hmac>
 SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | sed 's/^.* //')
 
-echo -e "${YELLOW}Sending webhook request...${NC}"
+# VPC Lambda warmup: Send a warmup request to initialize ENIs
+echo -e "${YELLOW}Warming up Lambda (VPC cold start)...${NC}"
+for i in {1..3}; do
+  WARMUP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$LAMBDA_URL" \
+    -H "Content-Type: application/json" \
+    -H "X-Hub-Signature-256: sha256=$SIGNATURE" \
+    -H "X-GitHub-Event: push" \
+    -d "$PAYLOAD" --max-time 30)
 
-# Send webhook request
-RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$LAMBDA_URL" \
-  -H "Content-Type: application/json" \
-  -H "X-Hub-Signature-256: sha256=$SIGNATURE" \
-  -H "X-GitHub-Event: push" \
-  -d "$PAYLOAD")
+  if [ "$WARMUP_CODE" -eq 200 ] || [ "$WARMUP_CODE" -eq 401 ]; then
+    echo -e "${GREEN}✓ Lambda warmed up (HTTP $WARMUP_CODE)${NC}"
+    break
+  fi
 
-# Extract HTTP status code (last line)
-HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-# Extract response body (all but last line)
-BODY=$(echo "$RESPONSE" | sed '$d')
+  if [ $i -lt 3 ]; then
+    echo -e "${YELLOW}  Warmup attempt $i failed (HTTP $WARMUP_CODE), retrying in 10s...${NC}"
+    sleep 10
+  fi
+done
+echo ""
+
+# Send webhook request with retry logic
+MAX_RETRIES=5
+RETRY_DELAYS=(5 10 15 20 30)  # Delays in seconds between retries
+HTTP_CODE=0
+
+for attempt in $(seq 0 $((MAX_RETRIES - 1))); do
+  if [ $attempt -gt 0 ]; then
+    DELAY=${RETRY_DELAYS[$((attempt - 1))]}
+    echo -e "${YELLOW}Retrying in ${DELAY}s (attempt $((attempt + 1))/$MAX_RETRIES)...${NC}"
+    sleep $DELAY
+  fi
+
+  echo -e "${YELLOW}Sending webhook request (attempt $((attempt + 1))/$MAX_RETRIES)...${NC}"
+
+  # Send webhook request
+  RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$LAMBDA_URL" \
+    -H "Content-Type: application/json" \
+    -H "X-Hub-Signature-256: sha256=$SIGNATURE" \
+    -H "X-GitHub-Event: push" \
+    -d "$PAYLOAD" --max-time 30 || echo -e "\n000")
+
+  # Extract HTTP status code (last line)
+  HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+  # Extract response body (all but last line)
+  BODY=$(echo "$RESPONSE" | sed '$d')
+
+  echo "HTTP Status: $HTTP_CODE"
+
+  # Check if we got a successful response
+  if [ "$HTTP_CODE" -eq 200 ]; then
+    echo -e "${GREEN}✓ Request succeeded${NC}"
+    break
+  fi
+
+  # Check if error is retryable
+  if [ "$HTTP_CODE" -eq 503 ] || [ "$HTTP_CODE" -eq 504 ] || [ "$HTTP_CODE" -eq 000 ]; then
+    echo -e "${YELLOW}  Transient error (HTTP $HTTP_CODE), will retry...${NC}"
+    continue
+  fi
+
+  # Non-retryable error, exit immediately
+  echo -e "${RED}  Non-retryable error (HTTP $HTTP_CODE)${NC}"
+  break
+done
 
 echo ""
 echo -e "${YELLOW}Response:${NC}"
@@ -80,6 +132,10 @@ if [ "$HTTP_CODE" -ne 200 ]; then
     echo -e "${RED}  - Authentication failed (invalid webhook secret?)${NC}"
   elif [ "$HTTP_CODE" -eq 500 ]; then
     echo -e "${RED}  - Internal server error (check Lambda logs)${NC}"
+  elif [ "$HTTP_CODE" -eq 503 ]; then
+    echo -e "${RED}  - Service unavailable (Lambda still initializing after $MAX_RETRIES retries)${NC}"
+  elif [ "$HTTP_CODE" -eq 000 ]; then
+    echo -e "${RED}  - Connection failed or timeout${NC}"
   else
     echo -e "${RED}  - Unexpected HTTP status: $HTTP_CODE${NC}"
   fi
