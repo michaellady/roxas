@@ -1,6 +1,6 @@
 name: PR Cleanup Dev
 
-# Cleanup workflow runs automatically when a PR is closed
+# Cleanup workflow runs automatically when a PR is closed (removes all AWS resources)
 on:
   pull_request:
     types: [closed]
