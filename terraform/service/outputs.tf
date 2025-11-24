@@ -34,26 +34,19 @@ output "custom_domain_name" {
 }
 
 output "certificate_arn" {
-  description = "ACM certificate ARN (if custom domain enabled)"
-  value       = local.create_custom_domain ? aws_acm_certificate.webhook[0].arn : null
+  description = "ACM certificate ARN (from shared infrastructure)"
+  value       = local.create_custom_domain ? local.acm_certificate_arn : null
 }
 
 # Database Outputs
-# For PR environments: Shows shared RDS info with PR database name
-# For dedicated environments: Shows dedicated RDS info
-output "db_instance_endpoint" {
-  description = "RDS instance endpoint"
-  value       = local.is_pr_environment ? data.aws_db_instance.shared[0].endpoint : aws_db_instance.main[0].endpoint
+output "db_endpoint" {
+  description = "RDS instance endpoint (from shared infrastructure)"
+  value       = local.rds_endpoint
 }
 
-output "db_instance_name" {
-  description = "Database name"
-  value       = local.is_pr_environment ? local.pr_database_name : aws_db_instance.main[0].db_name
-}
-
-output "db_instance_arn" {
-  description = "ARN of the RDS instance (not available for PR environments using shared RDS)"
-  value       = local.is_pr_environment ? null : aws_db_instance.main[0].arn
+output "db_name" {
+  description = "Database name used by this service"
+  value       = local.database_name
 }
 
 output "db_secret_arn" {
@@ -62,18 +55,13 @@ output "db_secret_arn" {
   sensitive   = true
 }
 
+# Network Outputs (from shared infrastructure)
 output "vpc_id" {
-  description = "ID of the VPC (existing dev VPC for PRs, created VPC otherwise)"
+  description = "ID of the VPC (from shared infrastructure)"
   value       = local.vpc_id
 }
 
 output "private_subnet_ids" {
-  description = "IDs of private subnets (existing dev subnets for PRs, created subnets otherwise)"
+  description = "IDs of private subnets (from shared infrastructure)"
   value       = local.private_subnet_ids
 }
-
-output "public_subnet_ids" {
-  description = "IDs of public subnets (empty for PRs)"
-  value       = local.public_subnet_ids
-}
-

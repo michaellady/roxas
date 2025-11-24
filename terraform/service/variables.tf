@@ -84,64 +84,8 @@ variable "custom_domain_enabled" {
   default     = true
 }
 
-variable "domain_name" {
-  description = "Custom domain name for the webhook endpoint"
-  type        = string
-  default     = ""
-}
-
-variable "hosted_zone_id" {
-  description = "Route53 hosted zone ID for the domain"
-  type        = string
-  default     = ""
-}
-
 variable "pr_number" {
   description = "Pull request number for dev environment (used for subdomain)"
   type        = string
   default     = ""
-}
-
-# VPC Configuration
-variable "vpc_cidr" {
-  description = "CIDR block for VPC"
-  type        = string
-  default     = "10.0.0.0/16"
-}
-
-# Database Configuration
-variable "db_engine_version" {
-  description = "PostgreSQL engine version"
-  type        = string
-  default     = "18"
-}
-
-variable "db_instance_class" {
-  description = "RDS instance class"
-  type        = string
-  default     = "db.t4g.micro"
-}
-
-variable "db_allocated_storage" {
-  description = "Allocated storage in GB"
-  type        = number
-  default     = 20
-}
-
-variable "db_name" {
-  description = "Name of the database to create"
-  type        = string
-  default     = "roxas"
-}
-
-variable "db_username" {
-  description = "Master username for the database"
-  type        = string
-  default     = "roxas_admin"
-}
-
-variable "db_backup_retention_days" {
-  description = "Number of days to retain automated backups"
-  type        = number
-  default     = 7
 }

@@ -1,37 +1,30 @@
 # AWS Secrets Manager for Database Credentials
 #
-# For PR environments: Creates secret pointing to PR database on shared RDS
-# For prod/staging: Creates secret pointing to dedicated RDS instance
+# Creates a service-specific secret containing database connection details.
+# For PR environments: Uses shared RDS with PR-specific database name
+# For prod/dev: Uses shared RDS with master database name
 
 # Local values for database connection details
 locals {
-  # Determine database credentials based on environment type
-  db_credentials = local.is_pr_environment ? {
-    # PR environment: Use shared RDS with PR-specific database
-    username = jsondecode(data.aws_secretsmanager_secret_version.shared_db_credentials[0].secret_string)["username"]
-    password = jsondecode(data.aws_secretsmanager_secret_version.shared_db_credentials[0].secret_string)["password"]
+  # Build database credentials from shared infrastructure
+  db_credentials = {
+    username = local.shared_db_credentials["username"]
+    password = local.shared_db_credentials["password"]
     engine   = "postgres"
-    host     = data.aws_db_instance.shared[0].address
-    port     = data.aws_db_instance.shared[0].port
-    dbname   = local.pr_database_name
-    } : {
-    # Dedicated environment: Use dedicated RDS
-    username = aws_db_instance.main[0].username
-    password = random_password.db_password[0].result
-    engine   = "postgres"
-    host     = aws_db_instance.main[0].endpoint
-    port     = aws_db_instance.main[0].port
-    dbname   = aws_db_instance.main[0].db_name
+    host     = local.rds_endpoint
+    port     = local.rds_port
+    dbname   = local.database_name
   }
 
-  # Connection string
+  # Connection string for the service
   db_connection_string = "postgres://${local.db_credentials.username}:${local.db_credentials.password}@${local.db_credentials.host}/${local.db_credentials.dbname}?sslmode=require"
 }
 
 # Secret for database connection information
+# Each service deployment gets its own secret with appropriate database name
 resource "aws_secretsmanager_secret" "database" {
   name_prefix             = "${var.function_name}-${var.environment}-db-"
-  description             = local.is_pr_environment ? "PR database credentials (${local.pr_database_name} on shared RDS)" : "Database connection credentials for ${var.environment}"
+  description             = "Database connection credentials for ${local.function_name_full}"
   recovery_window_in_days = var.environment == "prod" ? 30 : 7
 
   tags = merge(local.common_tags, {
@@ -54,7 +47,6 @@ resource "aws_secretsmanager_secret_version" "database" {
 }
 
 # Inline IAM Policy for Lambda to read database secrets
-# Using inline policy to avoid IAM:CreatePolicy permission requirement
 resource "aws_iam_role_policy" "lambda_secrets" {
   name_prefix = "secrets-access-"
   role        = aws_iam_role.lambda_exec.id

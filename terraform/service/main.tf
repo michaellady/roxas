@@ -6,14 +6,6 @@ terraform {
       source  = "hashicorp/aws"
       version = ">= 6.0.0"
     }
-    random = {
-      source  = "hashicorp/random"
-      version = "~> 3.6"
-    }
-    null = {
-      source  = "hashicorp/null"
-      version = "~> 3.2"
-    }
   }
 
   # Remote state backend for safe concurrent deployments
@@ -30,14 +22,12 @@ provider "aws" {
 locals {
   function_name_full = "${var.function_name}-${var.environment}"
 
-  # Detect if this is a PR workspace (e.g., "dev-pr-123")
-  is_pr_environment = var.environment == "dev" && can(regex("^dev-pr-[0-9]+$", terraform.workspace))
-
   # Extract PR number from workspace name (e.g., "dev-pr-123" -> "123")
-  pr_number = local.is_pr_environment ? regex("^dev-pr-([0-9]+)$", terraform.workspace)[0] : ""
+  # Empty string for non-PR workspaces (dev, prod)
+  pr_number = can(regex("^dev-pr-([0-9]+)$", terraform.workspace)) ? regex("^dev-pr-([0-9]+)$", terraform.workspace)[0] : ""
 
-  # PR database name (e.g., "pr_123")
-  pr_database_name = local.is_pr_environment ? "pr_${local.pr_number}" : ""
+  # PR database name (e.g., "pr_123") or master database for non-PR
+  database_name = local.pr_number != "" ? "pr_${local.pr_number}" : local.shared_db_credentials["dbname"]
 
   common_tags = merge(var.tags, {
     Environment = var.environment
