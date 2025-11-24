@@ -28,7 +28,8 @@ locals {
 
   # PR database name (e.g., "pr_123") or master database for non-PR
   # Use SSM parameter (non-sensitive) instead of secrets manager for the database name
-  database_name = local.pr_number != "" ? "pr_${local.pr_number}" : data.aws_ssm_parameter.db_master_database.value
+  # nonsensitive() needed because AWS provider 6.x marks SSM values as sensitive by default
+  database_name = local.pr_number != "" ? "pr_${local.pr_number}" : nonsensitive(data.aws_ssm_parameter.db_master_database.value)
 
   common_tags = merge(var.tags, {
     Environment = var.environment

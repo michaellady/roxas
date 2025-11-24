@@ -60,18 +60,20 @@ data "aws_secretsmanager_secret_version" "shared_db" {
 }
 
 # Local values derived from SSM parameters
+# Note: AWS provider 6.x marks SSM values as sensitive by default.
+# Use nonsensitive() for values that are not secrets (VPC IDs, subnet IDs, etc.)
 locals {
-  # Parse JSON arrays from SSM
-  private_subnet_ids = jsondecode(data.aws_ssm_parameter.private_subnet_ids.value)
+  # Parse JSON arrays from SSM (nonsensitive - these are infrastructure IDs, not secrets)
+  private_subnet_ids = nonsensitive(jsondecode(data.aws_ssm_parameter.private_subnet_ids.value))
 
-  # Shared infrastructure values
-  vpc_id                   = data.aws_ssm_parameter.vpc_id.value
-  lambda_security_group_id = data.aws_ssm_parameter.lambda_sg_id.value
-  rds_endpoint             = data.aws_ssm_parameter.rds_endpoint.value
-  rds_port                 = data.aws_ssm_parameter.rds_port.value
-  acm_certificate_arn      = data.aws_ssm_parameter.acm_certificate_arn.value
-  hosted_zone_id           = data.aws_ssm_parameter.hosted_zone_id.value
+  # Shared infrastructure values (nonsensitive - these are not secrets)
+  vpc_id                   = nonsensitive(data.aws_ssm_parameter.vpc_id.value)
+  lambda_security_group_id = nonsensitive(data.aws_ssm_parameter.lambda_sg_id.value)
+  rds_endpoint             = nonsensitive(data.aws_ssm_parameter.rds_endpoint.value)
+  rds_port                 = nonsensitive(data.aws_ssm_parameter.rds_port.value)
+  acm_certificate_arn      = nonsensitive(data.aws_ssm_parameter.acm_certificate_arn.value)
+  hosted_zone_id           = nonsensitive(data.aws_ssm_parameter.hosted_zone_id.value)
 
-  # Shared DB credentials
+  # Shared DB credentials (keep sensitive - this contains passwords)
   shared_db_credentials = jsondecode(data.aws_secretsmanager_secret_version.shared_db.secret_string)
 }
