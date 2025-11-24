@@ -27,7 +27,8 @@ locals {
   pr_number = can(regex("^dev-pr-([0-9]+)$", terraform.workspace)) ? regex("^dev-pr-([0-9]+)$", terraform.workspace)[0] : ""
 
   # PR database name (e.g., "pr_123") or master database for non-PR
-  database_name = local.pr_number != "" ? "pr_${local.pr_number}" : local.shared_db_credentials["dbname"]
+  # Use SSM parameter (non-sensitive) instead of secrets manager for the database name
+  database_name = local.pr_number != "" ? "pr_${local.pr_number}" : data.aws_ssm_parameter.db_master_database.value
 
   common_tags = merge(var.tags, {
     Environment = var.environment
