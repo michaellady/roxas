@@ -1,5 +1,6 @@
 name: PR Cleanup Dev
 
+# Cleanup workflow runs when a PR is closed
 on:
   pull_request:
     types: [closed]
