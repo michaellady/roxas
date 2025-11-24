@@ -11,10 +11,28 @@ data "aws_db_instance" "shared" {
 }
 
 # Data source: Reference shared RDS credentials for PR environments
+# Note: Secret was created with name_prefix, so we filter by name pattern
 data "aws_secretsmanager_secret" "shared_db_credentials" {
   count = local.is_pr_environment ? 1 : 0
 
-  name = "roxas-shared-pr-rds-credentials"
+  # Search by prefix since secret was created with name_prefix
+  name = try(
+    element([
+      for s in data.aws_secretsmanager_secrets.shared_rds[0].names :
+      s if length(regexall("^roxas-shared-pr-rds-credentials-", s)) > 0
+    ], 0),
+    null
+  )
+}
+
+# List all secrets to find the shared RDS credentials secret
+data "aws_secretsmanager_secrets" "shared_rds" {
+  count = local.is_pr_environment ? 1 : 0
+
+  filter {
+    name   = "name"
+    values = ["roxas-shared-pr-rds-credentials-*"]
+  }
 }
 
 data "aws_secretsmanager_secret_version" "shared_db_credentials" {

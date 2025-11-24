@@ -57,9 +57,9 @@ jobs:
           PR_DB_NAME="pr_${{ github.event.pull_request.number }}"
 
           # Get shared RDS credentials from Secrets Manager
+          # Note: Secret was created with name_prefix, so we search by pattern
           SECRET_ARN=$(aws secretsmanager list-secrets \
-            --filters Key=name,Values=roxas-shared-pr-rds-credentials \
-            --query 'SecretList[0].ARN' \
+            --query 'SecretList[?starts_with(Name, `roxas-shared-pr-rds-credentials-`)].ARN | [0]' \
             --output text)
 
           if [ "$SECRET_ARN" != "None" ] && [ -n "$SECRET_ARN" ]; then
