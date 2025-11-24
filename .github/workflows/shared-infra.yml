@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - 'terraform/shared/**'
+      - 'terraform/backend-shared-*.hcl'
+      - '.github/workflows/shared-infra.yml'
   workflow_dispatch:
     inputs:
       environment:
