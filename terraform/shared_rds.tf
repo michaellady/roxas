@@ -74,13 +74,13 @@ resource "aws_db_instance" "shared" {
   # max_connections for db.t4g.micro = 100 (sufficient for ~20 connections per PR)
 
   # Backup configuration
-  backup_retention_period = 1                 # Minimal retention for dev
-  backup_window           = "03:00-04:00"     # UTC
+  backup_retention_period = 1                     # Minimal retention for dev
+  backup_window           = "03:00-04:00"         # UTC
   maintenance_window      = "Mon:04:00-Mon:05:00" # UTC
 
   # Protection and monitoring
-  deletion_protection     = false # Allow destruction for dev
-  skip_final_snapshot     = true  # No final snapshot needed for dev
+  deletion_protection             = false # Allow destruction for dev
+  skip_final_snapshot             = true  # No final snapshot needed for dev
   enabled_cloudwatch_logs_exports = ["postgresql", "upgrade"]
 
   # Performance Insights (disabled to save costs)
