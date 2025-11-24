@@ -158,17 +158,10 @@ resource "aws_secretsmanager_secret" "shared_db_credentials" {
   })
 }
 
-resource "aws_secretsmanager_secret_version" "shared_db_credentials" {
-  secret_id = aws_secretsmanager_secret.shared_db_credentials.id
-  secret_string = jsonencode({
-    username = aws_db_instance.shared.username
-    password = random_password.shared_db_password.result
-    engine   = "postgres"
-    host     = aws_db_instance.shared.address
-    port     = aws_db_instance.shared.port
-    dbname   = aws_db_instance.shared.db_name
-  })
-}
+# Note: Secret version is managed outside Terraform after initial setup
+# The secret was pre-populated with correct credentials when RDS was created
+# Terraform only manages the secret resource itself, not versions
+# resource "aws_secretsmanager_secret_version" "shared_db_credentials" { ... }
 
 # SSM Parameter to store the secret name for dynamic discovery by PR workspaces
 resource "aws_ssm_parameter" "shared_db_secret_name" {
@@ -371,7 +364,7 @@ resource "null_resource" "cleanup_lambda_layer" {
       cd ${path.module}/lambda
       rm -rf python layer.zip
       mkdir -p python
-      pip install -r requirements.txt -t python --platform manylinux2014_aarch64 --only-binary=:all: --python-version 3.12 2>/dev/null || pip install -r requirements.txt -t python
+      pip3 install -r requirements.txt -t python 2>/dev/null || pip install -r requirements.txt -t python
       zip -r layer.zip python
     EOT
   }
