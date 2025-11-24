@@ -1,0 +1,98 @@
+name: Deploy Shared Infrastructure
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'terraform/shared/**'
+      - 'terraform/backend-shared-*.hcl'
+      - '.github/workflows/shared-infra.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy (dev or prod)'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - prod
+
+jobs:
+  deploy-shared:
+    name: Deploy Shared Infrastructure
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+
+    permissions:
+      contents: read
+
+    # Prevent concurrent deployments
+    concurrency:
+      group: deploy-shared-${{ github.event.inputs.environment || 'dev' }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Set environment
+        id: env
+        run: |
+          ENV="${{ github.event.inputs.environment }}"
+          if [ -z "$ENV" ]; then
+            ENV="dev"
+          fi
+          echo "environment=$ENV" >> $GITHUB_OUTPUT
+          echo "Deploying shared infrastructure to: $ENV"
+
+      - name: Terraform Init
+        working-directory: terraform/shared
+        run: terraform init -backend-config=../backend-shared-${{ steps.env.outputs.environment }}.hcl
+
+      - name: Setup Terraform Workspace
+        working-directory: terraform/shared
+        run: |
+          terraform workspace new ${{ steps.env.outputs.environment }} || \
+          terraform workspace select ${{ steps.env.outputs.environment }}
+
+      - name: Terraform Plan
+        working-directory: terraform/shared
+        env:
+          TF_VAR_environment: ${{ steps.env.outputs.environment }}
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        working-directory: terraform/shared
+        env:
+          TF_VAR_environment: ${{ steps.env.outputs.environment }}
+        run: terraform apply -auto-approve tfplan
+
+      - name: Output SSM Parameters Created
+        working-directory: terraform/shared
+        run: |
+          echo "### Shared Infrastructure Deployed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ steps.env.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**SSM Parameters Created:**" >> $GITHUB_STEP_SUMMARY
+          echo "- /roxas/${{ steps.env.outputs.environment }}/shared/vpc-id" >> $GITHUB_STEP_SUMMARY
+          echo "- /roxas/${{ steps.env.outputs.environment }}/shared/private-subnet-ids" >> $GITHUB_STEP_SUMMARY
+          echo "- /roxas/${{ steps.env.outputs.environment }}/shared/lambda-sg-id" >> $GITHUB_STEP_SUMMARY
+          echo "- /roxas/${{ steps.env.outputs.environment }}/shared/rds-endpoint" >> $GITHUB_STEP_SUMMARY
+          echo "- /roxas/${{ steps.env.outputs.environment }}/shared/acm-certificate-arn" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Service deployments can now use these SSM parameters." >> $GITHUB_STEP_SUMMARY
