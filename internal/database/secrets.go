@@ -13,10 +13,10 @@ import (
 // DBSecret represents the structure of database credentials in Secrets Manager
 type DBSecret struct {
 	Host     string `json:"host"`
-	Port     string `json:"port"`
+	Port     int    `json:"port"`
 	Username string `json:"username"`
 	Password string `json:"password"`
-	Database string `json:"database"`
+	Database string `json:"dbname"`
 }
 
 // LoadConfigFromSecretsManager fetches database credentials from AWS Secrets Manager
@@ -47,7 +47,7 @@ func LoadConfigFromSecretsManager(ctx context.Context, secretName string) (*Conf
 	// Convert to Config
 	dbConfig := &Config{
 		Host:     secret.Host,
-		Port:     secret.Port,
+		Port:     fmt.Sprintf("%d", secret.Port),
 		User:     secret.Username,
 		Password: secret.Password,
 		Database: secret.Database,
