@@ -107,7 +107,7 @@ resource "aws_lambda_function" "roxas" {
       LINKEDIN_ACCESS_TOKEN = var.linkedin_access_token
       WEBHOOK_SECRET        = var.webhook_secret
       LOG_LEVEL             = var.log_level
-      DB_SECRET_ARN         = aws_secretsmanager_secret.database.arn
+      DB_SECRET_NAME        = aws_secretsmanager_secret.database.name
     }
   }
 
