@@ -22,7 +22,7 @@ variable "function_name" {
 variable "lambda_zip_path" {
   description = "Path to the Lambda deployment package (ZIP file)"
   type        = string
-  default     = "../bin/bootstrap.zip"
+  default     = "../../bin/bootstrap.zip"
 }
 
 variable "lambda_timeout" {
