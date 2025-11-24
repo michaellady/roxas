@@ -65,42 +65,48 @@ jobs:
 
           # Get shared RDS credentials from Secrets Manager
           # Note: Secret was created with name_prefix, so we search by pattern
+          # Filter for non-deleted secrets only by excluding those with DeletedDate
           SECRET_ARN=$(aws secretsmanager list-secrets \
-            --query 'SecretList[?starts_with(Name, `roxas-shared-pr-rds-credentials-`)].ARN | [0]' \
+            --query 'SecretList[?starts_with(Name, `roxas-shared-pr-rds-credentials-`) && DeletedDate == null].ARN | [0]' \
             --output text)
 
           if [ "$SECRET_ARN" != "None" ] && [ -n "$SECRET_ARN" ]; then
             echo "Found shared RDS credentials: $SECRET_ARN"
 
-            # Retrieve credentials
-            SECRET_JSON=$(aws secretsmanager get-secret-value \
+            # Retrieve credentials with error handling
+            if SECRET_JSON=$(aws secretsmanager get-secret-value \
               --secret-id "$SECRET_ARN" \
               --query 'SecretString' \
-              --output text)
+              --output text 2>&1); then
 
-            DB_HOST=$(echo $SECRET_JSON | jq -r '.host')
-            DB_PORT=$(echo $SECRET_JSON | jq -r '.port')
-            DB_USER=$(echo $SECRET_JSON | jq -r '.username')
-            DB_PASS=$(echo $SECRET_JSON | jq -r '.password')
+              DB_HOST=$(echo $SECRET_JSON | jq -r '.host')
+              DB_PORT=$(echo $SECRET_JSON | jq -r '.port')
+              DB_USER=$(echo $SECRET_JSON | jq -r '.username')
+              DB_PASS=$(echo $SECRET_JSON | jq -r '.password')
 
-            # Check if database exists
-            EXISTS=$(PGPASSWORD=$DB_PASS psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d postgres -tAc \
-              "SELECT 1 FROM pg_database WHERE datname='$PR_DB_NAME'" || echo "0")
+              # Check if database exists
+              EXISTS=$(PGPASSWORD=$DB_PASS psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d postgres -tAc \
+                "SELECT 1 FROM pg_database WHERE datname='$PR_DB_NAME'" || echo "0")
 
-            if [ "$EXISTS" = "1" ]; then
-              echo "Dropping database $PR_DB_NAME from shared RDS..."
+              if [ "$EXISTS" = "1" ]; then
+                echo "Dropping database $PR_DB_NAME from shared RDS..."
 
-              # Terminate existing connections
-              PGPASSWORD=$DB_PASS psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d postgres -c \
-                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$PR_DB_NAME' AND pid <> pg_backend_pid();" || true
+                # Terminate existing connections
+                PGPASSWORD=$DB_PASS psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d postgres -c \
+                  "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$PR_DB_NAME' AND pid <> pg_backend_pid();" || true
 
-              # Drop the database
-              PGPASSWORD=$DB_PASS psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d postgres -c \
-                "DROP DATABASE IF EXISTS $PR_DB_NAME;"
+                # Drop the database
+                PGPASSWORD=$DB_PASS psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d postgres -c \
+                  "DROP DATABASE IF EXISTS $PR_DB_NAME;"
 
-              echo "Database $PR_DB_NAME dropped successfully"
+                echo "Database $PR_DB_NAME dropped successfully"
+              else
+                echo "Database $PR_DB_NAME does not exist, skipping drop"
+              fi
             else
-              echo "Database $PR_DB_NAME does not exist, skipping drop"
+              echo "Warning: Failed to retrieve secret value (secret may be deleted or inaccessible)"
+              echo "Error: $SECRET_JSON"
+              echo "Skipping database cleanup - proceeding with infrastructure teardown"
             fi
           else
             echo "Shared RDS credentials not found, skipping database cleanup"
