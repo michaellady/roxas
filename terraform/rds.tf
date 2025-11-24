@@ -11,27 +11,11 @@ data "aws_db_instance" "shared" {
 }
 
 # Data source: Reference shared RDS credentials for PR environments
-# Note: Secret was created with name_prefix, so we search by Name tag
+# Using the known secret name (most recent version)
 data "aws_secretsmanager_secret" "shared_db_credentials" {
   count = local.is_pr_environment ? 1 : 0
 
-  # Find secret by ARN using Purpose tag filter
-  arn = try(element(data.aws_secretsmanager_secrets.shared_rds[0].arns, 0), null)
-}
-
-# List secrets by tag to find the shared RDS credentials
-data "aws_secretsmanager_secrets" "shared_rds" {
-  count = local.is_pr_environment ? 1 : 0
-
-  filter {
-    name   = "tag-key"
-    values = ["Purpose"]
-  }
-
-  filter {
-    name   = "tag-value"
-    values = ["shared-pr-rds"]
-  }
+  name = "roxas-shared-pr-rds-credentials-20251123224544740900000001"
 }
 
 data "aws_secretsmanager_secret_version" "shared_db_credentials" {
