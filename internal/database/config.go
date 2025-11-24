@@ -3,6 +3,7 @@ package database
 import "fmt"
 
 // Config holds database connection configuration
+// Test change for shared RDS validation - roxas-159q
 type Config struct {
 	Host     string
 	Port     string
