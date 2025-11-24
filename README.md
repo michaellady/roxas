@@ -267,6 +267,97 @@ graph TB
 - Network: Private subnets only
 - SSL/TLS: Required (`sslmode=require`)
 
+### Shared RDS Operations Runbook
+
+**1. Check which PRs are using shared RDS:**
+```bash
+# Get RDS credentials
+SECRET_ARN=$(AWS_PROFILE=dev-admin aws secretsmanager list-secrets \
+  --query 'SecretList[?starts_with(Name, `roxas-shared-pr-rds-credentials-`) && DeletedDate == null].ARN | [0]' \
+  --output text)
+SECRET=$(AWS_PROFILE=dev-admin aws secretsmanager get-secret-value \
+  --secret-id "$SECRET_ARN" --query SecretString --output text)
+
+# Extract credentials
+DB_HOST=$(echo $SECRET | jq -r '.host')
+DB_USER=$(echo $SECRET | jq -r '.username')
+DB_PASS=$(echo $SECRET | jq -r '.password')
+
+# List all PR databases
+PGPASSWORD=$DB_PASS psql -h $DB_HOST -U $DB_USER -d postgres -c \
+  "SELECT datname FROM pg_database WHERE datname LIKE 'pr_%' ORDER BY datname;"
+```
+
+**2. Manually create/drop PR database:**
+```bash
+# Create database for PR (if automation failed)
+PGPASSWORD=$DB_PASS psql -h $DB_HOST -U $DB_USER -d postgres -c \
+  "CREATE DATABASE pr_123;"
+
+# Drop database for PR (manual cleanup)
+# First terminate connections
+PGPASSWORD=$DB_PASS psql -h $DB_HOST -U $DB_USER -d postgres -c \
+  "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='pr_123' AND pid <> pg_backend_pid();"
+# Then drop
+PGPASSWORD=$DB_PASS psql -h $DB_HOST -U $DB_USER -d postgres -c \
+  "DROP DATABASE IF EXISTS pr_123;"
+```
+
+**3. Connection limit troubleshooting:**
+```bash
+# Check current connections by database
+PGPASSWORD=$DB_PASS psql -h $DB_HOST -U $DB_USER -d postgres -c \
+  "SELECT datname, count(*) FROM pg_stat_activity GROUP BY datname ORDER BY count DESC;"
+
+# Check max connections setting
+PGPASSWORD=$DB_PASS psql -h $DB_HOST -U $DB_USER -d postgres -c \
+  "SHOW max_connections;"
+
+# Kill idle connections older than 10 minutes
+PGPASSWORD=$DB_PASS psql -h $DB_HOST -U $DB_USER -d postgres -c \
+  "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+   WHERE state = 'idle' AND state_change < NOW() - INTERVAL '10 minutes';"
+```
+
+**4. Disk space cleanup:**
+```bash
+# Check database sizes
+PGPASSWORD=$DB_PASS psql -h $DB_HOST -U $DB_USER -d postgres -c \
+  "SELECT datname, pg_size_pretty(pg_database_size(datname)) as size
+   FROM pg_database WHERE datname LIKE 'pr_%' ORDER BY pg_database_size(datname) DESC;"
+
+# Identify tables consuming most space (run per database)
+PGPASSWORD=$DB_PASS psql -h $DB_HOST -U $DB_USER -d pr_123 -c \
+  "SELECT relname, pg_size_pretty(pg_total_relation_size(relid))
+   FROM pg_catalog.pg_statio_user_tables ORDER BY pg_total_relation_size(relid) DESC LIMIT 10;"
+
+# VACUUM to reclaim space (run per database)
+PGPASSWORD=$DB_PASS psql -h $DB_HOST -U $DB_USER -d pr_123 -c "VACUUM FULL;"
+```
+
+**5. When to scale up:**
+| Metric | Current Limit | Warning | Action |
+|--------|--------------|---------|--------|
+| Connections | 80 max | >60 sustained | Upgrade to db.t4g.small (200 connections) |
+| Storage | 20 GB | <4 GB free | Increase allocated storage or cleanup |
+| CPU | 100% | >80% sustained | Upgrade instance class |
+| Memory | ~400 MB | <100 MB free | Upgrade instance class |
+| Concurrent PRs | 3 comfortable | >3 sustained | Upgrade to db.t4g.small (~$24/month) |
+
+```bash
+# Scale up via Terraform (in terraform/shared-rds/)
+# Edit main.tf: change instance_class = "db.t4g.small"
+# Then: terraform plan && terraform apply
+```
+
+**6. Migration to dedicated RDS (if PR needs isolation):**
+
+For PRs requiring dedicated resources (load testing, sensitive data):
+1. Don't use shared RDS - deploy dedicated RDS via Terraform workspace
+2. Set `use_shared_rds = false` in PR terraform variables
+3. PR will provision its own db.t4g.micro instance (~6 min deploy)
+4. Cost: ~$12/month additional per isolated PR
+
 ## Quick Start
 
 ### Prerequisites
