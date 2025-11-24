@@ -31,12 +31,12 @@ jobs:
           aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Terraform Init
-        working-directory: terraform
-        run: terraform init -backend-config=backend-dev.hcl
+        working-directory: terraform/service
+        run: terraform init -backend-config=../backend-dev.hcl
 
       - name: Check if workspace exists
         id: check-workspace
-        working-directory: terraform
+        working-directory: terraform/service
         run: |
           if terraform workspace list | grep -q "dev-pr-${{ github.event.pull_request.number }}"; then
             echo "exists=true" >> $GITHUB_OUTPUT
@@ -48,12 +48,12 @@ jobs:
 
       - name: Select Terraform Workspace
         if: steps.check-workspace.outputs.exists == 'true'
-        working-directory: terraform
+        working-directory: terraform/service
         run: terraform workspace select dev-pr-${{ github.event.pull_request.number }}
 
       - name: Terraform Destroy
         if: steps.check-workspace.outputs.exists == 'true'
-        working-directory: terraform
+        working-directory: terraform/service
         env:
           TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           TF_VAR_linkedin_access_token: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
@@ -64,7 +64,7 @@ jobs:
 
       - name: Delete Terraform Workspace
         if: steps.check-workspace.outputs.exists == 'true'
-        working-directory: terraform
+        working-directory: terraform/service
         run: |
           terraform workspace select default
           terraform workspace delete dev-pr-${{ github.event.pull_request.number }}
