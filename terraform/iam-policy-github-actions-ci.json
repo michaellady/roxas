@@ -138,6 +138,46 @@
         "arn:aws:logs:us-east-1:539402214167:log-group:/aws/lambda/roxas-*:*",
         "arn:aws:logs:us-east-1:539402214167:log-group:/aws/apigateway/roxas-*:*"
       ]
+    },
+    {
+      "Sid": "SecretsManagerAccess",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:ListSecrets",
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:CreateSecret",
+        "secretsmanager:DeleteSecret",
+        "secretsmanager:UpdateSecret",
+        "secretsmanager:PutSecretValue",
+        "secretsmanager:TagResource",
+        "secretsmanager:UntagResource"
+      ],
+      "Resource": [
+        "arn:aws:secretsmanager:us-east-1:539402214167:secret:roxas-*"
+      ]
+    },
+    {
+      "Sid": "RDSAccess",
+      "Effect": "Allow",
+      "Action": [
+        "rds:DescribeDBInstances",
+        "rds:DescribeDBSubnetGroups",
+        "rds:ListTagsForResource"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "EC2NetworkAccess",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeVpcs",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeAvailabilityZones",
+        "ec2:DescribeNetworkInterfaces"
+      ],
+      "Resource": "*"
     }
   ]
 }
