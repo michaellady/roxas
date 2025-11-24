@@ -37,7 +37,7 @@ resource "aws_db_subnet_group" "main" {
   count = local.is_pr_environment ? 0 : 1
 
   name_prefix = "${var.function_name}-${var.environment}-"
-  subnet_ids  = aws_subnet.private[*].id
+  subnet_ids  = local.private_subnet_ids
 
   tags = merge(local.common_tags, {
     Name = "${var.function_name}-${var.environment}-db-subnet-group"

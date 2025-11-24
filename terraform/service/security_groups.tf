@@ -4,7 +4,7 @@
 resource "aws_security_group" "rds" {
   name_prefix = "${var.function_name}-${var.environment}-rds-"
   description = "Security group for RDS PostgreSQL instance"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = local.vpc_id
 
   # Allow PostgreSQL access from Lambda
   ingress {
@@ -37,7 +37,7 @@ resource "aws_security_group" "rds" {
 resource "aws_security_group" "lambda" {
   name_prefix = "${var.function_name}-${var.environment}-lambda-"
   description = "Security group for Lambda function"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = local.vpc_id
 
   # Allow all outbound traffic (for RDS, Secrets Manager, OpenAI API)
   egress {

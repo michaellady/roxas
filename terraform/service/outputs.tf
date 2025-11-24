@@ -63,17 +63,17 @@ output "db_secret_arn" {
 }
 
 output "vpc_id" {
-  description = "ID of the VPC"
-  value       = aws_vpc.main.id
+  description = "ID of the VPC (existing dev VPC for PRs, created VPC otherwise)"
+  value       = local.vpc_id
 }
 
 output "private_subnet_ids" {
-  description = "IDs of private subnets"
-  value       = aws_subnet.private[*].id
+  description = "IDs of private subnets (existing dev subnets for PRs, created subnets otherwise)"
+  value       = local.private_subnet_ids
 }
 
 output "public_subnet_ids" {
-  description = "IDs of public subnets"
-  value       = aws_subnet.public[*].id
+  description = "IDs of public subnets (empty for PRs)"
+  value       = local.public_subnet_ids
 }
 
