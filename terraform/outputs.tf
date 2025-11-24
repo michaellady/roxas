@@ -39,19 +39,21 @@ output "certificate_arn" {
 }
 
 # Database Outputs
+# For PR environments: Shows shared RDS info with PR database name
+# For dedicated environments: Shows dedicated RDS info
 output "db_instance_endpoint" {
   description = "RDS instance endpoint"
-  value       = aws_db_instance.main.endpoint
+  value       = local.is_pr_environment ? data.aws_db_instance.shared[0].endpoint : aws_db_instance.main[0].endpoint
 }
 
 output "db_instance_name" {
   description = "Database name"
-  value       = aws_db_instance.main.db_name
+  value       = local.is_pr_environment ? local.pr_database_name : aws_db_instance.main[0].db_name
 }
 
 output "db_instance_arn" {
-  description = "ARN of the RDS instance"
-  value       = aws_db_instance.main.arn
+  description = "ARN of the RDS instance (not available for PR environments using shared RDS)"
+  value       = local.is_pr_environment ? null : aws_db_instance.main[0].arn
 }
 
 output "db_secret_arn" {
