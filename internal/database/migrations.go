@@ -30,17 +30,15 @@ func RunMigrations(pool *Pool) error {
 	// We need to construct the database URL for migrate
 	config := pool.Config()
 
-	// Build database URL in the format: pgx5://user:password@host:port/database
-	// URL-encode username and password to handle special characters
-	dbURL := fmt.Sprintf(
-		"pgx5://%s:%s@%s:%d/%s?sslmode=%s",
-		url.QueryEscape(config.ConnConfig.User),
-		url.QueryEscape(config.ConnConfig.Password),
-		config.ConnConfig.Host,
-		config.ConnConfig.Port,
-		config.ConnConfig.Database,
-		"require", // Always require SSL for production
-	)
+	// Build database URL using url.URL to properly handle special characters in credentials
+	u := &url.URL{
+		Scheme: "pgx5",
+		User:   url.UserPassword(config.ConnConfig.User, config.ConnConfig.Password),
+		Host:   fmt.Sprintf("%s:%d", config.ConnConfig.Host, config.ConnConfig.Port),
+		Path:   "/" + config.ConnConfig.Database,
+		RawQuery: "sslmode=require",
+	}
+	dbURL := u.String()
 
 	// Create migrate instance
 	m, err := migrate.NewWithSourceInstance("iofs", sourceDriver, dbURL)
