@@ -13,9 +13,11 @@ test-system:
 	go test -v ./internal/... ./cmd/...
 
 # Build Lambda binary and create deployment package
+# Use -trimpath and -buildvcs=false for deterministic builds
+# This ensures identical source code produces identical binaries with the same hash
 build:
 	mkdir -p bin
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/bootstrap cmd/server/main.go
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o bin/bootstrap cmd/server/main.go
 	cd bin && zip bootstrap.zip bootstrap
 	@ls -lh bin/bootstrap.zip | awk '{print "✓ Built bin/bootstrap.zip (" $$5 ")"}'
 
