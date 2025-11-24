@@ -98,7 +98,7 @@ resource "aws_lambda_function" "roxas" {
   # VPC configuration for RDS access
   vpc_config {
     subnet_ids         = local.private_subnet_ids
-    security_group_ids = [aws_security_group.lambda.id]
+    security_group_ids = [local.lambda_security_group_id]
   }
 
   environment {

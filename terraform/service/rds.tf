@@ -86,7 +86,7 @@ resource "aws_db_instance" "main" {
 
   # Network configuration
   db_subnet_group_name   = aws_db_subnet_group.main[0].name
-  vpc_security_group_ids = [aws_security_group.rds.id]
+  vpc_security_group_ids = [aws_security_group.rds[0].id]
   publicly_accessible    = false
 
   # Using default parameter group (no custom parameters needed for MVP)
