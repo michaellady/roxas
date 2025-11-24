@@ -3,6 +3,7 @@ package database
 import (
 	"embed"
 	"fmt"
+	"net/url"
 
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
@@ -29,16 +30,15 @@ func RunMigrations(pool *Pool) error {
 	// We need to construct the database URL for migrate
 	config := pool.Config()
 
-	// Build database URL in the format: pgx5://user:password@host:port/database
-	dbURL := fmt.Sprintf(
-		"pgx5://%s:%s@%s:%d/%s?sslmode=%s",
-		config.ConnConfig.User,
-		config.ConnConfig.Password,
-		config.ConnConfig.Host,
-		config.ConnConfig.Port,
-		config.ConnConfig.Database,
-		"require", // Always require SSL for production
-	)
+	// Build database URL using url.URL to properly handle special characters in credentials
+	u := &url.URL{
+		Scheme: "pgx5",
+		User:   url.UserPassword(config.ConnConfig.User, config.ConnConfig.Password),
+		Host:   fmt.Sprintf("%s:%d", config.ConnConfig.Host, config.ConnConfig.Port),
+		Path:   "/" + config.ConnConfig.Database,
+		RawQuery: "sslmode=require",
+	}
+	dbURL := u.String()
 
 	// Create migrate instance
 	m, err := migrate.NewWithSourceInstance("iofs", sourceDriver, dbURL)

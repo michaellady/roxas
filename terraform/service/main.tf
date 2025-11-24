@@ -97,8 +97,8 @@ resource "aws_lambda_function" "roxas" {
 
   # VPC configuration for RDS access
   vpc_config {
-    subnet_ids         = aws_subnet.private[*].id
-    security_group_ids = [aws_security_group.lambda.id]
+    subnet_ids         = local.private_subnet_ids
+    security_group_ids = [local.lambda_security_group_id]
   }
 
   environment {
@@ -107,7 +107,7 @@ resource "aws_lambda_function" "roxas" {
       LINKEDIN_ACCESS_TOKEN = var.linkedin_access_token
       WEBHOOK_SECRET        = var.webhook_secret
       LOG_LEVEL             = var.log_level
-      DB_SECRET_ARN         = aws_secretsmanager_secret.database.arn
+      DB_SECRET_NAME        = aws_secretsmanager_secret.database.name
     }
   }
 

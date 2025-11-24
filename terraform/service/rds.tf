@@ -37,7 +37,7 @@ resource "aws_db_subnet_group" "main" {
   count = local.is_pr_environment ? 0 : 1
 
   name_prefix = "${var.function_name}-${var.environment}-"
-  subnet_ids  = aws_subnet.private[*].id
+  subnet_ids  = local.private_subnet_ids
 
   tags = merge(local.common_tags, {
     Name = "${var.function_name}-${var.environment}-db-subnet-group"
@@ -86,7 +86,7 @@ resource "aws_db_instance" "main" {
 
   # Network configuration
   db_subnet_group_name   = aws_db_subnet_group.main[0].name
-  vpc_security_group_ids = [aws_security_group.rds.id]
+  vpc_security_group_ids = [aws_security_group.rds[0].id]
   publicly_accessible    = false
 
   # Using default parameter group (no custom parameters needed for MVP)
@@ -126,42 +126,9 @@ resource "aws_db_instance" "main" {
 # PR Database Provisioning on Shared RDS
 # ============================================================================
 
-# Create PR-specific database on shared RDS instance
-# Only runs for PR environments (e.g., dev-pr-123)
-resource "null_resource" "pr_database" {
-  count = local.is_pr_environment ? 1 : 0
-
-  # Trigger recreation if PR number changes
-  triggers = {
-    pr_database_name = local.pr_database_name
-    shared_rds_host  = data.aws_db_instance.shared[0].address
-  }
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      # Parse shared RDS credentials from Secrets Manager
-      SECRET_JSON='${data.aws_secretsmanager_secret_version.shared_db_credentials[0].secret_string}'
-      DB_HOST=$(echo $SECRET_JSON | jq -r '.host')
-      DB_PORT=$(echo $SECRET_JSON | jq -r '.port')
-      DB_USER=$(echo $SECRET_JSON | jq -r '.username')
-      DB_PASS=$(echo $SECRET_JSON | jq -r '.password')
-      DB_NAME='${local.pr_database_name}'
-
-      # Check if database already exists
-      EXISTS=$(PGPASSWORD=$DB_PASS psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'")
-
-      if [ "$EXISTS" != "1" ]; then
-        echo "Creating database $DB_NAME on shared RDS..."
-        PGPASSWORD=$DB_PASS psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d postgres -c "CREATE DATABASE $DB_NAME OWNER $DB_USER"
-        echo "Database $DB_NAME created successfully"
-      else
-        echo "Database $DB_NAME already exists"
-      fi
-    EOT
-  }
-
-  depends_on = [
-    data.aws_db_instance.shared,
-    data.aws_secretsmanager_secret_version.shared_db_credentials
-  ]
-}
+# NOTE: PR databases are now created automatically by the Lambda function on first startup.
+# The Lambda's EnsureDatabaseExists() function connects to the postgres database and creates
+# the PR-specific database (e.g., pr_123) if it doesn't exist. This eliminates the need for
+# a null_resource provisioner that couldn't reach the private RDS from GitHub Actions.
+#
+# See: cmd/server/main.go and internal/database/provision.go

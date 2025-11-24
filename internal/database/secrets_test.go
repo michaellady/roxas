@@ -2,13 +2,14 @@ package database
 
 import (
 	"context"
+	"fmt"
 	"testing"
 )
 
 func TestDBSecret_ToConfig(t *testing.T) {
 	secret := DBSecret{
 		Host:     "localhost",
-		Port:     "5432",
+		Port:     5432,
 		Username: "testuser",
 		Password: "testpass",
 		Database: "testdb",
@@ -16,7 +17,7 @@ func TestDBSecret_ToConfig(t *testing.T) {
 
 	cfg := &Config{
 		Host:     secret.Host,
-		Port:     secret.Port,
+		Port:     fmt.Sprintf("%d", secret.Port),
 		User:     secret.Username,
 		Password: secret.Password,
 		Database: secret.Database,
@@ -30,8 +31,9 @@ func TestDBSecret_ToConfig(t *testing.T) {
 	if cfg.Host != secret.Host {
 		t.Errorf("Host = %v, want %v", cfg.Host, secret.Host)
 	}
-	if cfg.Port != secret.Port {
-		t.Errorf("Port = %v, want %v", cfg.Port, secret.Port)
+	expectedPort := fmt.Sprintf("%d", secret.Port)
+	if cfg.Port != expectedPort {
+		t.Errorf("Port = %v, want %v", cfg.Port, expectedPort)
 	}
 	if cfg.User != secret.Username {
 		t.Errorf("User = %v, want %v", cfg.User, secret.Username)
