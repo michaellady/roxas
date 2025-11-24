@@ -15,14 +15,8 @@ data "aws_db_instance" "shared" {
 data "aws_secretsmanager_secret" "shared_db_credentials" {
   count = local.is_pr_environment ? 1 : 0
 
-  # Find secret by Name tag (tag:Name=roxas-shared-pr-rds-credentials)
-  name = try(
-    element([
-      for arn in data.aws_secretsmanager_secrets.shared_rds[0].arns :
-      split(":", arn)[6]  # Extract secret name from ARN
-    ], 0),
-    null
-  )
+  # Find secret by ARN using Purpose tag filter
+  arn = try(element(data.aws_secretsmanager_secrets.shared_rds[0].arns, 0), null)
 }
 
 # List secrets by tag to find the shared RDS credentials
