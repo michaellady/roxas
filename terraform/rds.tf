@@ -10,12 +10,19 @@ data "aws_db_instance" "shared" {
   db_instance_identifier = "roxas-shared-pr-rds"
 }
 
+# Data source: Read SSM parameter containing the shared RDS secret name
+data "aws_ssm_parameter" "shared_db_secret_name" {
+  count = local.is_pr_environment ? 1 : 0
+
+  name = "/roxas/shared-rds/credentials-secret-name"
+}
+
 # Data source: Reference shared RDS credentials for PR environments
-# Using the known secret name (most recent version)
+# Using dynamic lookup via SSM parameter
 data "aws_secretsmanager_secret" "shared_db_credentials" {
   count = local.is_pr_environment ? 1 : 0
 
-  name = "roxas-shared-pr-rds-credentials-20251123224544740900000001"
+  name = data.aws_ssm_parameter.shared_db_secret_name[0].value
 }
 
 data "aws_secretsmanager_secret_version" "shared_db_credentials" {

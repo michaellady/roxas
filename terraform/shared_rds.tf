@@ -135,6 +135,21 @@ resource "aws_secretsmanager_secret_version" "shared_db_credentials" {
   })
 }
 
+# SSM Parameter to store the secret name for dynamic discovery by PR workspaces
+resource "aws_ssm_parameter" "shared_db_secret_name" {
+  count = local.create_shared_rds ? 1 : 0
+
+  name        = "/roxas/shared-rds/credentials-secret-name"
+  description = "Name of the Secrets Manager secret containing shared RDS credentials"
+  type        = "String"
+  value       = aws_secretsmanager_secret.shared_db_credentials[0].name
+
+  tags = merge(local.common_tags, {
+    Purpose     = "shared-pr-rds"
+    Environment = "dev"
+  })
+}
+
 # CloudWatch alarm for high connection count
 resource "aws_cloudwatch_metric_alarm" "shared_rds_connections" {
   count = local.create_shared_rds ? 1 : 0

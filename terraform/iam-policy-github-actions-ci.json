@@ -210,6 +210,22 @@
         "ec2:DescribeNetworkInterfaces"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "SSMParameterAccess",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "ssm:PutParameter",
+        "ssm:DeleteParameter",
+        "ssm:AddTagsToResource",
+        "ssm:RemoveTagsFromResource",
+        "ssm:ListTagsForResource"
+      ],
+      "Resource": [
+        "arn:aws:ssm:us-east-1:539402214167:parameter/roxas/*"
+      ]
     }
   ]
 }
