@@ -35,3 +35,8 @@ output "shared_rds_connection_string_template" {
   description = "Connection string template for PR databases (replace {PR_NUMBER} with actual PR number)"
   value       = "postgres://${aws_db_instance.shared.username}:PASSWORD@${aws_db_instance.shared.address}:${aws_db_instance.shared.port}/pr_{PR_NUMBER}?sslmode=require"
 }
+
+output "shared_rds_dashboard_url" {
+  description = "CloudWatch dashboard URL for shared RDS monitoring"
+  value       = "https://${var.aws_region}.console.aws.amazon.com/cloudwatch/home?region=${var.aws_region}#dashboards:name=roxas-shared-rds-health"
+}
