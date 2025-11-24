@@ -110,6 +110,19 @@ jobs:
           TF_VAR_environment: dev
         run: terraform destroy -auto-approve
 
+      - name: Wait for Lambda ENI Cleanup
+        if: steps.check-workspace.outputs.exists == 'true'
+        run: |
+          FUNCTION_NAME="roxas-webhook-handler-pr-${{ github.event.pull_request.number }}"
+          echo "Waiting for Lambda ENIs to be released for: $FUNCTION_NAME"
+
+          # Run ENI cleanup wait script with 20-minute timeout
+          # This prevents VPC deletion failures due to attached network interfaces
+          ./scripts/wait-for-eni-cleanup.sh "$FUNCTION_NAME" 1200 || {
+            echo "⚠️ ENI cleanup script exited with status $?"
+            echo "Continuing with workflow - VPC deletion may fail if ENIs are still attached"
+          }
+
       - name: Delete Terraform Workspace
         if: steps.check-workspace.outputs.exists == 'true'
         working-directory: terraform/service
