@@ -116,7 +116,7 @@ resource "aws_db_instance" "shared" {
   # Backup configuration
   backup_retention_period = 1                     # Minimal retention for dev
   backup_window           = "03:00-04:00"         # UTC
-  maintenance_window      = "mon:04:00-mon:05:00" # UTC
+  maintenance_window      = "Mon:04:00-Mon:05:00" # UTC
 
   # Protection and monitoring
   deletion_protection             = false # Allow destruction for dev
@@ -159,6 +159,19 @@ resource "aws_secretsmanager_secret_version" "shared_db_credentials" {
     host     = aws_db_instance.shared.address
     port     = aws_db_instance.shared.port
     dbname   = aws_db_instance.shared.db_name
+  })
+}
+
+# SSM Parameter to store the secret name for dynamic discovery by PR workspaces
+resource "aws_ssm_parameter" "shared_db_secret_name" {
+  name        = "/roxas/shared-rds/credentials-secret-name"
+  description = "Name of the Secrets Manager secret containing shared RDS credentials"
+  type        = "String"
+  value       = aws_secretsmanager_secret.shared_db_credentials.name
+
+  tags = merge(local.common_tags, {
+    Purpose     = "shared-pr-rds"
+    Environment = "dev"
   })
 }
 
