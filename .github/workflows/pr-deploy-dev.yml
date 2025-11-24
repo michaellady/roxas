@@ -94,19 +94,19 @@ jobs:
 
       - name: Terraform Init
         if: steps.check-changes.outputs.needs_deployment == 'true'
-        working-directory: terraform
-        run: terraform init -backend-config=backend-dev.hcl
+        working-directory: terraform/service
+        run: terraform init -backend-config=../backend-dev.hcl
 
       - name: Setup Terraform Workspace
         if: steps.check-changes.outputs.needs_deployment == 'true'
-        working-directory: terraform
+        working-directory: terraform/service
         run: |
           terraform workspace new dev-pr-${{ github.event.pull_request.number }} || \
           terraform workspace select dev-pr-${{ github.event.pull_request.number }}
 
       - name: Terraform Plan
         if: steps.check-changes.outputs.needs_deployment == 'true'
-        working-directory: terraform
+        working-directory: terraform/service
         env:
           TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           TF_VAR_linkedin_access_token: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
@@ -119,7 +119,7 @@ jobs:
 
       - name: Terraform Apply
         if: steps.check-changes.outputs.needs_deployment == 'true'
-        working-directory: terraform
+        working-directory: terraform/service
         env:
           TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           TF_VAR_linkedin_access_token: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
@@ -133,7 +133,7 @@ jobs:
       - name: Get Webhook URL from Terraform
         if: steps.check-changes.outputs.needs_deployment == 'true'
         id: deployment-info
-        working-directory: terraform
+        working-directory: terraform/service
         run: |
           WEBHOOK_URL=$(terraform output -raw webhook_url)
           FUNCTION_NAME=$(terraform output -raw lambda_function_name)

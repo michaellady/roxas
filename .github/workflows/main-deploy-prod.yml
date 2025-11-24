@@ -63,17 +63,17 @@ jobs:
           aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Terraform Init
-        working-directory: terraform
-        run: terraform init -backend-config=backend-prod.hcl
+        working-directory: terraform/service
+        run: terraform init -backend-config=../backend-prod.hcl
 
       - name: Setup Terraform Workspace
-        working-directory: terraform
+        working-directory: terraform/service
         run: |
           terraform workspace new prod || \
           terraform workspace select prod
 
       - name: Terraform Plan
-        working-directory: terraform
+        working-directory: terraform/service
         env:
           TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           TF_VAR_linkedin_access_token: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
@@ -84,7 +84,7 @@ jobs:
         run: terraform plan -out=tfplan
 
       - name: Terraform Apply
-        working-directory: terraform
+        working-directory: terraform/service
         env:
           TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           TF_VAR_linkedin_access_token: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
@@ -96,7 +96,7 @@ jobs:
 
       - name: Get Webhook URL from Terraform
         id: deployment-info
-        working-directory: terraform
+        working-directory: terraform/service
         run: |
           WEBHOOK_URL=$(terraform output -raw webhook_url)
           FUNCTION_NAME=$(terraform output -raw lambda_function_name)
