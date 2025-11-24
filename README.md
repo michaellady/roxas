@@ -249,10 +249,17 @@ graph TB
 - PR databases: `pr_{number}` (e.g., `pr_22`, `pr_156`)
 - Connection: `postgres://roxas_app:PWD@shared-rds:5432/pr_{PR_NUMBER}`
 
-**Resource Limits:**
-- **Connections:** 100 total (db.t4g.micro), ~20 per PR = 5 concurrent PRs
-- **Storage:** 20 GB (monitoring at 80% = 16 GB)
-- **Scaling:** Upgrade to db.t4g.small for 4-10 PRs (~$24/month)
+**Resource Limits & Connection Pool Sizing:**
+- **Instance:** db.t4g.micro (~80 max connections, ~400MB RAM)
+- **Connection Pool:** Each PR Lambda should use max 10 connections
+- **Comfortable Capacity:** 3 concurrent PRs (30 connections + system overhead)
+- **Storage:** 20 GB allocated, alarm at 4 GB free (16 GB used)
+- **Scaling Trigger:** Consistently >3 PRs OR >16GB disk usage → upgrade to db.t4g.small (~$24/month)
+
+**CloudWatch Monitoring:**
+- **Dashboard:** `roxas-shared-rds-health` - Connections, CPU, Memory, Storage, IOPS
+- **Alarms:** Connection count >60, CPU >80%, Free memory <100MB, Storage <4GB free
+- **Logs:** PostgreSQL and upgrade logs exported to CloudWatch
 
 **Security:**
 - Application user: `roxas_app` (owns all PR databases)
