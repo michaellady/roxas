@@ -14,7 +14,7 @@ locals {
     host     = data.aws_db_instance.shared[0].address
     port     = data.aws_db_instance.shared[0].port
     dbname   = local.pr_database_name
-  } : {
+    } : {
     # Dedicated environment: Use dedicated RDS
     username = aws_db_instance.main[0].username
     password = random_password.db_password[0].result
@@ -51,12 +51,6 @@ resource "aws_secretsmanager_secret_version" "database" {
     dbname            = local.db_credentials.dbname
     connection_string = local.db_connection_string
   })
-
-  depends_on = local.is_pr_environment ? [
-    null_resource.pr_database
-  ] : [
-    aws_db_instance.main
-  ]
 }
 
 # Inline IAM Policy for Lambda to read database secrets
