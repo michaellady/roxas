@@ -3,6 +3,7 @@ package database
 import (
 	"embed"
 	"fmt"
+	"net/url"
 
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
@@ -30,10 +31,11 @@ func RunMigrations(pool *Pool) error {
 	config := pool.Config()
 
 	// Build database URL in the format: pgx5://user:password@host:port/database
+	// URL-encode username and password to handle special characters
 	dbURL := fmt.Sprintf(
 		"pgx5://%s:%s@%s:%d/%s?sslmode=%s",
-		config.ConnConfig.User,
-		config.ConnConfig.Password,
+		url.QueryEscape(config.ConnConfig.User),
+		url.QueryEscape(config.ConnConfig.Password),
 		config.ConnConfig.Host,
 		config.ConnConfig.Port,
 		config.ConnConfig.Database,
