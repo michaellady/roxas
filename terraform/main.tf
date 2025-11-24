@@ -25,6 +25,16 @@ provider "aws" {
 # Local values for resource naming
 locals {
   function_name_full = "${var.function_name}-${var.environment}"
+
+  # Detect if this is a PR workspace (e.g., "dev-pr-123")
+  is_pr_environment = var.environment == "dev" && can(regex("^dev-pr-[0-9]+$", terraform.workspace))
+
+  # Extract PR number from workspace name (e.g., "dev-pr-123" -> "123")
+  pr_number = local.is_pr_environment ? regex("^dev-pr-([0-9]+)$", terraform.workspace)[0] : ""
+
+  # PR database name (e.g., "pr_123")
+  pr_database_name = local.is_pr_environment ? "pr_${local.pr_number}" : ""
+
   common_tags = merge(var.tags, {
     Environment = var.environment
   })
