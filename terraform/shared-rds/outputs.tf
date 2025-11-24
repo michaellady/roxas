@@ -40,3 +40,13 @@ output "shared_rds_dashboard_url" {
   description = "CloudWatch dashboard URL for shared RDS monitoring"
   value       = "https://${var.aws_region}.console.aws.amazon.com/cloudwatch/home?region=${var.aws_region}#dashboards:name=roxas-shared-rds-health"
 }
+
+output "cleanup_lambda_function_name" {
+  description = "Name of the Lambda function for PR database cleanup"
+  value       = aws_lambda_function.cleanup.function_name
+}
+
+output "cleanup_lambda_arn" {
+  description = "ARN of the Lambda function for PR database cleanup"
+  value       = aws_lambda_function.cleanup.arn
+}

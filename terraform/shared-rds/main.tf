@@ -10,6 +10,14 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.6"
     }
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.4"
+    }
+    null = {
+      source  = "hashicorp/null"
+      version = "~> 3.2"
+    }
   }
 
   # Remote state backend for shared RDS
@@ -250,6 +258,187 @@ resource "aws_cloudwatch_metric_alarm" "shared_rds_memory" {
 
   tags = local.common_tags
 }
+
+# =============================================================================
+# DB Cleanup Lambda Function
+# Runs inside VPC to drop PR databases when PRs are closed
+# Invoked by GitHub Actions workflow (replaces direct psql from external runners)
+# =============================================================================
+
+# Security group for cleanup Lambda (needs access to RDS)
+resource "aws_security_group" "cleanup_lambda" {
+  name        = "roxas-shared-rds-cleanup-lambda-sg"
+  description = "Security group for DB cleanup Lambda function"
+  vpc_id      = data.aws_vpc.main.id
+
+  # Outbound to RDS
+  egress {
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [data.aws_security_group.rds.id]
+    description     = "PostgreSQL to shared RDS"
+  }
+
+  # Outbound HTTPS for Secrets Manager API calls
+  egress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "HTTPS for AWS API calls"
+  }
+
+  tags = merge(local.common_tags, {
+    Name = "roxas-shared-rds-cleanup-lambda-sg"
+  })
+}
+
+# Allow cleanup Lambda to connect to RDS
+resource "aws_security_group_rule" "rds_from_cleanup_lambda" {
+  type                     = "ingress"
+  from_port                = 5432
+  to_port                  = 5432
+  protocol                 = "tcp"
+  source_security_group_id = aws_security_group.cleanup_lambda.id
+  security_group_id        = data.aws_security_group.rds.id
+  description              = "PostgreSQL from cleanup Lambda"
+}
+
+# IAM role for cleanup Lambda
+resource "aws_iam_role" "cleanup_lambda" {
+  name = "roxas-shared-rds-cleanup-lambda-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "lambda.amazonaws.com"
+        }
+      }
+    ]
+  })
+
+  tags = local.common_tags
+}
+
+# Lambda basic execution + VPC access
+resource "aws_iam_role_policy_attachment" "cleanup_lambda_vpc" {
+  role       = aws_iam_role.cleanup_lambda.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+# Secrets Manager read access for DB credentials
+resource "aws_iam_role_policy" "cleanup_lambda_secrets" {
+  name = "secrets-manager-access"
+  role = aws_iam_role.cleanup_lambda.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue"
+        ]
+        Resource = [
+          aws_secretsmanager_secret.shared_db_credentials.arn
+        ]
+      }
+    ]
+  })
+}
+
+# CloudWatch log group for cleanup Lambda
+resource "aws_cloudwatch_log_group" "cleanup_lambda" {
+  name              = "/aws/lambda/roxas-shared-rds-cleanup"
+  retention_in_days = 7
+
+  tags = local.common_tags
+}
+
+# Build Lambda layer with pg8000 dependency
+resource "null_resource" "cleanup_lambda_layer" {
+  triggers = {
+    requirements = filemd5("${path.module}/lambda/requirements.txt")
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      cd ${path.module}/lambda
+      rm -rf python layer.zip
+      mkdir -p python
+      pip install -r requirements.txt -t python --platform manylinux2014_aarch64 --only-binary=:all: --python-version 3.12 2>/dev/null || pip install -r requirements.txt -t python
+      zip -r layer.zip python
+    EOT
+  }
+}
+
+# Lambda layer for pg8000
+resource "aws_lambda_layer_version" "pg8000" {
+  filename            = "${path.module}/lambda/layer.zip"
+  layer_name          = "roxas-pg8000"
+  compatible_runtimes = ["python3.12"]
+
+  depends_on = [null_resource.cleanup_lambda_layer]
+}
+
+# Package Lambda function code
+data "archive_file" "cleanup_lambda" {
+  type        = "zip"
+  source_file = "${path.module}/lambda/db_cleanup.py"
+  output_path = "${path.module}/lambda/function.zip"
+}
+
+# Cleanup Lambda function
+resource "aws_lambda_function" "cleanup" {
+  filename         = data.archive_file.cleanup_lambda.output_path
+  function_name    = "roxas-shared-rds-cleanup"
+  role             = aws_iam_role.cleanup_lambda.arn
+  handler          = "db_cleanup.handler"
+  source_code_hash = data.archive_file.cleanup_lambda.output_base64sha256
+  runtime          = "python3.12"
+  timeout          = 30
+  memory_size      = 128
+  architectures    = ["arm64"]
+
+  layers = [aws_lambda_layer_version.pg8000.arn]
+
+  environment {
+    variables = {
+      DB_SECRET_NAME = aws_secretsmanager_secret.shared_db_credentials.name
+    }
+  }
+
+  vpc_config {
+    subnet_ids         = data.aws_subnets.private.ids
+    security_group_ids = [aws_security_group.cleanup_lambda.id]
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.cleanup_lambda,
+    aws_iam_role_policy_attachment.cleanup_lambda_vpc,
+    aws_iam_role_policy.cleanup_lambda_secrets
+  ]
+
+  tags = merge(local.common_tags, {
+    Name = "roxas-shared-rds-cleanup"
+  })
+}
+
+# Allow invocation from GitHub Actions (same AWS account)
+resource "aws_lambda_permission" "cleanup_invoke" {
+  statement_id  = "AllowAccountInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.cleanup.function_name
+  principal     = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+}
+
+# Get current AWS account ID
+data "aws_caller_identity" "current" {}
 
 # CloudWatch Dashboard for shared RDS health monitoring
 resource "aws_cloudwatch_dashboard" "shared_rds" {
