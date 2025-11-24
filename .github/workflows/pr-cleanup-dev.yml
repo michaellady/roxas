@@ -1,5 +1,6 @@
 name: PR Cleanup Dev
 
+# Cleanup workflow runs automatically when a PR is closed (removes all AWS resources)
 on:
   pull_request:
     types: [closed]
@@ -13,6 +14,12 @@ jobs:
     permissions:
       pull-requests: write
       contents: read
+
+    # Prevent concurrent cleanup operations for the same PR
+    # Wait for any in-progress deployments to complete before cleaning up
+    concurrency:
+      group: deploy-dev-pr-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
 
     steps:
       - name: Checkout code
@@ -109,6 +116,19 @@ jobs:
           TF_VAR_function_name: roxas-webhook-handler-pr-${{ github.event.pull_request.number }}
           TF_VAR_environment: dev
         run: terraform destroy -auto-approve
+
+      - name: Wait for Lambda ENI Cleanup
+        if: steps.check-workspace.outputs.exists == 'true'
+        run: |
+          FUNCTION_NAME="roxas-webhook-handler-pr-${{ github.event.pull_request.number }}"
+          echo "Waiting for Lambda ENIs to be released for: $FUNCTION_NAME"
+
+          # Run ENI cleanup wait script with 20-minute timeout
+          # This prevents VPC deletion failures due to attached network interfaces
+          ./scripts/wait-for-eni-cleanup.sh "$FUNCTION_NAME" 1200 || {
+            echo "⚠️ ENI cleanup script exited with status $?"
+            echo "Continuing with workflow - VPC deletion may fail if ENIs are still attached"
+          }
 
       - name: Delete Terraform Workspace
         if: steps.check-workspace.outputs.exists == 'true'

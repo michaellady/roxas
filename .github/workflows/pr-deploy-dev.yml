@@ -15,9 +15,11 @@ jobs:
       contents: read
 
     # Prevent concurrent deployments for the same PR
+    # Wait for previous deployments to complete instead of canceling them
+    # This prevents state locking issues and orphaned resources
     concurrency:
       group: deploy-dev-pr-${{ github.event.pull_request.number }}
-      cancel-in-progress: true
+      cancel-in-progress: false
 
     steps:
       - name: Checkout code
