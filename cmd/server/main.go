@@ -217,25 +217,32 @@ func main() {
 			log.Printf("Warning: Failed to load database config: %v", err)
 			log.Println("Continuing without database connection")
 		} else {
-			pool, err := database.NewPool(ctx, dbConfig)
-			if err != nil {
-				log.Printf("Warning: Failed to create database pool: %v", err)
+			// Ensure the database exists (creates it if needed for PR environments)
+			log.Printf("Ensuring database %s exists...", dbConfig.Database)
+			if err := database.EnsureDatabaseExists(ctx, dbConfig); err != nil {
+				log.Printf("Warning: Failed to ensure database exists: %v", err)
 				log.Println("Continuing without database connection")
 			} else {
-				dbPool = pool
-				log.Println("Database connection pool initialized successfully")
+				pool, err := database.NewPool(ctx, dbConfig)
+				if err != nil {
+					log.Printf("Warning: Failed to create database pool: %v", err)
+					log.Println("Continuing without database connection")
+				} else {
+					dbPool = pool
+					log.Println("Database connection pool initialized successfully")
 
-				// Run database migrations
-				log.Println("Running database migrations...")
-				if err := database.RunMigrations(pool); err != nil {
-					log.Printf("FATAL: Database migration failed: %v", err)
-					log.Println("Lambda will not start with migration failures")
-					os.Exit(1)
+					// Run database migrations
+					log.Println("Running database migrations...")
+					if err := database.RunMigrations(pool); err != nil {
+						log.Printf("FATAL: Database migration failed: %v", err)
+						log.Println("Lambda will not start with migration failures")
+						os.Exit(1)
+					}
+					log.Println("Database migrations completed successfully")
+
+					// Ensure cleanup on Lambda shutdown (best-effort)
+					defer dbPool.Close()
 				}
-				log.Println("Database migrations completed successfully")
-
-				// Ensure cleanup on Lambda shutdown (best-effort)
-				defer dbPool.Close()
 			}
 		}
 	} else {
