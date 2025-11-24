@@ -14,6 +14,12 @@ jobs:
       pull-requests: write
       contents: read
 
+    # Prevent concurrent cleanup operations for the same PR
+    # Wait for any in-progress deployments to complete before cleaning up
+    concurrency:
+      group: deploy-dev-pr-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
