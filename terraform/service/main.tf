@@ -6,6 +6,16 @@ terraform {
       source  = "hashicorp/aws"
       version = ">= 6.0.0"
     }
+    # Temporary: needed to clean up stale state from old architecture
+    # Remove after prod state is cleaned up (roxas-abvo)
+    random = {
+      source  = "hashicorp/random"
+      version = ">= 3.0.0"
+    }
+    cloudinit = {
+      source  = "hashicorp/cloudinit"
+      version = ">= 2.0.0"
+    }
   }
 
   # Remote state backend for safe concurrent deployments
