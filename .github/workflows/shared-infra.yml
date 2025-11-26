@@ -20,17 +20,18 @@ on:
           - prod
 
 jobs:
-  deploy-shared:
-    name: Deploy Shared Infrastructure
+  # Deploy to dev first (on push to main or workflow_dispatch with dev)
+  deploy-dev:
+    name: Deploy to Dev
     runs-on: ubuntu-latest
-    environment: ${{ github.event.inputs.environment || 'dev' }}
+    environment: dev
+    if: github.event_name == 'push' || github.event.inputs.environment == 'dev'
 
     permissions:
       contents: read
 
-    # Prevent concurrent deployments
     concurrency:
-      group: deploy-shared-${{ github.event.inputs.environment || 'dev' }}
+      group: deploy-shared-dev
       cancel-in-progress: false
 
     steps:
@@ -49,50 +50,100 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Set environment
-        id: env
-        run: |
-          ENV="${{ github.event.inputs.environment }}"
-          if [ -z "$ENV" ]; then
-            ENV="dev"
-          fi
-          echo "environment=$ENV" >> $GITHUB_OUTPUT
-          echo "Deploying shared infrastructure to: $ENV"
-
       - name: Terraform Init
         working-directory: terraform/shared
-        run: terraform init -backend-config=../backend-shared-${{ steps.env.outputs.environment }}.hcl
+        run: terraform init -backend-config=../backend-shared-dev.hcl
 
       - name: Setup Terraform Workspace
         working-directory: terraform/shared
         run: |
-          terraform workspace new ${{ steps.env.outputs.environment }} || \
-          terraform workspace select ${{ steps.env.outputs.environment }}
+          terraform workspace new dev || terraform workspace select dev
 
       - name: Terraform Plan
         working-directory: terraform/shared
         env:
-          TF_VAR_environment: ${{ steps.env.outputs.environment }}
+          TF_VAR_environment: dev
         run: terraform plan -out=tfplan
 
       - name: Terraform Apply
         working-directory: terraform/shared
         env:
-          TF_VAR_environment: ${{ steps.env.outputs.environment }}
+          TF_VAR_environment: dev
         run: terraform apply -auto-approve tfplan
 
       - name: Output SSM Parameters Created
         working-directory: terraform/shared
         run: |
-          echo "### Shared Infrastructure Deployed" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Environment:** ${{ steps.env.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "### Shared Infrastructure Deployed to Dev" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**SSM Parameters Created:**" >> $GITHUB_STEP_SUMMARY
-          echo "- /roxas/${{ steps.env.outputs.environment }}/shared/vpc-id" >> $GITHUB_STEP_SUMMARY
-          echo "- /roxas/${{ steps.env.outputs.environment }}/shared/private-subnet-ids" >> $GITHUB_STEP_SUMMARY
-          echo "- /roxas/${{ steps.env.outputs.environment }}/shared/lambda-sg-id" >> $GITHUB_STEP_SUMMARY
-          echo "- /roxas/${{ steps.env.outputs.environment }}/shared/rds-endpoint" >> $GITHUB_STEP_SUMMARY
-          echo "- /roxas/${{ steps.env.outputs.environment }}/shared/acm-certificate-arn" >> $GITHUB_STEP_SUMMARY
+          echo "- /roxas/dev/shared/vpc-id" >> $GITHUB_STEP_SUMMARY
+          echo "- /roxas/dev/shared/private-subnet-ids" >> $GITHUB_STEP_SUMMARY
+          echo "- /roxas/dev/shared/lambda-sg-id" >> $GITHUB_STEP_SUMMARY
+          echo "- /roxas/dev/shared/rds-endpoint" >> $GITHUB_STEP_SUMMARY
+          echo "- /roxas/dev/shared/acm-certificate-arn" >> $GITHUB_STEP_SUMMARY
+
+  # Deploy to prod after successful dev (on push to main) or directly (workflow_dispatch with prod)
+  deploy-prod:
+    name: Deploy to Prod
+    runs-on: ubuntu-latest
+    environment: prod
+    needs: [deploy-dev]
+    # Run if: push to main (after dev succeeds) OR workflow_dispatch with prod (even if dev was skipped)
+    if: always() && (github.event_name == 'push' && needs.deploy-dev.result == 'success') || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'prod')
+
+    permissions:
+      contents: read
+
+    concurrency:
+      group: deploy-shared-prod
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: terraform/shared
+        run: terraform init -backend-config=../backend-shared-prod.hcl
+
+      - name: Setup Terraform Workspace
+        working-directory: terraform/shared
+        run: |
+          terraform workspace new prod || terraform workspace select prod
+
+      - name: Terraform Plan
+        working-directory: terraform/shared
+        env:
+          TF_VAR_environment: prod
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        working-directory: terraform/shared
+        env:
+          TF_VAR_environment: prod
+        run: terraform apply -auto-approve tfplan
+
+      - name: Output SSM Parameters Created
+        working-directory: terraform/shared
+        run: |
+          echo "### Shared Infrastructure Deployed to Prod" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Service deployments can now use these SSM parameters." >> $GITHUB_STEP_SUMMARY
+          echo "**SSM Parameters Created:**" >> $GITHUB_STEP_SUMMARY
+          echo "- /roxas/prod/shared/vpc-id" >> $GITHUB_STEP_SUMMARY
+          echo "- /roxas/prod/shared/private-subnet-ids" >> $GITHUB_STEP_SUMMARY
+          echo "- /roxas/prod/shared/lambda-sg-id" >> $GITHUB_STEP_SUMMARY
+          echo "- /roxas/prod/shared/rds-endpoint" >> $GITHUB_STEP_SUMMARY
+          echo "- /roxas/prod/shared/acm-certificate-arn" >> $GITHUB_STEP_SUMMARY
