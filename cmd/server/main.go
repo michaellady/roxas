@@ -27,6 +27,8 @@ var dbPool *database.Pool
 // Config holds application configuration from environment variables
 type Config struct {
 	OpenAIAPIKey        string
+	OpenAIChatModel     string
+	OpenAIImageModel    string
 	LinkedInAccessToken string
 	WebhookSecret       string
 	DBSecretName        string
@@ -36,6 +38,8 @@ type Config struct {
 func loadConfig() Config {
 	return Config{
 		OpenAIAPIKey:        os.Getenv("OPENAI_API_KEY"),
+		OpenAIChatModel:     os.Getenv("OPENAI_CHAT_MODEL"),  // defaults to gpt-4o-mini if empty
+		OpenAIImageModel:    os.Getenv("OPENAI_IMAGE_MODEL"), // defaults to dall-e-2 if empty
 		LinkedInAccessToken: os.Getenv("LINKEDIN_ACCESS_TOKEN"),
 		WebhookSecret:       os.Getenv("WEBHOOK_SECRET"),
 		DBSecretName:        os.Getenv("DB_SECRET_NAME"),
@@ -112,7 +116,7 @@ func Handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 	}
 
 	// Initialize API clients
-	openAIClient := clients.NewOpenAIClient(config.OpenAIAPIKey, "")
+	openAIClient := clients.NewOpenAIClient(config.OpenAIAPIKey, "", config.OpenAIChatModel, config.OpenAIImageModel)
 	linkedInClient := clients.NewLinkedInClient(config.LinkedInAccessToken, "")
 
 	// Initialize services
