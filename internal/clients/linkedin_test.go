@@ -10,38 +10,64 @@ import (
 	"testing"
 )
 
+// mockLinkedInServer creates a mock server that handles userinfo and other LinkedIn endpoints
+func mockLinkedInServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Handle userinfo endpoint for client initialization
+		if r.URL.Path == "/v2/userinfo" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{
+				"sub": "urn:li:person:test-person-123",
+			})
+			return
+		}
+		// Delegate to test-specific handler
+		handler(w, r)
+	}))
+}
+
 // TestLinkedInImageUpload tests successful image upload to LinkedIn
 func TestLinkedInImageUpload(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping system test that requires real API credentials")
-	}
-
-	// Mock LinkedIn API server
+	var serverURL string
+	// Mock LinkedIn API server with proper image upload response
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify endpoint
-		if !strings.Contains(r.URL.Path, "/assets") && !strings.Contains(r.URL.Path, "/images") {
-			t.Errorf("Expected assets or images endpoint, got %s", r.URL.Path)
+		// Handle userinfo endpoint for client initialization
+		if r.URL.Path == "/v2/userinfo" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"sub": "urn:li:person:test-123"})
+			return
 		}
 
-		// Verify Authorization header
-		auth := r.Header.Get("Authorization")
-		if !strings.HasPrefix(auth, "Bearer ") {
-			t.Error("Missing or invalid Authorization header")
+		// Handle image initialization endpoint
+		if strings.Contains(r.URL.Path, "/images") {
+			auth := r.Header.Get("Authorization")
+			if !strings.HasPrefix(auth, "Bearer ") {
+				t.Error("Missing or invalid Authorization header")
+			}
+			if r.Method != "POST" {
+				t.Errorf("Expected POST, got %s", r.Method)
+			}
+			response := map[string]interface{}{
+				"value": map[string]interface{}{
+					"uploadUrl":          serverURL + "/upload",
+					"image":              "urn:li:image:test-image-123",
+					"uploadUrlExpiresAt": 9999999999999,
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(response)
+			return
 		}
 
-		// Verify it's a POST request
-		if r.Method != "POST" {
-			t.Errorf("Expected POST, got %s", r.Method)
+		// Handle binary upload endpoint
+		if strings.Contains(r.URL.Path, "/upload") {
+			w.WriteHeader(http.StatusCreated)
+			return
 		}
 
-		// Send mock response with asset URN
-		response := map[string]interface{}{
-			"asset": "urn:li:digitalmediaAsset:test-asset-123",
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(response)
+		t.Errorf("Unexpected endpoint: %s", r.URL.Path)
 	}))
+	serverURL = server.URL
 	defer server.Close()
 
 	// Create test image file
@@ -74,7 +100,7 @@ func TestLinkedInImageUpload(t *testing.T) {
 // TestLinkedInCreatePost tests successful post creation
 func TestLinkedInCreatePost(t *testing.T) {
 	// Mock LinkedIn UGC API server
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := mockLinkedInServer(t, func(w http.ResponseWriter, r *http.Request) {
 		// Verify endpoint
 		if !strings.Contains(r.URL.Path, "/ugcPosts") && !strings.Contains(r.URL.Path, "/posts") {
 			t.Errorf("Expected ugcPosts or posts endpoint, got %s", r.URL.Path)
@@ -110,7 +136,7 @@ func TestLinkedInCreatePost(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(response)
-	}))
+	})
 	defer server.Close()
 
 	client := NewLinkedInClient("test-access-token", server.URL)
@@ -135,11 +161,11 @@ func TestLinkedInCreatePost(t *testing.T) {
 
 // TestLinkedInHandlesAuthError tests 401 unauthorized handling
 func TestLinkedInHandlesAuthError(t *testing.T) {
-	// Mock server returning 401
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Mock server returning 401 for posts (but 200 for userinfo)
+	server := mockLinkedInServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		w.Write([]byte(`{"message": "Invalid access token"}`))
-	}))
+	})
 	defer server.Close()
 
 	client := NewLinkedInClient("invalid-token", server.URL)
@@ -158,11 +184,11 @@ func TestLinkedInHandlesAuthError(t *testing.T) {
 
 // TestLinkedInHandles403Forbidden tests permission error handling
 func TestLinkedInHandles403Forbidden(t *testing.T) {
-	// Mock server returning 403
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Mock server returning 403 for posts
+	server := mockLinkedInServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		w.Write([]byte(`{"message": "Insufficient permissions"}`))
-	}))
+	})
 	defer server.Close()
 
 	client := NewLinkedInClient("test-token", server.URL)
@@ -181,11 +207,11 @@ func TestLinkedInHandles403Forbidden(t *testing.T) {
 
 // TestLinkedInHandlesRateLimit tests 429 rate limit handling
 func TestLinkedInHandlesRateLimit(t *testing.T) {
-	// Mock server returning 429
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Mock server returning 429 for posts
+	server := mockLinkedInServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
 		w.Write([]byte(`{"message": "Rate limit exceeded"}`))
-	}))
+	})
 	defer server.Close()
 
 	client := NewLinkedInClient("test-token", server.URL)
@@ -204,33 +230,51 @@ func TestLinkedInHandlesRateLimit(t *testing.T) {
 
 // TestLinkedInPostWithImage tests complete flow with image
 func TestLinkedInPostWithImage(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping system test that requires real API credentials")
-	}
-
 	uploadCalled := false
 	postCalled := false
+	var serverURL string
 
-	// Mock server handling both upload and post
+	// Mock server handling userinfo, upload, and post
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "asset") || strings.Contains(r.URL.Path, "image") {
-			// Image upload endpoint
+		// Handle userinfo for client init
+		if r.URL.Path == "/v2/userinfo" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"sub": "urn:li:person:test-123"})
+			return
+		}
+
+		// Handle image init endpoint
+		if strings.Contains(r.URL.Path, "image") && strings.Contains(r.URL.Path, "action=initializeUpload") || strings.Contains(r.URL.Path, "/rest/images") {
 			uploadCalled = true
 			response := map[string]interface{}{
-				"asset": "urn:li:digitalmediaAsset:uploaded-123",
+				"value": map[string]interface{}{
+					"uploadUrl":          serverURL + "/upload",
+					"image":              "urn:li:image:uploaded-123",
+					"uploadUrlExpiresAt": 9999999999999,
+				},
 			}
-			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(response)
-		} else if strings.Contains(r.URL.Path, "Post") || strings.Contains(r.URL.Path, "post") {
-			// Post creation endpoint
+			return
+		}
+
+		// Handle binary upload
+		if strings.Contains(r.URL.Path, "/upload") {
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+
+		// Handle post creation
+		if strings.Contains(r.URL.Path, "post") {
 			postCalled = true
 			response := map[string]interface{}{
 				"id": "urn:li:share:post-456",
 			}
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(response)
+			return
 		}
 	}))
+	serverURL = server.URL
 	defer server.Close()
 
 	// Create test image
@@ -271,9 +315,9 @@ func TestLinkedInPostWithImage(t *testing.T) {
 
 // TestLinkedInHandlesMissingFile tests error handling for missing image file
 func TestLinkedInHandlesMissingFile(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := mockLinkedInServer(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Error("Should not make API call for missing file")
-	}))
+	})
 	defer server.Close()
 
 	client := NewLinkedInClient("test-token", server.URL)
@@ -287,7 +331,7 @@ func TestLinkedInHandlesMissingFile(t *testing.T) {
 
 // TestLinkedInValidatesAccessToken tests token validation
 func TestLinkedInValidatesAccessToken(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := mockLinkedInServer(t, func(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Authorization")
 		expectedAuth := "Bearer test-valid-token"
 
@@ -299,7 +343,7 @@ func TestLinkedInValidatesAccessToken(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 			io.WriteString(w, `{"message": "Invalid token"}`)
 		}
-	}))
+	})
 	defer server.Close()
 
 	// Valid token should succeed
@@ -319,7 +363,7 @@ func TestLinkedInValidatesAccessToken(t *testing.T) {
 
 // TestLinkedInPostWithoutImage tests text-only post creation
 func TestLinkedInPostWithoutImage(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := mockLinkedInServer(t, func(w http.ResponseWriter, r *http.Request) {
 		var requestBody map[string]interface{}
 		json.NewDecoder(r.Body).Decode(&requestBody)
 
@@ -331,7 +375,7 @@ func TestLinkedInPostWithoutImage(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(response)
-	}))
+	})
 	defer server.Close()
 
 	client := NewLinkedInClient("test-token", server.URL)

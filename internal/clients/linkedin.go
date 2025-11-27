@@ -49,7 +49,7 @@ func NewLinkedInClient(accessToken string, baseURL string) *LinkedInClient {
 // getPersonURN fetches the authenticated user's LinkedIn person URN
 func (c *LinkedInClient) getPersonURN() (string, error) {
 	// Try OpenID Connect userinfo endpoint (requires openid + profile scopes)
-	req, err := http.NewRequest("GET", "https://api.linkedin.com/v2/userinfo", nil)
+	req, err := http.NewRequest("GET", c.baseURL+"/v2/userinfo", nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
