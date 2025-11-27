@@ -40,3 +40,52 @@ jobs:
 
       - name: Run integration tests
         run: make test-int
+
+      - name: Generate coverage report
+        if: github.event_name == 'pull_request'
+        run: |
+          go test -short -coverprofile=coverage.out ./internal/... ./cmd/...
+          echo "## 📊 Test Coverage Report" >> coverage-report.md
+          echo "" >> coverage-report.md
+          TOTAL=$(go tool cover -func=coverage.out | grep total | awk '{print $3}')
+          echo "**Total Coverage: ${TOTAL}**" >> coverage-report.md
+          echo "" >> coverage-report.md
+          echo "| Package | Coverage |" >> coverage-report.md
+          echo "|---------|----------|" >> coverage-report.md
+          go tool cover -func=coverage.out | grep -v total | awk '{print "| " $1 " | " $3 " |"}' >> coverage-report.md
+
+      - name: Post coverage comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('coverage-report.md', 'utf8');
+
+            // Find existing coverage comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(comment =>
+              comment.user.type === 'Bot' &&
+              comment.body.includes('📊 Test Coverage Report')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: report
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: report
+              });
+            }

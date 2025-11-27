@@ -1,8 +1,17 @@
-.PHONY: test test-int test-system build deploy e2e clean
+.PHONY: test test-int test-system test-coverage build deploy e2e clean
 
 # Run unit tests (fast, no external API calls)
 test:
 	go test -v -short ./internal/... ./cmd/...
+
+# Run unit tests with coverage report
+test-coverage:
+	go test -short -coverprofile=coverage.out ./internal/... ./cmd/...
+	@echo ""
+	@echo "=== Coverage by Package ==="
+	@go tool cover -func=coverage.out | grep -v "total:" | awk '{printf "%-60s %s\n", $$1, $$3}'
+	@echo ""
+	@go tool cover -func=coverage.out | grep "total:" | awk '{print "Total Coverage: " $$3}'
 
 # Run integration tests
 test-int:
