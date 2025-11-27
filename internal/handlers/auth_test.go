@@ -2,44 +2,76 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
 )
 
-// RegisterRequest represents the registration request body
-type RegisterRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+// MockUserStore is an in-memory implementation of UserStore for testing
+type MockUserStore struct {
+	mu    sync.Mutex
+	users map[string]*User
 }
 
-// RegisterResponse represents the expected registration response
-type RegisterResponse struct {
-	User  UserResponse `json:"user"`
-	Token string       `json:"token"`
+// NewMockUserStore creates a new mock user store
+func NewMockUserStore() *MockUserStore {
+	return &MockUserStore{
+		users: make(map[string]*User),
+	}
 }
 
-// UserResponse represents the user object in responses
-type UserResponse struct {
-	ID        string `json:"id"`
-	Email     string `json:"email"`
-	CreatedAt string `json:"created_at"`
+// CreateUser creates a new user in the mock store
+func (m *MockUserStore) CreateUser(ctx context.Context, email, passwordHash string) (*User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Check for duplicate email
+	for _, u := range m.users {
+		if u.Email == email {
+			return nil, ErrDuplicateEmail
+		}
+	}
+
+	user := &User{
+		ID:           uuid.New().String(),
+		Email:        email,
+		PasswordHash: passwordHash,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+
+	m.users[user.ID] = user
+	return user, nil
 }
 
-// ErrorResponse represents an error response
-type ErrorResponse struct {
-	Error string `json:"error"`
+// GetUserByEmail retrieves a user by email
+func (m *MockUserStore) GetUserByEmail(ctx context.Context, email string) (*User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, u := range m.users {
+		if u.Email == email {
+			return u, nil
+		}
+	}
+	return nil, nil
 }
 
 // TestRegisterValidUser tests successful registration with valid credentials
 func TestRegisterValidUser(t *testing.T) {
-	handler := NewAuthHandler(nil) // Will need DB dependency
+	store := NewMockUserStore()
+	handler := NewAuthHandler(store)
 
-	reqBody := RegisterRequest{
-		Email:    "test@example.com",
-		Password: "securepassword123",
+	reqBody := map[string]string{
+		"email":    "test@example.com",
+		"password": "securepassword123",
 	}
 	body, _ := json.Marshal(reqBody)
 
@@ -58,8 +90,8 @@ func TestRegisterValidUser(t *testing.T) {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
 
-	if resp.User.Email != reqBody.Email {
-		t.Errorf("Expected email %s, got %s", reqBody.Email, resp.User.Email)
+	if resp.User.Email != reqBody["email"] {
+		t.Errorf("Expected email %s, got %s", reqBody["email"], resp.User.Email)
 	}
 
 	if resp.User.ID == "" {
@@ -79,12 +111,13 @@ func TestRegisterValidUser(t *testing.T) {
 
 // TestRegisterDuplicateEmail tests that duplicate email returns 409 Conflict
 func TestRegisterDuplicateEmail(t *testing.T) {
-	handler := NewAuthHandler(nil) // Will need DB dependency
+	store := NewMockUserStore()
+	handler := NewAuthHandler(store)
 
 	// First registration
-	reqBody := RegisterRequest{
-		Email:    "duplicate@example.com",
-		Password: "securepassword123",
+	reqBody := map[string]string{
+		"email":    "duplicate@example.com",
+		"password": "securepassword123",
 	}
 	body, _ := json.Marshal(reqBody)
 
@@ -95,11 +128,12 @@ func TestRegisterDuplicateEmail(t *testing.T) {
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusCreated {
-		t.Fatalf("First registration failed: %d", rr.Code)
+		t.Fatalf("First registration failed: %d: %s", rr.Code, rr.Body.String())
 	}
 
 	// Second registration with same email
-	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewReader(body))
+	body2, _ := json.Marshal(reqBody)
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewReader(body2))
 	req2.Header.Set("Content-Type", "application/json")
 
 	rr2 := httptest.NewRecorder()
@@ -121,7 +155,8 @@ func TestRegisterDuplicateEmail(t *testing.T) {
 
 // TestRegisterInvalidEmail tests that invalid email format returns 400 Bad Request
 func TestRegisterInvalidEmail(t *testing.T) {
-	handler := NewAuthHandler(nil)
+	store := NewMockUserStore()
+	handler := NewAuthHandler(store)
 
 	testCases := []struct {
 		name  string
@@ -136,9 +171,9 @@ func TestRegisterInvalidEmail(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			reqBody := RegisterRequest{
-				Email:    tc.email,
-				Password: "securepassword123",
+			reqBody := map[string]string{
+				"email":    tc.email,
+				"password": "securepassword123",
 			}
 			body, _ := json.Marshal(reqBody)
 
@@ -157,7 +192,8 @@ func TestRegisterInvalidEmail(t *testing.T) {
 
 // TestRegisterWeakPassword tests that weak passwords return 400 Bad Request
 func TestRegisterWeakPassword(t *testing.T) {
-	handler := NewAuthHandler(nil)
+	store := NewMockUserStore()
+	handler := NewAuthHandler(store)
 
 	testCases := []struct {
 		name     string
@@ -170,9 +206,9 @@ func TestRegisterWeakPassword(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			reqBody := RegisterRequest{
-				Email:    "test@example.com",
-				Password: tc.password,
+			reqBody := map[string]string{
+				"email":    "test@example.com",
+				"password": tc.password,
 			}
 			body, _ := json.Marshal(reqBody)
 
@@ -191,7 +227,8 @@ func TestRegisterWeakPassword(t *testing.T) {
 
 // TestRegisterMissingFields tests that missing required fields return 400 Bad Request
 func TestRegisterMissingFields(t *testing.T) {
-	handler := NewAuthHandler(nil)
+	store := NewMockUserStore()
+	handler := NewAuthHandler(store)
 
 	testCases := []struct {
 		name string
@@ -212,7 +249,7 @@ func TestRegisterMissingFields(t *testing.T) {
 			handler.ServeHTTP(rr, req)
 
 			if rr.Code != http.StatusBadRequest {
-				t.Errorf("Expected status 400 Bad Request for %s, got %d", tc.name, rr.Code)
+				t.Errorf("Expected status 400 Bad Request for %s, got %d: %s", tc.name, rr.Code, rr.Body.String())
 			}
 		})
 	}
@@ -220,11 +257,12 @@ func TestRegisterMissingFields(t *testing.T) {
 
 // TestRegisterReturnsCorrectContentType tests that response has JSON content type
 func TestRegisterReturnsCorrectContentType(t *testing.T) {
-	handler := NewAuthHandler(nil)
+	store := NewMockUserStore()
+	handler := NewAuthHandler(store)
 
-	reqBody := RegisterRequest{
-		Email:    "contenttype@example.com",
-		Password: "securepassword123",
+	reqBody := map[string]string{
+		"email":    "contenttype@example.com",
+		"password": "securepassword123",
 	}
 	body, _ := json.Marshal(reqBody)
 
