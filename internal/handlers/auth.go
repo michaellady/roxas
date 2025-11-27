@@ -66,13 +66,14 @@ type ErrorResponse struct {
 func (h *AuthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
-		h.handleRegister(w, r)
+		h.Register(w, r)
 	default:
 		h.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
-func (h *AuthHandler) handleRegister(w http.ResponseWriter, r *http.Request) {
+// Register handles user registration POST /api/v1/auth/register
+func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	var req RegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid JSON")
@@ -121,6 +122,12 @@ func (h *AuthHandler) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.writeJSON(w, http.StatusCreated, resp)
+}
+
+// Login handles user login POST /api/v1/auth/login
+// Stub for TDD - tests should fail (RED)
+func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
+	http.Error(w, "not implemented", http.StatusNotImplemented)
 }
 
 func (h *AuthHandler) writeJSON(w http.ResponseWriter, status int, data interface{}) {

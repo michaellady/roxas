@@ -277,3 +277,183 @@ func TestRegisterReturnsCorrectContentType(t *testing.T) {
 		t.Errorf("Expected Content-Type application/json, got %s", contentType)
 	}
 }
+
+// =============================================================================
+// Login Tests (TB06)
+// =============================================================================
+
+// LoginResponse represents the expected login response
+type LoginResponse struct {
+	User  UserResponse `json:"user"`
+	Token string       `json:"token"`
+}
+
+// createTestUser is a helper to register a user for login tests
+func createTestUser(t *testing.T, handler *AuthHandler, email, password string) {
+	t.Helper()
+	reqBody := map[string]string{
+		"email":    email,
+		"password": password,
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	handler.Register(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("Failed to create test user: %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestLoginValidCredentials tests successful login with valid credentials
+func TestLoginValidCredentials(t *testing.T) {
+	store := NewMockUserStore()
+	handler := NewAuthHandler(store)
+
+	// First, register a user
+	email := "login@example.com"
+	password := "securepassword123"
+	createTestUser(t, handler, email, password)
+
+	// Now test login
+	reqBody := map[string]string{
+		"email":    email,
+		"password": password,
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	handler.Login(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200 OK, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp LoginResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if resp.User.Email != email {
+		t.Errorf("Expected email %s, got %s", email, resp.User.Email)
+	}
+
+	if resp.User.ID == "" {
+		t.Error("Expected user ID to be set")
+	}
+
+	if resp.Token == "" {
+		t.Error("Expected JWT token to be returned")
+	}
+
+	// Token should be a valid JWT format (three dot-separated parts)
+	parts := strings.Split(resp.Token, ".")
+	if len(parts) != 3 {
+		t.Errorf("Expected JWT with 3 parts, got %d parts", len(parts))
+	}
+}
+
+// TestLoginInvalidPassword tests that wrong password returns 401 Unauthorized
+func TestLoginInvalidPassword(t *testing.T) {
+	store := NewMockUserStore()
+	handler := NewAuthHandler(store)
+
+	// First, register a user
+	email := "wrongpass@example.com"
+	password := "securepassword123"
+	createTestUser(t, handler, email, password)
+
+	// Try to login with wrong password
+	reqBody := map[string]string{
+		"email":    email,
+		"password": "wrongpassword",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	handler.Login(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("Expected status 401 Unauthorized, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var errResp ErrorResponse
+	if err := json.NewDecoder(rr.Body).Decode(&errResp); err != nil {
+		t.Fatalf("Failed to decode error response: %v", err)
+	}
+
+	if errResp.Error == "" {
+		t.Error("Expected error message in response")
+	}
+}
+
+// TestLoginNonExistentEmail tests that non-existent email returns 401 Unauthorized
+func TestLoginNonExistentEmail(t *testing.T) {
+	store := NewMockUserStore()
+	handler := NewAuthHandler(store)
+
+	// Try to login with email that doesn't exist
+	reqBody := map[string]string{
+		"email":    "nonexistent@example.com",
+		"password": "somepassword123",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	handler.Login(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("Expected status 401 Unauthorized, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var errResp ErrorResponse
+	if err := json.NewDecoder(rr.Body).Decode(&errResp); err != nil {
+		t.Fatalf("Failed to decode error response: %v", err)
+	}
+
+	if errResp.Error == "" {
+		t.Error("Expected error message in response")
+	}
+}
+
+// TestLoginMissingFields tests that missing required fields return 400 Bad Request
+func TestLoginMissingFields(t *testing.T) {
+	store := NewMockUserStore()
+	handler := NewAuthHandler(store)
+
+	testCases := []struct {
+		name string
+		body string
+	}{
+		{"missing email", `{"password": "securepassword123"}`},
+		{"missing password", `{"email": "test@example.com"}`},
+		{"empty body", `{}`},
+		{"invalid JSON", `{invalid}`},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+
+			rr := httptest.NewRecorder()
+			handler.Login(rr, req)
+
+			if rr.Code != http.StatusBadRequest {
+				t.Errorf("Expected status 400 Bad Request for %s, got %d: %s", tc.name, rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
