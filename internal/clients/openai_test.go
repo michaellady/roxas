@@ -43,7 +43,7 @@ func TestChatGPTCompletion(t *testing.T) {
 	defer server.Close()
 
 	// Create client with mock server URL
-	client := NewOpenAIClient("test-api-key", server.URL)
+	client := NewOpenAIClient("test-api-key", server.URL, "", "")
 
 	prompt := "Summarize this commit for LinkedIn"
 	result, err := client.CreateChatCompletion(prompt)
@@ -70,7 +70,7 @@ func TestChatGPTHandlesAPIError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewOpenAIClient("test-api-key", server.URL)
+	client := NewOpenAIClient("test-api-key", server.URL, "", "")
 
 	_, err := client.CreateChatCompletion("test prompt")
 
@@ -87,7 +87,7 @@ func TestChatGPTHandlesAPIError(t *testing.T) {
 // TestChatGPTHandlesNetworkError tests handling of network failures
 func TestChatGPTHandlesNetworkError(t *testing.T) {
 	// Use invalid URL to simulate network error
-	client := NewOpenAIClient("test-api-key", "http://invalid-domain-that-does-not-exist-12345.com")
+	client := NewOpenAIClient("test-api-key", "http://invalid-domain-that-does-not-exist-12345.com", "", "")
 
 	_, err := client.CreateChatCompletion("test prompt")
 
@@ -129,7 +129,7 @@ func TestDALLEImageGeneration(t *testing.T) {
 	defer server.Close()
 
 	// Create client with mock server URL
-	client := NewOpenAIClient("test-api-key", server.URL)
+	client := NewOpenAIClient("test-api-key", server.URL, "", "")
 
 	prompt := "Professional LinkedIn image about software engineering"
 	imageURL, err := client.GenerateImage(prompt)
@@ -156,7 +156,7 @@ func TestDALLEHandlesAPIError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewOpenAIClient("test-api-key", server.URL)
+	client := NewOpenAIClient("test-api-key", server.URL, "", "")
 
 	_, err := client.GenerateImage("test prompt")
 
@@ -192,14 +192,14 @@ func TestOpenAIClientValidatesAPIKey(t *testing.T) {
 	defer server.Close()
 
 	// Test with valid key
-	validClient := NewOpenAIClient("test-valid-key", server.URL)
+	validClient := NewOpenAIClient("test-valid-key", server.URL, "", "")
 	_, err := validClient.CreateChatCompletion("test")
 	if err != nil {
 		t.Errorf("Expected success with valid key, got error: %v", err)
 	}
 
 	// Test with invalid key
-	invalidClient := NewOpenAIClient("invalid-key", server.URL)
+	invalidClient := NewOpenAIClient("invalid-key", server.URL, "", "")
 	_, err = invalidClient.CreateChatCompletion("test")
 	if err == nil {
 		t.Error("Expected error with invalid API key, got nil")
@@ -228,7 +228,7 @@ func TestDALLEImageSize(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewOpenAIClient("test-api-key", server.URL)
+	client := NewOpenAIClient("test-api-key", server.URL, "", "")
 	_, err := client.GenerateImage("test prompt")
 
 	if err != nil {

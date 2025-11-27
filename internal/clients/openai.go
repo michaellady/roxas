@@ -10,23 +10,40 @@ import (
 	"net/http"
 )
 
+// Default models - cheap options for testing, can be overridden for production
+const (
+	DefaultChatModel  = "gpt-4o-mini" // ~200x cheaper than gpt-4
+	DefaultImageModel = "dall-e-2"   // ~3-6x cheaper than dall-e-3
+)
+
 // OpenAIClient is the real production client for OpenAI API
 type OpenAIClient struct {
-	apiKey  string
-	baseURL string
-	client  *http.Client
+	apiKey     string
+	baseURL    string
+	chatModel  string
+	imageModel string
+	client     *http.Client
 }
 
 // NewOpenAIClient creates a new OpenAI API client
-func NewOpenAIClient(apiKey string, baseURL string) *OpenAIClient {
+// chatModel and imageModel can be empty to use defaults (gpt-4o-mini, dall-e-2)
+func NewOpenAIClient(apiKey, baseURL, chatModel, imageModel string) *OpenAIClient {
 	if baseURL == "" {
 		baseURL = "https://api.openai.com"
 	}
+	if chatModel == "" {
+		chatModel = DefaultChatModel
+	}
+	if imageModel == "" {
+		imageModel = DefaultImageModel
+	}
 
 	return &OpenAIClient{
-		apiKey:  apiKey,
-		baseURL: baseURL,
-		client:  &http.Client{},
+		apiKey:     apiKey,
+		baseURL:    baseURL,
+		chatModel:  chatModel,
+		imageModel: imageModel,
+		client:     &http.Client{},
 	}
 }
 
@@ -35,7 +52,7 @@ func (c *OpenAIClient) CreateChatCompletion(prompt string) (string, error) {
 	url := c.baseURL + "/v1/chat/completions"
 
 	requestBody := map[string]interface{}{
-		"model": "gpt-4",
+		"model": c.chatModel,
 		"messages": []map[string]string{
 			{
 				"role":    "user",
@@ -107,7 +124,7 @@ func (c *OpenAIClient) GenerateImage(prompt string) (string, error) {
 	url := c.baseURL + "/v1/images/generations"
 
 	requestBody := map[string]interface{}{
-		"model":  "dall-e-3",
+		"model":  c.imageModel,
 		"prompt": prompt,
 		"n":      1,
 		"size":   "1024x1024", // LinkedIn-optimized size
