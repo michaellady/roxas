@@ -48,15 +48,26 @@ jobs:
       - name: Generate coverage report
         if: github.event_name == 'pull_request'
         run: |
-          go test -short -coverprofile=coverage.out ./internal/... ./cmd/...
+          # Run tests and capture package-level coverage
+          go test -short -cover ./internal/... ./cmd/... 2>&1 | tee test-output.txt
+
           echo "## 📊 Test Coverage Report" >> coverage-report.md
           echo "" >> coverage-report.md
+
+          # Calculate total from coverage.out
+          go test -short -coverprofile=coverage.out ./internal/... ./cmd/... > /dev/null 2>&1
           TOTAL=$(go tool cover -func=coverage.out | grep total | awk '{print $3}')
           echo "**Total Coverage: ${TOTAL}**" >> coverage-report.md
           echo "" >> coverage-report.md
           echo "| Package | Coverage |" >> coverage-report.md
           echo "|---------|----------|" >> coverage-report.md
-          go tool cover -func=coverage.out | grep -v total | awk '{print "| " $1 " | " $3 " |"}' >> coverage-report.md
+
+          # Extract package coverage from test output (handles ok/FAIL prefix and tabs)
+          grep -E "github.com/mikelady/roxas.*coverage:" test-output.txt | \
+            grep -v "\[no statements\]" | \
+            sed 's/\t/ /g' | \
+            awk '{for(i=1;i<=NF;i++) {if($i ~ /github.com/) pkg=$i; if($i ~ /coverage:/) cov=$(i+1)}} {gsub("github.com/mikelady/roxas/", "", pkg); if(pkg && cov) print "| " pkg " | " cov " |"}' | \
+            sort >> coverage-report.md
 
       - name: Post coverage comment
         if: github.event_name == 'pull_request'
