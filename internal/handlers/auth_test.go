@@ -282,12 +282,6 @@ func TestRegisterReturnsCorrectContentType(t *testing.T) {
 // Login Tests (TB06)
 // =============================================================================
 
-// LoginResponse represents the expected login response
-type LoginResponse struct {
-	User  UserResponse `json:"user"`
-	Token string       `json:"token"`
-}
-
 // createTestUser is a helper to register a user for login tests
 func createTestUser(t *testing.T, handler *AuthHandler, email, password string) {
 	t.Helper()
