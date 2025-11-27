@@ -167,12 +167,33 @@ jobs:
 
             This PR-specific environment will be automatically destroyed when the PR is closed.`;
 
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
+            // Find existing deploy comment
+            const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: body
+              issue_number: context.issue.number,
             });
+
+            const botComment = comments.find(comment =>
+              comment.user.type === 'Bot' &&
+              comment.body.includes('Deployed to Dev Environment')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: body
+              });
+            }
 
       - name: Comment PR - Deployment Skipped
         if: steps.check-changes.outputs.needs_deployment == 'false'
@@ -190,9 +211,30 @@ jobs:
 
             The deployment check passes automatically for these changes.`;
 
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
+            // Find existing deploy comment
+            const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: body
+              issue_number: context.issue.number,
             });
+
+            const botComment = comments.find(comment =>
+              comment.user.type === 'Bot' &&
+              (comment.body.includes('Deployed to Dev Environment') || comment.body.includes('Deployment Skipped'))
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: body
+              });
+            }
