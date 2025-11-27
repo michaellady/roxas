@@ -66,13 +66,14 @@ type ErrorResponse struct {
 func (h *AuthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
-		h.handleRegister(w, r)
+		h.Register(w, r)
 	default:
 		h.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
-func (h *AuthHandler) handleRegister(w http.ResponseWriter, r *http.Request) {
+// Register handles user registration POST /api/v1/auth/register
+func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	var req RegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid JSON")
@@ -121,6 +122,73 @@ func (h *AuthHandler) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.writeJSON(w, http.StatusCreated, resp)
+}
+
+// LoginRequest represents the login request body
+type LoginRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+// LoginResponse represents the login response
+type LoginResponse struct {
+	User  UserResponse `json:"user"`
+	Token string       `json:"token"`
+}
+
+// Login handles user login POST /api/v1/auth/login
+func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
+	var req LoginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	// Validate required fields
+	if req.Email == "" {
+		h.writeError(w, http.StatusBadRequest, "email is required")
+		return
+	}
+	if req.Password == "" {
+		h.writeError(w, http.StatusBadRequest, "password is required")
+		return
+	}
+
+	// Look up user by email
+	user, err := h.store.GetUserByEmail(r.Context(), req.Email)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to look up user")
+		return
+	}
+	if user == nil {
+		h.writeError(w, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+
+	// Verify password
+	if !auth.CheckPassword(req.Password, user.PasswordHash) {
+		h.writeError(w, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+
+	// Generate JWT token
+	token, err := auth.GenerateToken(user.ID, user.Email)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to generate token")
+		return
+	}
+
+	// Return response
+	resp := LoginResponse{
+		User: UserResponse{
+			ID:        user.ID,
+			Email:     user.Email,
+			CreatedAt: user.CreatedAt.Format(time.RFC3339),
+		},
+		Token: token,
+	}
+
+	h.writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *AuthHandler) writeJSON(w http.ResponseWriter, status int, data interface{}) {
