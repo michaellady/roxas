@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,9 +18,6 @@ import (
 // =============================================================================
 // Mock Repository Store
 // =============================================================================
-
-// ErrDuplicateRepository is returned when a user tries to add the same repo twice
-var ErrDuplicateRepository = errors.New("repository already exists for this user")
 
 // MockRepositoryStore is an in-memory implementation of RepositoryStore for testing
 type MockRepositoryStore struct {
