@@ -18,6 +18,97 @@ import (
 )
 
 // =============================================================================
+// Unified E2E Commit Store
+// =============================================================================
+// This store implements both handlers.CommitStore and handlers.CommitStoreForPosts
+// to bridge between webhook handler (which stores commits) and posts handler
+// (which retrieves commits for post generation).
+
+// E2EUnifiedCommitStore implements both CommitStore and CommitStoreForPosts interfaces
+type E2EUnifiedCommitStore struct {
+	mu        sync.Mutex
+	commits   map[string]*handlers.StoredCommit // key: "repoID:sha" or commitID
+	ownership map[string]string                 // commitID -> userID
+	repoStore *E2ERepositoryStore
+}
+
+func NewE2EUnifiedCommitStore(repoStore *E2ERepositoryStore) *E2EUnifiedCommitStore {
+	return &E2EUnifiedCommitStore{
+		commits:   make(map[string]*handlers.StoredCommit),
+		ownership: make(map[string]string),
+		repoStore: repoStore,
+	}
+}
+
+// StoreCommit implements handlers.CommitStore
+func (s *E2EUnifiedCommitStore) StoreCommit(ctx context.Context, commit *handlers.StoredCommit) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Check for duplicate
+	key := commit.RepositoryID + ":" + commit.CommitSHA
+	if _, ok := s.commits[key]; ok {
+		return nil // Already exists, skip
+	}
+
+	// Generate ID
+	commit.ID = uuid.New().String()
+	s.commits[key] = commit
+	s.commits[commit.ID] = commit
+
+	// Derive ownership from repository
+	if s.repoStore != nil {
+		repo, _ := s.repoStore.GetRepositoryByID(ctx, commit.RepositoryID)
+		if repo != nil {
+			s.ownership[commit.ID] = repo.UserID
+		}
+	}
+
+	return nil
+}
+
+// GetCommitBySHA implements handlers.CommitStore
+func (s *E2EUnifiedCommitStore) GetCommitBySHA(ctx context.Context, repoID, sha string) (*handlers.StoredCommit, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := repoID + ":" + sha
+	if commit, ok := s.commits[key]; ok {
+		return commit, nil
+	}
+	return nil, nil
+}
+
+// GetCommitByID implements handlers.CommitStoreForPosts
+func (s *E2EUnifiedCommitStore) GetCommitByID(ctx context.Context, commitID string) (*services.Commit, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if stored, ok := s.commits[commitID]; ok {
+		// Convert handlers.StoredCommit to services.Commit
+		return &services.Commit{
+			ID:           stored.ID,
+			RepositoryID: stored.RepositoryID,
+			CommitSHA:    stored.CommitSHA,
+			GitHubURL:    stored.GitHubURL,
+			Message:      stored.Message,
+			Author:       stored.Author,
+			Timestamp:    stored.Timestamp,
+			CreatedAt:    stored.Timestamp, // Use timestamp as created_at
+		}, nil
+	}
+	return nil, nil
+}
+
+// GetCommitOwnerID implements handlers.CommitStoreForPosts
+func (s *E2EUnifiedCommitStore) GetCommitOwnerID(ctx context.Context, commitID string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if userID, ok := s.ownership[commitID]; ok {
+		return userID, nil
+	}
+	return "", nil
+}
+
+// =============================================================================
 // TB20: E2E Integration Test for Complete MVP Flow (TDD - RED)
 // =============================================================================
 
@@ -123,75 +214,6 @@ func (s *E2ERepositoryStore) GetRepositoryByID(ctx context.Context, repoID strin
 	return nil, nil
 }
 
-// E2ECommitStore - in-memory commit store with ownership tracking
-type E2ECommitStore struct {
-	mu        sync.Mutex
-	commits   map[string]*services.Commit
-	ownership map[string]string // commitID -> userID
-	repoStore *E2ERepositoryStore
-}
-
-func NewE2ECommitStore(repoStore *E2ERepositoryStore) *E2ECommitStore {
-	return &E2ECommitStore{
-		commits:   make(map[string]*services.Commit),
-		ownership: make(map[string]string),
-		repoStore: repoStore,
-	}
-}
-
-func (s *E2ECommitStore) Store(ctx context.Context, commit *services.Commit) (*services.Commit, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Check for duplicate
-	key := commit.RepositoryID + ":" + commit.CommitSHA
-	if existing, ok := s.commits[key]; ok {
-		return existing, nil
-	}
-
-	commit.ID = uuid.New().String()
-	commit.CreatedAt = time.Now()
-	s.commits[key] = commit
-	s.commits[commit.ID] = commit
-
-	// Derive ownership from repository
-	if s.repoStore != nil {
-		repo, _ := s.repoStore.GetRepositoryByID(ctx, commit.RepositoryID)
-		if repo != nil {
-			s.ownership[commit.ID] = repo.UserID
-		}
-	}
-
-	return commit, nil
-}
-
-func (s *E2ECommitStore) GetBySHA(ctx context.Context, repoID, sha string) (*services.Commit, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	key := repoID + ":" + sha
-	if commit, ok := s.commits[key]; ok {
-		return commit, nil
-	}
-	return nil, nil
-}
-
-func (s *E2ECommitStore) GetCommitByID(ctx context.Context, commitID string) (*services.Commit, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if commit, ok := s.commits[commitID]; ok {
-		return commit, nil
-	}
-	return nil, nil
-}
-
-func (s *E2ECommitStore) GetCommitOwnerID(ctx context.Context, commitID string) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if userID, ok := s.ownership[commitID]; ok {
-		return userID, nil
-	}
-	return "", nil
-}
 
 // E2EPostStore - in-memory post store
 type E2EPostStore struct {
@@ -288,7 +310,7 @@ func TestE2E_CompleteMVPFlow(t *testing.T) {
 	// Setup in-memory stores
 	userStore := NewE2EUserStore()
 	repoStore := NewE2ERepositoryStore()
-	commitStore := NewE2ECommitStore(repoStore)
+	commitStore := NewE2EUnifiedCommitStore(repoStore)
 	postStore := NewE2EPostStore()
 	mockGenerator := &E2EMockPostGenerator{}
 
@@ -435,7 +457,7 @@ func TestE2E_CompleteMVPFlow(t *testing.T) {
 	t.Log("Step 4 PASSED: Webhook accepted")
 
 	// Verify commit was stored
-	storedCommit, _ := commitStore.GetBySHA(context.Background(), repoID, "abc123def456789012345678901234567890abcd")
+	storedCommit, _ := commitStore.GetCommitBySHA(context.Background(), repoID, "abc123def456789012345678901234567890abcd")
 	if storedCommit == nil {
 		t.Fatal("Step 4 FAILED: Commit not stored after webhook")
 	}
@@ -549,7 +571,7 @@ func TestE2E_MultiTenantIsolation(t *testing.T) {
 	// Setup stores
 	userStore := NewE2EUserStore()
 	repoStore := NewE2ERepositoryStore()
-	commitStore := NewE2ECommitStore(repoStore)
+	commitStore := NewE2EUnifiedCommitStore(repoStore)
 	postStore := NewE2EPostStore()
 	mockGenerator := &E2EMockPostGenerator{}
 
@@ -572,7 +594,7 @@ func TestE2E_MultiTenantIsolation(t *testing.T) {
 	sendE2EWebhook(t, webhookHandler, repo1ID, webhook1Secret, "user1-commit-sha", "feat: user1 feature")
 
 	// Get user1's commit
-	commit, _ := commitStore.GetBySHA(context.Background(), repo1ID, "user1-commit-sha")
+	commit, _ := commitStore.GetCommitBySHA(context.Background(), repo1ID, "user1-commit-sha")
 	if commit == nil {
 		t.Fatal("User1 commit not stored")
 	}
