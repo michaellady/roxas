@@ -198,14 +198,94 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 
 func (r *Router) handleSignup(w http.ResponseWriter, req *http.Request) {
 	if req.Method == http.MethodPost {
-		// Will be implemented in TB-WEB-04
-		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		r.handleSignupPost(w, req)
 		return
 	}
 
 	r.renderPage(w, "signup.html", PageData{
 		Title: "Sign Up",
 	})
+}
+
+func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
+	// Parse form
+	if err := req.ParseForm(); err != nil {
+		r.renderPage(w, "signup.html", PageData{
+			Title: "Sign Up",
+			Error: "Invalid form data",
+		})
+		return
+	}
+
+	email := req.FormValue("email")
+	password := req.FormValue("password")
+	confirmPassword := req.FormValue("confirm_password")
+
+	// Validate input
+	if email == "" || password == "" {
+		r.renderPage(w, "signup.html", PageData{
+			Title: "Sign Up",
+			Error: "Email and password are required",
+		})
+		return
+	}
+
+	// Validate password length (min 8 characters)
+	if len(password) < 8 {
+		r.renderPage(w, "signup.html", PageData{
+			Title: "Sign Up",
+			Error: "Password must be at least 8 characters",
+		})
+		return
+	}
+
+	// Validate passwords match
+	if password != confirmPassword {
+		r.renderPage(w, "signup.html", PageData{
+			Title: "Sign Up",
+			Error: "Passwords do not match",
+		})
+		return
+	}
+
+	// Check if we have a user store
+	if r.userStore == nil {
+		r.renderPage(w, "signup.html", PageData{
+			Title: "Sign Up",
+			Error: "Registration not configured",
+		})
+		return
+	}
+
+	// Hash password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		r.renderPage(w, "signup.html", PageData{
+			Title: "Sign Up",
+			Error: "Failed to process registration",
+		})
+		return
+	}
+
+	// Create user
+	_, err = r.userStore.CreateUser(req.Context(), email, string(hashedPassword))
+	if err != nil {
+		if err == handlers.ErrDuplicateEmail {
+			r.renderPage(w, "signup.html", PageData{
+				Title: "Sign Up",
+				Error: "An account with this email already exists",
+			})
+			return
+		}
+		r.renderPage(w, "signup.html", PageData{
+			Title: "Sign Up",
+			Error: "Failed to create account",
+		})
+		return
+	}
+
+	// Redirect to login
+	http.Redirect(w, req, "/login", http.StatusSeeOther)
 }
 
 func (r *Router) renderPage(w http.ResponseWriter, page string, data PageData) {

@@ -297,3 +297,127 @@ func TestRouter_PostLogin_NonexistentUser_ShowsError(t *testing.T) {
 		}
 	}
 }
+
+// =============================================================================
+// TB-WEB-04: Web signup page (TDD)
+// =============================================================================
+
+func TestRouter_PostSignup_ValidData_CreatesUserAndRedirects(t *testing.T) {
+	userStore := NewMockUserStore()
+	router := NewRouterWithStores(userStore)
+
+	// POST signup form
+	form := url.Values{}
+	form.Set("email", "newuser@example.com")
+	form.Set("password", "securepassword123")
+	form.Set("confirm_password", "securepassword123")
+
+	req := httptest.NewRequest(http.MethodPost, "/signup", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should redirect to login
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected status 303 See Other, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	location := rr.Header().Get("Location")
+	if location != "/login" {
+		t.Errorf("Expected redirect to /login, got %s", location)
+	}
+
+	// Verify user was created
+	user, _ := userStore.GetUserByEmail(context.Background(), "newuser@example.com")
+	if user == nil {
+		t.Error("Expected user to be created")
+	}
+}
+
+func TestRouter_PostSignup_DuplicateEmail_ShowsError(t *testing.T) {
+	userStore := NewMockUserStore()
+	router := NewRouterWithStores(userStore)
+
+	// Create existing user
+	userStore.CreateUser(context.Background(), "existing@example.com", hashPassword("password"))
+
+	// Try to signup with same email
+	form := url.Values{}
+	form.Set("email", "existing@example.com")
+	form.Set("password", "newpassword123")
+	form.Set("confirm_password", "newpassword123")
+
+	req := httptest.NewRequest(http.MethodPost, "/signup", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should return 200 with error
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	if !strings.Contains(strings.ToLower(body), "email") ||
+		(!strings.Contains(strings.ToLower(body), "exists") &&
+			!strings.Contains(strings.ToLower(body), "already") &&
+			!strings.Contains(strings.ToLower(body), "use")) {
+		t.Errorf("Expected error about email already in use")
+	}
+}
+
+func TestRouter_PostSignup_PasswordMismatch_ShowsError(t *testing.T) {
+	userStore := NewMockUserStore()
+	router := NewRouterWithStores(userStore)
+
+	form := url.Values{}
+	form.Set("email", "newuser@example.com")
+	form.Set("password", "password123")
+	form.Set("confirm_password", "different456")
+
+	req := httptest.NewRequest(http.MethodPost, "/signup", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should return 200 with error
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	if !strings.Contains(strings.ToLower(body), "match") &&
+		!strings.Contains(strings.ToLower(body), "password") {
+		t.Errorf("Expected error about password mismatch")
+	}
+}
+
+func TestRouter_PostSignup_ShortPassword_ShowsError(t *testing.T) {
+	userStore := NewMockUserStore()
+	router := NewRouterWithStores(userStore)
+
+	form := url.Values{}
+	form.Set("email", "newuser@example.com")
+	form.Set("password", "short")
+	form.Set("confirm_password", "short")
+
+	req := httptest.NewRequest(http.MethodPost, "/signup", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should return 200 with error
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	if !strings.Contains(strings.ToLower(body), "password") &&
+		!strings.Contains(strings.ToLower(body), "8") {
+		t.Errorf("Expected error about password length")
+	}
+}
