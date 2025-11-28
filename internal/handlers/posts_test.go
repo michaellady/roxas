@@ -22,16 +22,6 @@ import (
 // Mock Stores for Posts Tests
 // =============================================================================
 
-// Post represents a generated social media post in the database
-type Post struct {
-	ID        string
-	CommitID  string
-	Platform  string
-	Content   string
-	Status    string // draft, posted, failed
-	CreatedAt time.Time
-}
-
 // MockPostStore is an in-memory post store for testing
 type MockPostStore struct {
 	mu    sync.RWMutex
@@ -543,30 +533,5 @@ func TestGetPostNoAuth(t *testing.T) {
 	}
 }
 
-// =============================================================================
-// Response Types (to be moved to posts.go in TB19)
-// =============================================================================
-
-type PostResponse struct {
-	ID        string `json:"id"`
-	CommitID  string `json:"commit_id"`
-	Platform  string `json:"platform"`
-	Content   string `json:"content"`
-	Status    string `json:"status"`
-	CreatedAt string `json:"created_at"`
-}
-
-type CreatePostResponse struct {
-	Post PostResponse `json:"post"`
-}
-
-type GetPostResponse struct {
-	Post PostResponse `json:"post"`
-}
-
-type ListPostsResponse struct {
-	Posts []PostResponse `json:"posts"`
-}
-
-// Note: PostsHandler, NewPostsHandler, and handler methods
-// are defined in posts.go (TB19)
+// Note: PostResponse, CreatePostResponse, GetPostResponse, ListPostsResponse,
+// PostsHandler, NewPostsHandler, and handler methods are defined in posts.go
