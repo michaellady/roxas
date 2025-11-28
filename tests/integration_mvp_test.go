@@ -18,22 +18,22 @@ import (
 )
 
 // =============================================================================
-// Unified E2E Commit Store
+// Unified Integration Commit Store
 // =============================================================================
 // This store implements both handlers.CommitStore and handlers.CommitStoreForPosts
 // to bridge between webhook handler (which stores commits) and posts handler
 // (which retrieves commits for post generation).
 
-// E2EUnifiedCommitStore implements both CommitStore and CommitStoreForPosts interfaces
-type E2EUnifiedCommitStore struct {
+// MockCommitStore implements both CommitStore and CommitStoreForPosts interfaces
+type MockCommitStore struct {
 	mu        sync.Mutex
 	commits   map[string]*handlers.StoredCommit // key: "repoID:sha" or commitID
 	ownership map[string]string                 // commitID -> userID
-	repoStore *E2ERepositoryStore
+	repoStore *MockRepositoryStore
 }
 
-func NewE2EUnifiedCommitStore(repoStore *E2ERepositoryStore) *E2EUnifiedCommitStore {
-	return &E2EUnifiedCommitStore{
+func NewMockCommitStore(repoStore *MockRepositoryStore) *MockCommitStore {
+	return &MockCommitStore{
 		commits:   make(map[string]*handlers.StoredCommit),
 		ownership: make(map[string]string),
 		repoStore: repoStore,
@@ -41,7 +41,7 @@ func NewE2EUnifiedCommitStore(repoStore *E2ERepositoryStore) *E2EUnifiedCommitSt
 }
 
 // StoreCommit implements handlers.CommitStore
-func (s *E2EUnifiedCommitStore) StoreCommit(ctx context.Context, commit *handlers.StoredCommit) error {
+func (s *MockCommitStore) StoreCommit(ctx context.Context, commit *handlers.StoredCommit) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -68,7 +68,7 @@ func (s *E2EUnifiedCommitStore) StoreCommit(ctx context.Context, commit *handler
 }
 
 // GetCommitBySHA implements handlers.CommitStore
-func (s *E2EUnifiedCommitStore) GetCommitBySHA(ctx context.Context, repoID, sha string) (*handlers.StoredCommit, error) {
+func (s *MockCommitStore) GetCommitBySHA(ctx context.Context, repoID, sha string) (*handlers.StoredCommit, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := repoID + ":" + sha
@@ -79,7 +79,7 @@ func (s *E2EUnifiedCommitStore) GetCommitBySHA(ctx context.Context, repoID, sha 
 }
 
 // GetCommitByID implements handlers.CommitStoreForPosts
-func (s *E2EUnifiedCommitStore) GetCommitByID(ctx context.Context, commitID string) (*services.Commit, error) {
+func (s *MockCommitStore) GetCommitByID(ctx context.Context, commitID string) (*services.Commit, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if stored, ok := s.commits[commitID]; ok {
@@ -99,7 +99,7 @@ func (s *E2EUnifiedCommitStore) GetCommitByID(ctx context.Context, commitID stri
 }
 
 // GetCommitOwnerID implements handlers.CommitStoreForPosts
-func (s *E2EUnifiedCommitStore) GetCommitOwnerID(ctx context.Context, commitID string) (string, error) {
+func (s *MockCommitStore) GetCommitOwnerID(ctx context.Context, commitID string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if userID, ok := s.ownership[commitID]; ok {
@@ -109,7 +109,7 @@ func (s *E2EUnifiedCommitStore) GetCommitOwnerID(ctx context.Context, commitID s
 }
 
 // =============================================================================
-// TB20: E2E Integration Test for Complete MVP Flow (TDD - RED)
+// TB20: Integration Integration Test for Complete MVP Flow (TDD - RED)
 // =============================================================================
 
 // This test validates the complete user journey:
@@ -122,20 +122,20 @@ func (s *E2EUnifiedCommitStore) GetCommitOwnerID(ctx context.Context, commitID s
 // 7. Verify content
 
 // =============================================================================
-// Mock Stores for E2E Testing
+// Mock Stores for Integration Testing
 // =============================================================================
 
-// E2EUserStore - in-memory user store
-type E2EUserStore struct {
+// MockUserStore - in-memory user store
+type MockUserStore struct {
 	mu    sync.Mutex
 	users map[string]*handlers.User
 }
 
-func NewE2EUserStore() *E2EUserStore {
-	return &E2EUserStore{users: make(map[string]*handlers.User)}
+func NewMockUserStore() *MockUserStore {
+	return &MockUserStore{users: make(map[string]*handlers.User)}
 }
 
-func (s *E2EUserStore) CreateUser(ctx context.Context, email, passwordHash string) (*handlers.User, error) {
+func (s *MockUserStore) CreateUser(ctx context.Context, email, passwordHash string) (*handlers.User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, u := range s.users {
@@ -154,7 +154,7 @@ func (s *E2EUserStore) CreateUser(ctx context.Context, email, passwordHash strin
 	return user, nil
 }
 
-func (s *E2EUserStore) GetUserByEmail(ctx context.Context, email string) (*handlers.User, error) {
+func (s *MockUserStore) GetUserByEmail(ctx context.Context, email string) (*handlers.User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, u := range s.users {
@@ -165,17 +165,17 @@ func (s *E2EUserStore) GetUserByEmail(ctx context.Context, email string) (*handl
 	return nil, nil
 }
 
-// E2ERepositoryStore - in-memory repository store
-type E2ERepositoryStore struct {
+// MockRepositoryStore - in-memory repository store
+type MockRepositoryStore struct {
 	mu    sync.Mutex
 	repos map[string]*handlers.Repository
 }
 
-func NewE2ERepositoryStore() *E2ERepositoryStore {
-	return &E2ERepositoryStore{repos: make(map[string]*handlers.Repository)}
+func NewMockRepositoryStore() *MockRepositoryStore {
+	return &MockRepositoryStore{repos: make(map[string]*handlers.Repository)}
 }
 
-func (s *E2ERepositoryStore) CreateRepository(ctx context.Context, userID, githubURL, webhookSecret string) (*handlers.Repository, error) {
+func (s *MockRepositoryStore) CreateRepository(ctx context.Context, userID, githubURL, webhookSecret string) (*handlers.Repository, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, r := range s.repos {
@@ -194,7 +194,7 @@ func (s *E2ERepositoryStore) CreateRepository(ctx context.Context, userID, githu
 	return repo, nil
 }
 
-func (s *E2ERepositoryStore) GetRepositoryByUserAndURL(ctx context.Context, userID, githubURL string) (*handlers.Repository, error) {
+func (s *MockRepositoryStore) GetRepositoryByUserAndURL(ctx context.Context, userID, githubURL string) (*handlers.Repository, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, r := range s.repos {
@@ -205,7 +205,7 @@ func (s *E2ERepositoryStore) GetRepositoryByUserAndURL(ctx context.Context, user
 	return nil, nil
 }
 
-func (s *E2ERepositoryStore) GetRepositoryByID(ctx context.Context, repoID string) (*handlers.Repository, error) {
+func (s *MockRepositoryStore) GetRepositoryByID(ctx context.Context, repoID string) (*handlers.Repository, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if repo, ok := s.repos[repoID]; ok {
@@ -215,17 +215,17 @@ func (s *E2ERepositoryStore) GetRepositoryByID(ctx context.Context, repoID strin
 }
 
 
-// E2EPostStore - in-memory post store
-type E2EPostStore struct {
+// MockPostStore - in-memory post store
+type MockPostStore struct {
 	mu    sync.Mutex
 	posts map[string]*handlers.Post
 }
 
-func NewE2EPostStore() *E2EPostStore {
-	return &E2EPostStore{posts: make(map[string]*handlers.Post)}
+func NewMockPostStore() *MockPostStore {
+	return &MockPostStore{posts: make(map[string]*handlers.Post)}
 }
 
-func (s *E2EPostStore) CreatePost(ctx context.Context, commitID, platform, content string) (*handlers.Post, error) {
+func (s *MockPostStore) CreatePost(ctx context.Context, commitID, platform, content string) (*handlers.Post, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	post := &handlers.Post{
@@ -240,7 +240,7 @@ func (s *E2EPostStore) CreatePost(ctx context.Context, commitID, platform, conte
 	return post, nil
 }
 
-func (s *E2EPostStore) GetPostByID(ctx context.Context, postID string) (*handlers.Post, error) {
+func (s *MockPostStore) GetPostByID(ctx context.Context, postID string) (*handlers.Post, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if post, ok := s.posts[postID]; ok {
@@ -249,7 +249,7 @@ func (s *E2EPostStore) GetPostByID(ctx context.Context, postID string) (*handler
 	return nil, nil
 }
 
-func (s *E2EPostStore) GetPostsByUserID(ctx context.Context, userID string) ([]*handlers.Post, error) {
+func (s *MockPostStore) GetPostsByUserID(ctx context.Context, userID string) ([]*handlers.Post, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	result := make([]*handlers.Post, 0)
@@ -259,13 +259,13 @@ func (s *E2EPostStore) GetPostsByUserID(ctx context.Context, userID string) ([]*
 	return result, nil
 }
 
-// E2EMockPostGenerator - mock post generator for deterministic testing
-type E2EMockPostGenerator struct {
+// MockPostGenerator - mock post generator for deterministic testing
+type MockPostGenerator struct {
 	mu       sync.Mutex
 	Response string
 }
 
-func (g *E2EMockPostGenerator) Generate(ctx context.Context, platform string, commit *services.Commit) (*services.GeneratedPost, error) {
+func (g *MockPostGenerator) Generate(ctx context.Context, platform string, commit *services.Commit) (*services.GeneratedPost, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -299,20 +299,20 @@ func min(a, b int) int {
 }
 
 // =============================================================================
-// E2E Test: Complete MVP Flow
+// Integration Test: Complete MVP Flow
 // =============================================================================
 
-func TestE2E_CompleteMVPFlow(t *testing.T) {
+func TestIntegration_CompleteMVPFlow(t *testing.T) {
 	if testing.Short() {
-		t.Skip("Skipping E2E integration test in short mode")
+		t.Skip("Skipping Integration integration test in short mode")
 	}
 
 	// Setup in-memory stores
-	userStore := NewE2EUserStore()
-	repoStore := NewE2ERepositoryStore()
-	commitStore := NewE2EUnifiedCommitStore(repoStore)
-	postStore := NewE2EPostStore()
-	mockGenerator := &E2EMockPostGenerator{}
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStore()
+	commitStore := NewMockCommitStore(repoStore)
+	postStore := NewMockPostStore()
+	mockGenerator := &MockPostGenerator{}
 
 	// Setup handlers
 	authHandler := handlers.NewAuthHandler(userStore)
@@ -431,7 +431,7 @@ func TestE2E_CompleteMVPFlow(t *testing.T) {
 				"url":       "https://github.com/e2e-test/my-repo/commit/abc123",
 				"timestamp": time.Now().Format(time.RFC3339),
 				"author": map[string]interface{}{
-					"name":  "E2E Test Author",
+					"name":  "Integration Test Author",
 					"email": "e2e@example.com",
 				},
 			},
@@ -556,24 +556,24 @@ func TestE2E_CompleteMVPFlow(t *testing.T) {
 
 	t.Logf("Step 7 PASSED: Post content verified: %s", content[:min(len(content), 50)]+"...")
 
-	t.Log("=== E2E MVP Flow Test COMPLETED SUCCESSFULLY ===")
+	t.Log("=== Integration MVP Flow Test COMPLETED SUCCESSFULLY ===")
 }
 
 // =============================================================================
-// E2E Test: Multi-Tenant Isolation
+// Integration Test: Multi-Tenant Isolation
 // =============================================================================
 
-func TestE2E_MultiTenantIsolation(t *testing.T) {
+func TestIntegration_MultiTenantIsolation(t *testing.T) {
 	if testing.Short() {
-		t.Skip("Skipping E2E integration test in short mode")
+		t.Skip("Skipping Integration integration test in short mode")
 	}
 
 	// Setup stores
-	userStore := NewE2EUserStore()
-	repoStore := NewE2ERepositoryStore()
-	commitStore := NewE2EUnifiedCommitStore(repoStore)
-	postStore := NewE2EPostStore()
-	mockGenerator := &E2EMockPostGenerator{}
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStore()
+	commitStore := NewMockCommitStore(repoStore)
+	postStore := NewMockPostStore()
+	mockGenerator := &MockPostGenerator{}
 
 	// Setup handlers
 	authHandler := handlers.NewAuthHandler(userStore)
@@ -583,15 +583,15 @@ func TestE2E_MultiTenantIsolation(t *testing.T) {
 	postsHandler := handlers.NewPostsHandler(postStore, commitStore, mockGenerator)
 
 	// Create User 1
-	user1Token := createE2EUser(t, authHandler, "user1@example.com", "password123")
-	repo1ID, webhook1Secret := createE2ERepo(t, repoHandler, user1Token, "https://github.com/user1/repo")
+	user1Token := createTestUser(t, authHandler, "user1@example.com", "password123")
+	repo1ID, webhook1Secret := createTestRepo(t, repoHandler, user1Token, "https://github.com/user1/repo")
 
 	// Create User 2
-	user2Token := createE2EUser(t, authHandler, "user2@example.com", "password456")
-	_, _ = createE2ERepo(t, repoHandler, user2Token, "https://github.com/user2/repo")
+	user2Token := createTestUser(t, authHandler, "user2@example.com", "password456")
+	_, _ = createTestRepo(t, repoHandler, user2Token, "https://github.com/user2/repo")
 
 	// User 1 receives webhook and creates commit
-	sendE2EWebhook(t, webhookHandler, repo1ID, webhook1Secret, "user1-commit-sha", "feat: user1 feature")
+	sendTestWebhook(t, webhookHandler, repo1ID, webhook1Secret, "user1-commit-sha", "feat: user1 feature")
 
 	// Get user1's commit
 	commit, _ := commitStore.GetCommitBySHA(context.Background(), repo1ID, "user1-commit-sha")
@@ -600,7 +600,7 @@ func TestE2E_MultiTenantIsolation(t *testing.T) {
 	}
 
 	// User 1 generates post
-	createE2EPost(t, postsHandler, user1Token, commit.ID, "linkedin")
+	createTestPost(t, postsHandler, user1Token, commit.ID, "linkedin")
 
 	// User 2 tries to access User 1's commit (should fail with 403)
 	createPostReq := httptest.NewRequest(http.MethodPost, "/api/v1/commits/"+commit.ID+"/posts?platform=twitter", nil)
@@ -619,10 +619,10 @@ func TestE2E_MultiTenantIsolation(t *testing.T) {
 }
 
 // =============================================================================
-// E2E Helper Functions
+// Integration Helper Functions
 // =============================================================================
 
-func createE2EUser(t *testing.T, authHandler *handlers.AuthHandler, email, password string) string {
+func createTestUser(t *testing.T, authHandler *handlers.AuthHandler, email, password string) string {
 	t.Helper()
 
 	// Register
@@ -648,7 +648,7 @@ func createE2EUser(t *testing.T, authHandler *handlers.AuthHandler, email, passw
 	return loginResp.Token
 }
 
-func createE2ERepo(t *testing.T, repoHandler *handlers.RepositoryHandler, token, githubURL string) (string, string) {
+func createTestRepo(t *testing.T, repoHandler *handlers.RepositoryHandler, token, githubURL string) (string, string) {
 	t.Helper()
 
 	body, _ := json.Marshal(handlers.AddRepositoryRequest{GitHubURL: githubURL})
@@ -669,7 +669,7 @@ func createE2ERepo(t *testing.T, repoHandler *handlers.RepositoryHandler, token,
 	return resp.Repository.ID, resp.Webhook.Secret
 }
 
-func sendE2EWebhook(t *testing.T, handler *handlers.MultiTenantWebhookHandler, repoID, secret, sha, message string) {
+func sendTestWebhook(t *testing.T, handler *handlers.MultiTenantWebhookHandler, repoID, secret, sha, message string) {
 	t.Helper()
 
 	payload := map[string]interface{}{
@@ -701,7 +701,7 @@ func sendE2EWebhook(t *testing.T, handler *handlers.MultiTenantWebhookHandler, r
 	}
 }
 
-func createE2EPost(t *testing.T, handler *handlers.PostsHandler, token, commitID, platform string) {
+func createTestPost(t *testing.T, handler *handlers.PostsHandler, token, commitID, platform string) {
 	t.Helper()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/commits/"+commitID+"/posts?platform="+platform, nil)
