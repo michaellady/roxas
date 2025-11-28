@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{if .Title}}{{.Title}} - {{end}}Roxas</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <a href="/" class="logo">Roxas</a>
+            <div class="nav-links">
+                {{if .User}}
+                <a href="/dashboard">Dashboard</a>
+                <form action="/logout" method="POST" style="display:inline">
+                    <button type="submit" class="btn-link">Logout</button>
+                </form>
+                {{else}}
+                <a href="/login">Login</a>
+                <a href="/signup">Sign Up</a>
+                {{end}}
+            </div>
+        </div>
+    </nav>
+    <main class="container">
+        {{if .Flash}}
+        <div class="alert alert-{{.Flash.Type}}">{{.Flash.Message}}</div>
+        {{end}}
+        {{template "content" .}}
+    </main>
+    <footer class="footer">
+        <div class="container">
+            <p>&copy; 2024 Roxas - Automated Social Media Posting for Developers</p>
+        </div>
+    </footer>
+</body>
+</html>
