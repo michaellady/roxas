@@ -10,33 +10,8 @@ import (
 
 // =============================================================================
 // TB16: Post Generation Service Tests (TDD - RED)
+// TB17: Implementation to make tests GREEN
 // =============================================================================
-
-// Platform constants for social media targets
-const (
-	PlatformLinkedIn  = "linkedin"
-	PlatformTwitter   = "twitter"
-	PlatformInstagram = "instagram"
-	PlatformYouTube   = "youtube"
-)
-
-// GeneratedPost represents a generated social media post
-type GeneratedPost struct {
-	Platform string
-	Content  string
-	CommitID string
-}
-
-// PostGeneratorService defines the interface for generating social media posts
-type PostGeneratorService interface {
-	// Generate creates a social media post for the given platform and commit
-	Generate(ctx context.Context, platform string, commit *Commit) (*GeneratedPost, error)
-}
-
-// ChatClient interface for OpenAI-like chat completions
-type ChatClient interface {
-	CreateChatCompletion(prompt string) (string, error)
-}
 
 // =============================================================================
 // Mock Chat Client for Testing
@@ -471,6 +446,3 @@ func TestPostGenerator_PromptIncludesCommitMetadata(t *testing.T) {
 		t.Error("Prompt should include repository information")
 	}
 }
-
-// Note: PostGeneratorService implementation and NewPostGenerator constructor
-// are defined in post_generator.go (TB17)
