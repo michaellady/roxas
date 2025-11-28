@@ -11,28 +11,8 @@ import (
 
 // =============================================================================
 // TB14: Commit Storage Service Tests (TDD - RED)
+// TB15: Implementation to make tests GREEN
 // =============================================================================
-
-// Commit represents a git commit to be stored
-type Commit struct {
-	ID           string
-	RepositoryID string
-	CommitSHA    string
-	GitHubURL    string
-	Message      string
-	Author       string
-	Timestamp    time.Time
-	CreatedAt    time.Time
-}
-
-// CommitStoreService defines the interface for commit persistence operations
-type CommitStoreService interface {
-	// Store saves a commit, returning the stored commit (existing if duplicate)
-	Store(ctx context.Context, commit *Commit) (*Commit, error)
-
-	// GetBySHA retrieves a commit by repository ID and SHA
-	GetBySHA(ctx context.Context, repoID, sha string) (*Commit, error)
-}
 
 // =============================================================================
 // Test: Store New Commit Returns Commit Object
@@ -42,7 +22,7 @@ func TestCommitStoreService_StoreNewCommit_ReturnsCommitObject(t *testing.T) {
 	// This test verifies that storing a new commit returns the commit object
 	// with a generated ID and CreatedAt timestamp
 
-	store := NewCommitStoreService(nil) // Will fail - no implementation
+	store := NewInMemoryCommitStore()
 
 	commit := &Commit{
 		RepositoryID: uuid.New().String(),
@@ -101,7 +81,7 @@ func TestCommitStoreService_StoreDuplicate_ReturnsExistingNoDuplicate(t *testing
 	// returns the existing commit without creating a duplicate
 	// (Tests UNIQUE constraint on repository_id + commit_sha)
 
-	store := NewCommitStoreService(nil) // Will fail - no implementation
+	store := NewInMemoryCommitStore()
 
 	repoID := uuid.New().String()
 	sha := "abc123def456789012345678901234567890abcd"
@@ -157,7 +137,7 @@ func TestCommitStoreService_SameSHADifferentRepo_CreatesNewCommit(t *testing.T) 
 	// This test verifies that the same SHA can be stored for different repos
 	// (UNIQUE constraint is on repository_id + commit_sha, not just commit_sha)
 
-	store := NewCommitStoreService(nil) // Will fail - no implementation
+	store := NewInMemoryCommitStore()
 
 	sha := "abc123def456789012345678901234567890abcd"
 	repo1ID := uuid.New().String()
@@ -215,7 +195,7 @@ func TestCommitStoreService_MissingRequiredFields_ReturnsError(t *testing.T) {
 	// This test verifies that missing required fields produce validation errors
 	// before hitting the database
 
-	store := NewCommitStoreService(nil) // Will fail - no implementation
+	store := NewInMemoryCommitStore()
 	ctx := context.Background()
 
 	tests := []struct {
@@ -291,7 +271,7 @@ func TestCommitStoreService_MissingRequiredFields_ReturnsError(t *testing.T) {
 func TestCommitStoreService_GetBySHA_ReturnsStoredCommit(t *testing.T) {
 	// This test verifies that GetBySHA retrieves a previously stored commit
 
-	store := NewCommitStoreService(nil) // Will fail - no implementation
+	store := NewInMemoryCommitStore()
 	ctx := context.Background()
 
 	repoID := uuid.New().String()
@@ -339,7 +319,7 @@ func TestCommitStoreService_GetBySHA_ReturnsStoredCommit(t *testing.T) {
 func TestCommitStoreService_GetBySHA_ReturnsNilForNonExistent(t *testing.T) {
 	// This test verifies that GetBySHA returns nil (not error) for non-existent commits
 
-	store := NewCommitStoreService(nil) // Will fail - no implementation
+	store := NewInMemoryCommitStore()
 	ctx := context.Background()
 
 	retrieved, err := store.GetBySHA(ctx, uuid.New().String(), "nonexistent123456789012345678901234567890")
@@ -353,20 +333,5 @@ func TestCommitStoreService_GetBySHA_ReturnsNilForNonExistent(t *testing.T) {
 	}
 }
 
-// =============================================================================
-// Sentinel Errors
-// =============================================================================
-
-// ErrValidation is returned when commit data fails validation
-var ErrValidation = errors.New("validation error")
-
-// =============================================================================
-// Constructor (placeholder - will be implemented in TB15)
-// =============================================================================
-
-// NewCommitStoreService creates a new commit store service
-// This is a placeholder that will fail - implementation is TB15
-func NewCommitStoreService(db interface{}) CommitStoreService {
-	// TB15 will implement this
-	panic("NewCommitStoreService not implemented - see TB15")
-}
+// Note: Commit, CommitStoreService interface, ErrValidation, and implementations
+// are defined in commit_store.go
