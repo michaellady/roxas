@@ -18,28 +18,6 @@ import (
 // Mock Stores for Multi-Tenant Webhook Tests
 // =============================================================================
 
-// WebhookRepositoryStore defines the interface for repository lookup in webhook handling
-type WebhookRepositoryStore interface {
-	GetRepositoryByID(ctx context.Context, repoID string) (*Repository, error)
-}
-
-// StoredCommit represents a commit stored in the database
-type StoredCommit struct {
-	ID           string
-	RepositoryID string
-	CommitSHA    string
-	GitHubURL    string
-	Message      string
-	Author       string
-	Timestamp    time.Time
-}
-
-// CommitStore defines the interface for commit persistence
-type CommitStore interface {
-	StoreCommit(ctx context.Context, commit *StoredCommit) error
-	GetCommitBySHA(ctx context.Context, repoID, sha string) (*StoredCommit, error)
-}
-
 // MockWebhookRepositoryStore is an in-memory repository store for testing
 type MockWebhookRepositoryStore struct {
 	mu    sync.Mutex
