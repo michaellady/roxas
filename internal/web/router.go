@@ -18,15 +18,21 @@ var templatesFS embed.FS
 //go:embed static/*
 var staticFS embed.FS
 
-// Templates holds parsed HTML templates
-var templates *template.Template
+// Templates holds parsed HTML templates per page
+var pageTemplates map[string]*template.Template
 
 func init() {
-	// Parse all templates at startup
-	templates = template.Must(template.ParseFS(templatesFS,
-		"templates/layouts/*.html",
-		"templates/pages/*.html",
-	))
+	pageTemplates = make(map[string]*template.Template)
+	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html"}
+
+	for _, page := range pages {
+		// Clone the base template and parse the page
+		t := template.Must(template.ParseFS(templatesFS,
+			"templates/layouts/base.html",
+			"templates/pages/"+page,
+		))
+		pageTemplates[page] = t
+	}
 }
 
 // PageData holds data passed to templates
@@ -56,10 +62,44 @@ type UserStore interface {
 	CreateUser(ctx context.Context, email, passwordHash string) (*handlers.User, error)
 }
 
+// RepositoryStore interface for repository operations
+type RepositoryStore interface {
+	ListRepositoriesByUser(ctx context.Context, userID string) ([]*handlers.Repository, error)
+}
+
+// CommitLister interface for listing commits
+type CommitLister interface {
+	ListCommitsByUser(ctx context.Context, userID string) ([]*DashboardCommit, error)
+}
+
+// PostLister interface for listing posts
+type PostLister interface {
+	ListPostsByUser(ctx context.Context, userID string) ([]*DashboardPost, error)
+}
+
+// DashboardCommit represents a commit for the dashboard
+type DashboardCommit struct {
+	ID      string
+	SHA     string
+	Message string
+	Author  string
+}
+
+// DashboardPost represents a post for the dashboard
+type DashboardPost struct {
+	ID       string
+	Platform string
+	Content  string
+	Status   string
+}
+
 // Router is the main HTTP router for the web UI
 type Router struct {
-	mux       *http.ServeMux
-	userStore UserStore
+	mux          *http.ServeMux
+	userStore    UserStore
+	repoStore    RepositoryStore
+	commitLister CommitLister
+	postLister   PostLister
 }
 
 // NewRouter creates a new web router with all routes configured (no user store)
@@ -81,6 +121,19 @@ func NewRouterWithStores(userStore UserStore) *Router {
 	return r
 }
 
+// NewRouterWithAllStores creates a new web router with all stores
+func NewRouterWithAllStores(userStore UserStore, repoStore RepositoryStore, commitLister CommitLister, postLister PostLister) *Router {
+	r := &Router{
+		mux:          http.NewServeMux(),
+		userStore:    userStore,
+		repoStore:    repoStore,
+		commitLister: commitLister,
+		postLister:   postLister,
+	}
+	r.setupRoutes()
+	return r
+}
+
 // ServeHTTP implements http.Handler
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.mux.ServeHTTP(w, req)
@@ -95,6 +148,7 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("/", r.handleHome)
 	r.mux.HandleFunc("/login", r.handleLogin)
 	r.mux.HandleFunc("/signup", r.handleSignup)
+	r.mux.HandleFunc("/dashboard", r.handleDashboard)
 }
 
 func (r *Router) handleHome(w http.ResponseWriter, req *http.Request) {
@@ -288,11 +342,83 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 	http.Redirect(w, req, "/login", http.StatusSeeOther)
 }
 
+// DashboardData holds data specific to the dashboard page
+type DashboardData struct {
+	Repositories []*handlers.Repository
+	Commits      []*DashboardCommit
+	Posts        []*DashboardPost
+	IsEmpty      bool
+}
+
+func (r *Router) handleDashboard(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		// Redirect to login for HTML requests
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		// Invalid/expired token - redirect to login
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Fetch dashboard data
+	dashData := &DashboardData{}
+
+	// Get repositories if store is available
+	if r.repoStore != nil {
+		repos, err := r.repoStore.ListRepositoriesByUser(req.Context(), claims.UserID)
+		if err == nil {
+			dashData.Repositories = repos
+		}
+	}
+
+	// Get commits if lister is available
+	if r.commitLister != nil {
+		commits, err := r.commitLister.ListCommitsByUser(req.Context(), claims.UserID)
+		if err == nil {
+			dashData.Commits = commits
+		}
+	}
+
+	// Get posts if lister is available
+	if r.postLister != nil {
+		posts, err := r.postLister.ListPostsByUser(req.Context(), claims.UserID)
+		if err == nil {
+			dashData.Posts = posts
+		}
+	}
+
+	// Check if dashboard is empty (no repos)
+	dashData.IsEmpty = len(dashData.Repositories) == 0
+
+	r.renderPage(w, "dashboard.html", PageData{
+		Title: "Dashboard",
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+		Data: dashData,
+	})
+}
+
 func (r *Router) renderPage(w http.ResponseWriter, page string, data PageData) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
-	// First render the page content
-	err := templates.ExecuteTemplate(w, "base.html", data)
+	// Get the page-specific template
+	t, ok := pageTemplates[page]
+	if !ok {
+		http.Error(w, "Template not found: "+page, http.StatusInternalServerError)
+		return
+	}
+
+	// Execute the base template (which includes the page content)
+	err := t.ExecuteTemplate(w, "base.html", data)
 	if err != nil {
 		http.Error(w, "Template error: "+err.Error(), http.StatusInternalServerError)
 		return
