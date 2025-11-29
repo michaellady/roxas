@@ -28,6 +28,7 @@ type Repository struct {
 type RepositoryStore interface {
 	CreateRepository(ctx context.Context, userID, githubURL, webhookSecret string) (*Repository, error)
 	GetRepositoryByUserAndURL(ctx context.Context, userID, githubURL string) (*Repository, error)
+	ListRepositoriesByUser(ctx context.Context, userID string) ([]*Repository, error)
 }
 
 // ErrDuplicateRepository is returned when a user tries to add the same repo twice
@@ -55,6 +56,11 @@ func (g *CryptoSecretGenerator) Generate() (string, error) {
 		return "", fmt.Errorf("failed to generate secret: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(bytes), nil
+}
+
+// ListRepositoriesResponse is the response for listing repositories
+type ListRepositoriesResponse struct {
+	Repositories []RepositoryResponse `json:"repositories"`
 }
 
 // AddRepositoryRequest is the request body for adding a repository
@@ -96,6 +102,40 @@ func NewRepositoryHandler(store RepositoryStore, secretGen SecretGenerator, webh
 		secretGen:  secretGen,
 		webhookURL: webhookURL,
 	}
+}
+
+// ListRepositories handles GET /api/v1/repositories
+func (h *RepositoryHandler) ListRepositories(w http.ResponseWriter, r *http.Request) {
+	// Get user ID from context (set by JWT middleware)
+	userID := auth.GetUserIDFromContext(r.Context())
+	if userID == "" {
+		h.writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	// Get user's repositories
+	repos, err := h.store.ListRepositoriesByUser(r.Context(), userID)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to retrieve repositories")
+		return
+	}
+
+	// Convert to response format (excluding webhook secrets)
+	repoResponses := make([]RepositoryResponse, 0, len(repos))
+	for _, repo := range repos {
+		repoResponses = append(repoResponses, RepositoryResponse{
+			ID:        repo.ID,
+			UserID:    repo.UserID,
+			GitHubURL: repo.GitHubURL,
+			CreatedAt: repo.CreatedAt.Format(time.RFC3339),
+		})
+	}
+
+	resp := ListRepositoriesResponse{
+		Repositories: repoResponses,
+	}
+
+	h.writeJSON(w, http.StatusOK, resp)
 }
 
 // AddRepository handles POST /api/v1/repositories
