@@ -7,18 +7,21 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 
-	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/awslabs/aws-lambda-go-api-proxy/httpadapter"
 
 	"github.com/mikelady/roxas/internal/clients"
 	"github.com/mikelady/roxas/internal/database"
 	"github.com/mikelady/roxas/internal/models"
 	"github.com/mikelady/roxas/internal/orchestrator"
 	"github.com/mikelady/roxas/internal/services"
+	"github.com/mikelady/roxas/internal/web"
 )
 
 // Global database pool (reused across Lambda invocations)
@@ -56,100 +59,101 @@ func validateConfig(config Config) error {
 	return nil
 }
 
-// Handler is the Lambda function handler
-func Handler(ctx context.Context, request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
-	log.Printf("Received webhook request: %s %s", request.HTTPMethod, request.Path)
+// webhookHandler handles GitHub webhook requests at /webhook
+func webhookHandler(config Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("Received webhook request: %s %s", r.Method, r.URL.Path)
 
-	// Load configuration
-	config := loadConfig()
+		// Validate webhook secret is set
+		if err := validateConfig(config); err != nil {
+			log.Printf("Configuration error: %v", err)
+			http.Error(w, fmt.Sprintf("Configuration error: %v", err), http.StatusInternalServerError)
+			return
+		}
 
-	// Validate webhook secret is set
-	if err := validateConfig(config); err != nil {
-		log.Printf("Configuration error: %v", err)
-		return events.APIGatewayProxyResponse{
-			StatusCode: 500,
-			Body:       fmt.Sprintf("Configuration error: %v", err),
-		}, nil
+		// Read request body
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			log.Printf("Failed to read request body: %v", err)
+			http.Error(w, "Failed to read request body", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+
+		// Validate webhook signature
+		signature := r.Header.Get("X-Hub-Signature-256")
+		if signature == "" {
+			log.Println("Missing signature header")
+			http.Error(w, "Missing signature", http.StatusUnauthorized)
+			return
+		}
+
+		// Validate signature
+		if !validateSignature(body, signature, config.WebhookSecret) {
+			log.Println("Invalid signature")
+			http.Error(w, "Invalid signature", http.StatusUnauthorized)
+			return
+		}
+
+		// Parse webhook payload
+		commit, err := extractCommitFromWebhook(body)
+		if err != nil {
+			log.Printf("Failed to parse webhook: %v", err)
+			http.Error(w, fmt.Sprintf("Invalid webhook payload: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		// Check if we have API credentials for processing
+		if config.OpenAIAPIKey == "" || config.LinkedInAccessToken == "" {
+			log.Println("Missing API credentials - webhook accepted but not processed")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("Webhook received (credentials missing for processing)"))
+			return
+		}
+
+		// Initialize API clients
+		openAIClient := clients.NewOpenAIClient(config.OpenAIAPIKey, "", config.OpenAIChatModel, config.OpenAIImageModel)
+		linkedInClient := clients.NewLinkedInClient(config.LinkedInAccessToken, "")
+
+		// Initialize services
+		summarizer := services.NewSummarizer(openAIClient)
+		imageGenerator := services.NewImageGenerator(openAIClient)
+		linkedInPoster := services.NewLinkedInPoster(linkedInClient, config.LinkedInAccessToken)
+
+		// Initialize orchestrator
+		orch := orchestrator.NewOrchestrator(summarizer, imageGenerator, linkedInPoster)
+
+		// Process commit synchronously (Lambda freezes goroutines when handler returns)
+		postURL, err := orch.ProcessCommit(*commit)
+		if err != nil {
+			log.Printf("Error processing commit: %v", err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(fmt.Sprintf(`{"error": "Failed to process commit: %v"}`, err)))
+			return
+		}
+
+		log.Printf("Successfully posted to LinkedIn: %s", postURL)
+
+		// Return 200 with success
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(fmt.Sprintf(`{"message": "Webhook processed successfully", "linkedin_url": "%s"}`, postURL)))
 	}
+}
 
-	// Validate webhook signature
-	signature := request.Headers["X-Hub-Signature-256"]
-	if signature == "" {
-		// Try lowercase header name (API Gateway sometimes normalizes)
-		signature = request.Headers["x-hub-signature-256"]
-	}
+// createRouter builds the combined HTTP router for both web UI and webhook
+func createRouter(config Config) http.Handler {
+	mux := http.NewServeMux()
 
-	if signature == "" {
-		log.Println("Missing signature header")
-		return events.APIGatewayProxyResponse{
-			StatusCode: 401,
-			Body:       "Missing signature",
-		}, nil
-	}
+	// Webhook endpoint
+	mux.HandleFunc("/webhook", webhookHandler(config))
 
-	// Validate signature
-	if !validateSignature([]byte(request.Body), signature, config.WebhookSecret) {
-		log.Println("Invalid signature")
-		return events.APIGatewayProxyResponse{
-			StatusCode: 401,
-			Body:       "Invalid signature",
-		}, nil
-	}
+	// Web UI routes (handles everything else including /, /login, /signup, /dashboard, /logout)
+	webRouter := web.NewRouter()
+	mux.Handle("/", webRouter)
 
-	// Parse webhook payload
-	commit, err := extractCommitFromWebhook([]byte(request.Body))
-	if err != nil {
-		log.Printf("Failed to parse webhook: %v", err)
-		return events.APIGatewayProxyResponse{
-			StatusCode: 400,
-			Body:       fmt.Sprintf("Invalid webhook payload: %v", err),
-		}, nil
-	}
-
-	// Check if we have API credentials for processing
-	if config.OpenAIAPIKey == "" || config.LinkedInAccessToken == "" {
-		log.Println("Missing API credentials - webhook accepted but not processed")
-		return events.APIGatewayProxyResponse{
-			StatusCode: 200,
-			Body:       "Webhook received (credentials missing for processing)",
-		}, nil
-	}
-
-	// Initialize API clients
-	openAIClient := clients.NewOpenAIClient(config.OpenAIAPIKey, "", config.OpenAIChatModel, config.OpenAIImageModel)
-	linkedInClient := clients.NewLinkedInClient(config.LinkedInAccessToken, "")
-
-	// Initialize services
-	summarizer := services.NewSummarizer(openAIClient)
-	imageGenerator := services.NewImageGenerator(openAIClient)
-	linkedInPoster := services.NewLinkedInPoster(linkedInClient, config.LinkedInAccessToken)
-
-	// Initialize orchestrator
-	orch := orchestrator.NewOrchestrator(summarizer, imageGenerator, linkedInPoster)
-
-	// Process commit synchronously (Lambda freezes goroutines when handler returns)
-	postURL, err := orch.ProcessCommit(*commit)
-	if err != nil {
-		log.Printf("Error processing commit: %v", err)
-		return events.APIGatewayProxyResponse{
-			StatusCode: 500,
-			Headers: map[string]string{
-				"Content-Type": "application/json",
-			},
-			Body: fmt.Sprintf(`{"error": "Failed to process commit: %v"}`, err),
-		}, nil
-	}
-
-	log.Printf("Successfully posted to LinkedIn: %s", postURL)
-
-	// Return 200 with success
-	return events.APIGatewayProxyResponse{
-		StatusCode: 200,
-		Headers: map[string]string{
-			"Content-Type": "application/json",
-		},
-		Body: fmt.Sprintf(`{"message": "Webhook processed successfully", "linkedin_url": "%s"}`, postURL),
-	}, nil
+	return mux
 }
 
 // validateSignature verifies the GitHub webhook HMAC signature
@@ -253,6 +257,9 @@ func main() {
 		log.Println("DB_SECRET_NAME not set, skipping database initialization")
 	}
 
-	// Start Lambda handler
-	lambda.Start(Handler)
+	// Create combined router for web UI and webhook
+	router := createRouter(config)
+
+	// Wrap with aws-lambda-go-api-proxy for Lambda compatibility
+	lambda.Start(httpadapter.New(router).ProxyWithContext)
 }

@@ -34,6 +34,8 @@ github.com/aws/aws-sdk-go-v2/service/sts v1.41.1 h1:GdGmKtG+/Krag7VfyOXV17xjTCz0
 github.com/aws/aws-sdk-go-v2/service/sts v1.41.1/go.mod h1:6TxbXoDSgBQ225Qd8Q+MbxUxUh6TtNKwbRt/EPS9xso=
 github.com/aws/smithy-go v1.23.2 h1:Crv0eatJUQhaManss33hS5r40CG3ZFH+21XSkqMrIUM=
 github.com/aws/smithy-go v1.23.2/go.mod h1:LEj2LM3rBRQJxPZTB4KuzZkaZYnZPnvgIhb4pu07mx0=
+github.com/awslabs/aws-lambda-go-api-proxy v0.16.2 h1:CJyGEyO1CIwOnXTU40urf0mchf6t3voxpvUDikOU9LY=
+github.com/awslabs/aws-lambda-go-api-proxy v0.16.2/go.mod h1:vxxjwBHe/KbgFeNlAP/Tvp4SsVRL3WQamcWRxqVh0z0=
 github.com/containerd/errdefs v1.0.0 h1:tg5yIfIlQIrxYtu9ajqY42W3lpS19XqdxRQeEwYG8PI=
 github.com/containerd/errdefs v1.0.0/go.mod h1:+YBYIdtsnF4Iw6nWZhJcqGSg/dwvV7tyJ/kCkyJ2k+M=
 github.com/containerd/errdefs/pkg v0.3.0 h1:9IKJ06FvyNlexW690DXuQNx2KA2cUJXx151Xdx3ZPPE=

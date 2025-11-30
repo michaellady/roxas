@@ -28,6 +28,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.9 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.1 // indirect
 	github.com/aws/smithy-go v1.23.2 // indirect
+	github.com/awslabs/aws-lambda-go-api-proxy v0.16.2 // indirect
 	github.com/dhui/dktest v0.4.6 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
