@@ -106,14 +106,16 @@ func writeAuthError(w http.ResponseWriter, message string) {
 	json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
 
-// isProduction returns true if running in production environment
-func isProduction() bool {
+// isSecureEnvironment returns true if running in an environment that uses HTTPS
+// This includes prod, dev, and PR environments (anything deployed to AWS)
+func isSecureEnvironment() bool {
 	env := os.Getenv("ENVIRONMENT")
-	return env == "production" || env == "prod"
+	// Any deployed environment uses HTTPS - only local dev should be insecure
+	return env == "prod" || env == "dev" || env == "production"
 }
 
 // SetAuthCookie sets the auth_token cookie with the JWT token
-// Cookie settings: HttpOnly, SameSite=Lax, Secure (in production)
+// Cookie settings: HttpOnly, SameSite=Lax, Secure (when deployed)
 func SetAuthCookie(w http.ResponseWriter, token string, maxAge int) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
@@ -122,7 +124,7 @@ func SetAuthCookie(w http.ResponseWriter, token string, maxAge int) {
 		MaxAge:   maxAge, // in seconds
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   isProduction(),
+		Secure:   isSecureEnvironment(),
 	})
 }
 
@@ -135,6 +137,6 @@ func ClearAuthCookie(w http.ResponseWriter) {
 		MaxAge:   -1, // Delete cookie
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   isProduction(),
+		Secure:   isSecureEnvironment(),
 	})
 }
