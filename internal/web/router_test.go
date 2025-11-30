@@ -586,6 +586,108 @@ func TestRouter_GetDashboard_EmptyState_ShowsGuidance(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// TB-WEB-08: Logout functionality (TDD)
+// =============================================================================
+
+func TestRouter_PostLogout_ClearsCookieAndRedirects(t *testing.T) {
+	userStore := NewMockUserStore()
+	router := NewRouterWithStores(userStore)
+
+	// Create a test user and get valid auth cookie
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	// POST to logout with auth cookie
+	req := httptest.NewRequest(http.MethodPost, "/logout", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should redirect to login page
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected status 303 See Other, got %d", rr.Code)
+	}
+
+	location := rr.Header().Get("Location")
+	if location != "/login" {
+		t.Errorf("Expected redirect to /login, got %s", location)
+	}
+
+	// Should clear auth_token cookie (MaxAge=-1 or empty value)
+	cookies := rr.Result().Cookies()
+	var authCookie *http.Cookie
+	for _, c := range cookies {
+		if c.Name == "auth_token" {
+			authCookie = c
+			break
+		}
+	}
+
+	if authCookie == nil {
+		t.Error("Expected auth_token cookie to be set (with clear directive)")
+	} else {
+		// Cookie should be cleared (MaxAge < 0 or value empty)
+		if authCookie.MaxAge >= 0 && authCookie.Value != "" {
+			t.Errorf("Expected cookie to be cleared, got MaxAge=%d, Value=%s", authCookie.MaxAge, authCookie.Value)
+		}
+	}
+}
+
+func TestRouter_PostLogout_SubsequentDashboardRequiresLogin(t *testing.T) {
+	userStore := NewMockUserStore()
+	router := NewRouterWithStores(userStore)
+
+	// Create a test user
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	// First, verify dashboard is accessible with valid cookie
+	reqDash := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+	reqDash.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rrDash := httptest.NewRecorder()
+	router.ServeHTTP(rrDash, reqDash)
+
+	if rrDash.Code != http.StatusOK {
+		t.Fatalf("Expected dashboard to be accessible, got %d", rrDash.Code)
+	}
+
+	// POST to logout
+	reqLogout := httptest.NewRequest(http.MethodPost, "/logout", nil)
+	reqLogout.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rrLogout := httptest.NewRecorder()
+	router.ServeHTTP(rrLogout, reqLogout)
+
+	// Now access dashboard without cookie - should redirect
+	reqAfter := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+	rrAfter := httptest.NewRecorder()
+	router.ServeHTTP(rrAfter, reqAfter)
+
+	if rrAfter.Code != http.StatusSeeOther {
+		t.Errorf("Expected redirect after logout, got %d", rrAfter.Code)
+	}
+
+	location := rrAfter.Header().Get("Location")
+	if location != "/login" {
+		t.Errorf("Expected redirect to /login, got %s", location)
+	}
+}
+
+func TestRouter_GetLogout_MethodNotAllowed(t *testing.T) {
+	router := NewRouter()
+
+	// GET to logout should not be allowed (only POST)
+	req := httptest.NewRequest(http.MethodGet, "/logout", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("Expected status 405 Method Not Allowed, got %d", rr.Code)
+	}
+}
+
 // Helper function to generate JWT token for tests
 func generateToken(userID, email string) (string, error) {
 	return auth.GenerateToken(userID, email)

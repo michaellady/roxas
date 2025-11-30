@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 )
 
@@ -105,8 +106,14 @@ func writeAuthError(w http.ResponseWriter, message string) {
 	json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
 
+// isProduction returns true if running in production environment
+func isProduction() bool {
+	env := os.Getenv("ENVIRONMENT")
+	return env == "production" || env == "prod"
+}
+
 // SetAuthCookie sets the auth_token cookie with the JWT token
-// Cookie settings: HttpOnly, SameSite=Lax, Secure (if not localhost)
+// Cookie settings: HttpOnly, SameSite=Lax, Secure (in production)
 func SetAuthCookie(w http.ResponseWriter, token string, maxAge int) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
@@ -115,8 +122,7 @@ func SetAuthCookie(w http.ResponseWriter, token string, maxAge int) {
 		MaxAge:   maxAge, // in seconds
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		// Secure should be true in production (HTTPS)
-		// For local dev, we leave it false
+		Secure:   isProduction(),
 	})
 }
 
@@ -129,5 +135,6 @@ func ClearAuthCookie(w http.ResponseWriter) {
 		MaxAge:   -1, // Delete cookie
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
+		Secure:   isProduction(),
 	})
 }

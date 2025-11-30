@@ -149,6 +149,7 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("/login", r.handleLogin)
 	r.mux.HandleFunc("/signup", r.handleSignup)
 	r.mux.HandleFunc("/dashboard", r.handleDashboard)
+	r.mux.HandleFunc("/logout", r.handleLogout)
 }
 
 func (r *Router) handleHome(w http.ResponseWriter, req *http.Request) {
@@ -405,6 +406,20 @@ func (r *Router) handleDashboard(w http.ResponseWriter, req *http.Request) {
 		},
 		Data: dashData,
 	})
+}
+
+func (r *Router) handleLogout(w http.ResponseWriter, req *http.Request) {
+	// Only accept POST requests (form submission)
+	if req.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Clear auth cookie
+	auth.ClearAuthCookie(w)
+
+	// Redirect to login page
+	http.Redirect(w, req, "/login", http.StatusSeeOther)
 }
 
 func (r *Router) renderPage(w http.ResponseWriter, page string, data PageData) {
