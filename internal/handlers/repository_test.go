@@ -69,6 +69,20 @@ func (m *MockRepositoryStore) GetRepositoryByUserAndURL(ctx context.Context, use
 	return nil, nil
 }
 
+// ListRepositoriesByUser returns all repositories for a user
+func (m *MockRepositoryStore) ListRepositoriesByUser(ctx context.Context, userID string) ([]*Repository, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var result []*Repository
+	for _, r := range m.repos {
+		if r.UserID == userID {
+			result = append(result, r)
+		}
+	}
+	return result, nil
+}
+
 // =============================================================================
 // Mock Secret Generator (for deterministic testing)
 // =============================================================================
@@ -410,5 +424,168 @@ func TestAddRepositoryMissingBody(t *testing.T) {
 					tc.name, rr.Code, rr.Body.String())
 			}
 		})
+	}
+}
+
+// =============================================================================
+// TB-WEB-05 Tests: List Repositories Endpoint (TDD - RED -> GREEN)
+// =============================================================================
+
+// TestListRepositoriesReturnsUserRepos tests that GET /api/v1/repositories returns user's repositories
+func TestListRepositoriesReturnsUserRepos(t *testing.T) {
+	store := NewMockRepositoryStore()
+	secretGen := &MockSecretGenerator{Secret: "test-webhook-secret"}
+	handler := NewRepositoryHandler(store, secretGen, "https://api.roxas.dev")
+
+	userID := "user-123"
+	email := "test@example.com"
+
+	// Pre-populate store with repositories for this user
+	store.CreateRepository(context.Background(), userID, "https://github.com/user/repo1", "secret1")
+	store.CreateRepository(context.Background(), userID, "https://github.com/user/repo2", "secret2")
+
+	req := createAuthenticatedRequest(t, http.MethodGet, "/api/v1/repositories", nil, userID, email)
+	rr := httptest.NewRecorder()
+
+	protectedHandler := auth.JWTMiddleware(http.HandlerFunc(handler.ListRepositories))
+	protectedHandler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200 OK, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp ListRepositoriesResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if len(resp.Repositories) != 2 {
+		t.Errorf("Expected 2 repositories, got %d", len(resp.Repositories))
+	}
+
+	// Verify user_id matches
+	for _, repo := range resp.Repositories {
+		if repo.UserID != userID {
+			t.Errorf("Expected user_id %s, got %s", userID, repo.UserID)
+		}
+	}
+}
+
+// TestListRepositoriesExcludesWebhookSecret tests that webhook_secret is NOT included in response
+func TestListRepositoriesExcludesWebhookSecret(t *testing.T) {
+	store := NewMockRepositoryStore()
+	secretGen := &MockSecretGenerator{Secret: "test-webhook-secret"}
+	handler := NewRepositoryHandler(store, secretGen, "https://api.roxas.dev")
+
+	userID := "user-123"
+	email := "test@example.com"
+
+	// Pre-populate store with a repository
+	store.CreateRepository(context.Background(), userID, "https://github.com/user/repo1", "super-secret-value")
+
+	req := createAuthenticatedRequest(t, http.MethodGet, "/api/v1/repositories", nil, userID, email)
+	rr := httptest.NewRecorder()
+
+	protectedHandler := auth.JWTMiddleware(http.HandlerFunc(handler.ListRepositories))
+	protectedHandler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status 200 OK, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Check raw JSON does not contain webhook_secret
+	body := rr.Body.String()
+	if strings.Contains(body, "webhook_secret") || strings.Contains(body, "super-secret-value") {
+		t.Errorf("Response should NOT contain webhook_secret, got: %s", body)
+	}
+}
+
+// TestListRepositoriesNoAuth tests that unauthenticated requests return 401
+func TestListRepositoriesNoAuth(t *testing.T) {
+	store := NewMockRepositoryStore()
+	secretGen := &MockSecretGenerator{Secret: "test-secret"}
+	handler := NewRepositoryHandler(store, secretGen, "https://api.roxas.dev")
+
+	// Request WITHOUT Authorization header
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/repositories", nil)
+
+	rr := httptest.NewRecorder()
+	protectedHandler := auth.JWTMiddleware(http.HandlerFunc(handler.ListRepositories))
+	protectedHandler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("Expected status 401 Unauthorized, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestListRepositoriesOnlyReturnsOwnRepos tests that users only see their own repositories
+func TestListRepositoriesOnlyReturnsOwnRepos(t *testing.T) {
+	store := NewMockRepositoryStore()
+	secretGen := &MockSecretGenerator{Secret: "test-secret"}
+	handler := NewRepositoryHandler(store, secretGen, "https://api.roxas.dev")
+
+	// Create repos for different users
+	store.CreateRepository(context.Background(), "user-1", "https://github.com/user1/repo1", "secret1")
+	store.CreateRepository(context.Background(), "user-1", "https://github.com/user1/repo2", "secret2")
+	store.CreateRepository(context.Background(), "user-2", "https://github.com/user2/repo3", "secret3")
+
+	// User 1 should only see their 2 repos
+	req := createAuthenticatedRequest(t, http.MethodGet, "/api/v1/repositories", nil, "user-1", "user1@example.com")
+	rr := httptest.NewRecorder()
+
+	protectedHandler := auth.JWTMiddleware(http.HandlerFunc(handler.ListRepositories))
+	protectedHandler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status 200 OK, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp ListRepositoriesResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if len(resp.Repositories) != 2 {
+		t.Errorf("Expected 2 repositories for user-1, got %d", len(resp.Repositories))
+	}
+
+	// Verify all returned repos belong to user-1
+	for _, repo := range resp.Repositories {
+		if repo.UserID != "user-1" {
+			t.Errorf("Expected user_id user-1, got %s", repo.UserID)
+		}
+	}
+}
+
+// TestListRepositoriesEmptyList tests that empty list is returned when user has no repos
+func TestListRepositoriesEmptyList(t *testing.T) {
+	store := NewMockRepositoryStore()
+	secretGen := &MockSecretGenerator{Secret: "test-secret"}
+	handler := NewRepositoryHandler(store, secretGen, "https://api.roxas.dev")
+
+	userID := "user-with-no-repos"
+	email := "noreps@example.com"
+
+	req := createAuthenticatedRequest(t, http.MethodGet, "/api/v1/repositories", nil, userID, email)
+	rr := httptest.NewRecorder()
+
+	protectedHandler := auth.JWTMiddleware(http.HandlerFunc(handler.ListRepositories))
+	protectedHandler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200 OK, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp ListRepositoriesResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if resp.Repositories == nil {
+		t.Error("Expected empty array, got nil")
+	}
+
+	if len(resp.Repositories) != 0 {
+		t.Errorf("Expected 0 repositories, got %d", len(resp.Repositories))
 	}
 }

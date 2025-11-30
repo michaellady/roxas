@@ -214,6 +214,17 @@ func (s *MockRepositoryStore) GetRepositoryByID(ctx context.Context, repoID stri
 	return nil, nil
 }
 
+func (s *MockRepositoryStore) ListRepositoriesByUser(ctx context.Context, userID string) ([]*handlers.Repository, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var result []*handlers.Repository
+	for _, r := range s.repos {
+		if r.UserID == userID {
+			result = append(result, r)
+		}
+	}
+	return result, nil
+}
 
 // MockPostStore - in-memory post store
 type MockPostStore struct {

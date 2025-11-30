@@ -1,0 +1,24 @@
+{{define "content"}}
+<div class="auth-container">
+    <h1>Sign Up</h1>
+    {{if .Error}}
+    <div class="alert alert-error">{{.Error}}</div>
+    {{end}}
+    <form action="/signup" method="POST" class="auth-form">
+        <div class="form-group">
+            <label for="email">Email</label>
+            <input type="email" id="email" name="email" required placeholder="you@example.com">
+        </div>
+        <div class="form-group">
+            <label for="password">Password</label>
+            <input type="password" id="password" name="password" required minlength="8" placeholder="Min 8 characters">
+        </div>
+        <div class="form-group">
+            <label for="confirm_password">Confirm Password</label>
+            <input type="password" id="confirm_password" name="confirm_password" required placeholder="Confirm your password">
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">Create Account</button>
+    </form>
+    <p class="auth-link">Already have an account? <a href="/login">Login</a></p>
+</div>
+{{end}}

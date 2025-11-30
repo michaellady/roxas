@@ -1,0 +1,88 @@
+{{define "content"}}
+<div class="dashboard-container">
+    <h1>Dashboard</h1>
+
+    {{if .Data.IsEmpty}}
+    <div class="empty-state">
+        <h2>Get Started</h2>
+        <p>Welcome to Roxas! Add your first repository to start automatically generating social media posts from your commits.</p>
+        <a href="/repositories/new" class="btn btn-primary">Add Repository</a>
+    </div>
+    {{else}}
+
+    <section class="dashboard-section">
+        <h2>Repositories</h2>
+        {{if .Data.Repositories}}
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Repository</th>
+                        <th>Added</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Data.Repositories}}
+                    <tr>
+                        <td><a href="{{.GitHubURL}}" target="_blank">{{.GitHubURL}}</a></td>
+                        <td>{{.CreatedAt.Format "Jan 02, 2006"}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </div>
+        {{else}}
+        <p class="empty-message">No repositories yet. <a href="/repositories/new">Add your first repository</a></p>
+        {{end}}
+    </section>
+
+    <section class="dashboard-section">
+        <h2>Recent Commits</h2>
+        {{if .Data.Commits}}
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>SHA</th>
+                        <th>Message</th>
+                        <th>Author</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Data.Commits}}
+                    <tr>
+                        <td><code>{{slice .SHA 0 7}}</code></td>
+                        <td>{{.Message}}</td>
+                        <td>{{.Author}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </div>
+        {{else}}
+        <p class="empty-message">No commits yet. Commits will appear here when webhooks receive push events.</p>
+        {{end}}
+    </section>
+
+    <section class="dashboard-section">
+        <h2>Generated Posts</h2>
+        {{if .Data.Posts}}
+        <div class="posts-grid">
+            {{range .Data.Posts}}
+            <div class="post-card">
+                <div class="post-header">
+                    <span class="platform-badge">{{.Platform}}</span>
+                    <span class="status-badge status-{{.Status}}">{{.Status}}</span>
+                </div>
+                <p class="post-content">{{.Content}}</p>
+            </div>
+            {{end}}
+        </div>
+        {{else}}
+        <p class="empty-message">No posts generated yet. Posts will appear here after commits are processed.</p>
+        {{end}}
+    </section>
+
+    {{end}}
+</div>
+{{end}}
