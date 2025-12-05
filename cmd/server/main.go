@@ -64,13 +64,6 @@ func webhookHandler(config Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Received webhook request: %s %s", r.Method, r.URL.Path)
 
-		// Validate webhook secret is set
-		if err := validateConfig(config); err != nil {
-			log.Printf("Configuration error: %v", err)
-			http.Error(w, fmt.Sprintf("Configuration error: %v", err), http.StatusInternalServerError)
-			return
-		}
-
 		// Read request body
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -78,7 +71,6 @@ func webhookHandler(config Config) http.HandlerFunc {
 			http.Error(w, "Failed to read request body", http.StatusBadRequest)
 			return
 		}
-		defer r.Body.Close()
 
 		// Validate webhook signature
 		signature := r.Header.Get("X-Hub-Signature-256")
@@ -215,6 +207,12 @@ func main() {
 
 	// Load configuration
 	config := loadConfig()
+
+	// Validate required configuration (fail fast at startup)
+	if err := validateConfig(config); err != nil {
+		log.Printf("FATAL: Configuration error: %v", err)
+		os.Exit(1)
+	}
 
 	// Initialize database connection if secret name is provided
 	if config.DBSecretName != "" {

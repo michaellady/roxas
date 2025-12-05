@@ -82,27 +82,30 @@ func TestWebhookHandlerInvalidSignature(t *testing.T) {
 	}
 }
 
-// TestWebhookHandlerMissingEnvVars tests handling of missing configuration
-func TestWebhookHandlerMissingEnvVars(t *testing.T) {
-	// Clear environment variables
-	os.Unsetenv("OPENAI_API_KEY")
-	os.Unsetenv("LINKEDIN_ACCESS_TOKEN")
-	os.Unsetenv("WEBHOOK_SECRET")
+// TestValidateConfigMissingWebhookSecret tests that validateConfig catches missing WEBHOOK_SECRET
+func TestValidateConfigMissingWebhookSecret(t *testing.T) {
+	config := Config{
+		OpenAIAPIKey:        "test-key",
+		LinkedInAccessToken: "test-token",
+		WebhookSecret:       "", // Missing
+	}
 
-	config := loadConfig()
-	handler := webhookHandler(config)
+	err := validateConfig(config)
+	if err == nil {
+		t.Error("Expected error for missing WEBHOOK_SECRET")
+	}
+}
 
-	payload := `{"commits": []}`
+// TestValidateConfigValid tests that validateConfig passes with required fields
+func TestValidateConfigValid(t *testing.T) {
+	config := Config{
+		WebhookSecret: "test-secret",
+		// OpenAI and LinkedIn are optional for validation
+	}
 
-	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(payload))
-	req.Header.Set("X-Hub-Signature-256", "sha256=test")
-
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	// Should return 500 for missing WEBHOOK_SECRET
-	if rec.Code != http.StatusInternalServerError {
-		t.Errorf("Expected status 500 for missing config, got %d", rec.Code)
+	err := validateConfig(config)
+	if err != nil {
+		t.Errorf("Expected no error, got %v", err)
 	}
 }
 
@@ -211,6 +214,27 @@ func TestCombinedRouterServesWebhook(t *testing.T) {
 	// Should return 200 (webhook accepted, processing skipped due to missing API keys)
 	if rec.Code != http.StatusOK {
 		t.Errorf("Expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestCombinedRouterWebhookTrailingSlash tests that /webhook/ (with trailing slash) returns 404
+// This documents the expected behavior: GitHub sends to /webhook exactly, not /webhook/
+func TestCombinedRouterWebhookTrailingSlash(t *testing.T) {
+	os.Setenv("WEBHOOK_SECRET", "test-secret")
+	defer os.Unsetenv("WEBHOOK_SECRET")
+
+	config := loadConfig()
+	router := createRouter(config)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/", strings.NewReader(`{"commits": []}`))
+	req.Header.Set("X-Hub-Signature-256", "sha256=test")
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	// /webhook/ falls through to web router which returns 404 for unknown paths
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404 for /webhook/, got %d", rec.Code)
 	}
 }
 
