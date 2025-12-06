@@ -135,14 +135,25 @@ func webhookHandler(config Config) http.HandlerFunc {
 }
 
 // createRouter builds the combined HTTP router for both web UI and webhook
-func createRouter(config Config) http.Handler {
+func createRouter(config Config, dbPool *database.Pool) http.Handler {
 	mux := http.NewServeMux()
 
 	// Webhook endpoint
 	mux.HandleFunc("/webhook", webhookHandler(config))
 
 	// Web UI routes (handles everything else including /, /login, /signup, /dashboard, /logout)
-	webRouter := web.NewRouter()
+	var webRouter http.Handler
+	if dbPool != nil {
+		// Create database-backed stores for full functionality
+		userStore := database.NewUserStore(dbPool)
+		repoStore := database.NewRepositoryStore(dbPool)
+		commitStore := database.NewCommitStore(dbPool)
+		postStore := database.NewPostStore(dbPool)
+		webRouter = web.NewRouterWithAllStores(userStore, repoStore, commitStore, postStore)
+	} else {
+		// No database - use router without stores (auth will show "not configured")
+		webRouter = web.NewRouter()
+	}
 	mux.Handle("/", webRouter)
 
 	return mux
@@ -256,7 +267,7 @@ func main() {
 	}
 
 	// Create combined router for web UI and webhook
-	router := createRouter(config)
+	router := createRouter(config, dbPool)
 
 	// Wrap with aws-lambda-go-api-proxy for Lambda compatibility
 	lambda.Start(httpadapter.New(router).ProxyWithContext)
