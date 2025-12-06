@@ -3,10 +3,10 @@ name: Test
 on:
   push:
     branches:
-      - '**'  # Run on all branches
+      - main  # Only run on main branch pushes
   pull_request:
     branches:
-      - '**'
+      - main  # Only run on PRs targeting main
 
 permissions:
   contents: read
