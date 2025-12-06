@@ -92,3 +92,16 @@ variable "prod_hosted_zone_id" {
   type        = string
   default     = "Z04315832ENRI8EX7SUBL"
 }
+
+# Budget Configuration
+variable "monthly_budget_limit" {
+  description = "Monthly budget limit in USD"
+  type        = string
+  default     = "100"
+}
+
+variable "budget_alert_emails" {
+  description = "Email addresses to receive budget alerts"
+  type        = list(string)
+  default     = []
+}
