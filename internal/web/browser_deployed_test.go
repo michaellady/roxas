@@ -222,7 +222,7 @@ func TestDeployed_StaticAssets(t *testing.T) {
 	// Check computed styles to verify CSS loaded
 	bgColor := navbar.MustEval(`() => window.getComputedStyle(this).backgroundColor`).String()
 	if bgColor == "" || bgColor == "rgba(0, 0, 0, 0)" {
-		t.Log("Warning: Navbar background color not set - CSS may not be loading correctly")
+		t.Errorf("Navbar background color not set (got %q) - CSS is likely not loading correctly", bgColor)
 	}
 
 	// Navigate directly to CSS and check it returns CSS content

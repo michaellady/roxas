@@ -401,9 +401,12 @@ func TestBrowser_DashboardWithData(t *testing.T) {
 	page.MustWaitStable()
 
 	// Get the user ID so we can add test data
-	user, _ := userStore.GetUserByEmail(context.Background(), testEmail)
+	user, err := userStore.GetUserByEmail(context.Background(), testEmail)
+	if err != nil {
+		t.Fatalf("Failed to get created user: %v", err)
+	}
 	if user == nil {
-		t.Fatal("Failed to get created user")
+		t.Fatal("User not found after signup")
 	}
 
 	// Add test repository and commit
