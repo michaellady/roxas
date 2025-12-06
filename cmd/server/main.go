@@ -152,6 +152,7 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 		webRouter = web.NewRouterWithAllStores(userStore, repoStore, commitStore, postStore)
 	} else {
 		// No database - use router without stores (auth will show "not configured")
+		log.Println("WARNING: Database unavailable - web authentication disabled")
 		webRouter = web.NewRouter()
 	}
 	mux.Handle("/", webRouter)

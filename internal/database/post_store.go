@@ -6,6 +6,9 @@ import (
 	"github.com/mikelady/roxas/internal/web"
 )
 
+// Compile-time interface compliance check
+var _ web.PostLister = (*PostStore)(nil)
+
 // PostStore implements web.PostLister using PostgreSQL
 type PostStore struct {
 	pool *Pool

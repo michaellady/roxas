@@ -8,6 +8,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/mikelady/roxas/internal/handlers"
+	"github.com/mikelady/roxas/internal/web"
+)
+
+// Compile-time interface compliance checks
+var (
+	_ handlers.RepositoryStore = (*RepositoryStore)(nil)
+	_ web.RepositoryStore      = (*RepositoryStore)(nil)
 )
 
 // RepositoryStore implements handlers.RepositoryStore using PostgreSQL

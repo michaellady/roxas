@@ -6,6 +6,9 @@ import (
 	"github.com/mikelady/roxas/internal/web"
 )
 
+// Compile-time interface compliance check
+var _ web.CommitLister = (*CommitStore)(nil)
+
 // CommitStore implements web.CommitLister using PostgreSQL
 type CommitStore struct {
 	pool *Pool
