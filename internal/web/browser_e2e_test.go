@@ -82,8 +82,11 @@ func launchBrowser(cfg browserTestConfig) (*rod.Browser, func()) {
 	return browser, cleanup
 }
 
-// inputText finds an input field and sets its value
-func inputText(page *rod.Page, selector, text string) {
+// inputText finds an input field and sets its value.
+// Note: Uses Must* methods that panic on failure. For improved error handling,
+// see bead roxas-kosm for planned refactor to explicit error returns.
+func inputText(t *testing.T, page *rod.Page, selector, text string) {
+	t.Helper()
 	el := page.MustElement(selector)
 	// Use Eval to set value directly - more reliable than Input in headless mode
 	el.MustEval(`(text) => { this.value = ''; this.value = text; }`, text)
@@ -153,9 +156,9 @@ func TestBrowser_FullAuthFlow(t *testing.T) {
 	t.Log("Step 3: Fill and submit signup form")
 
 	// Fill in the form fields
-	inputText(page, "#email", testEmail)
-	inputText(page, "#password", testPassword)
-	inputText(page, "#confirm_password", testPassword)
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	inputText(t, page, "#confirm_password", testPassword)
 
 	// Submit form
 	page.MustElement("button[type=submit]").MustClick()
@@ -178,8 +181,8 @@ func TestBrowser_FullAuthFlow(t *testing.T) {
 	t.Log("Step 4: Login with created account")
 
 	// Fill login form
-	inputText(page, "#email", testEmail)
-	inputText(page, "#password", testPassword)
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
 
 	// Submit form
 	page.MustElement("button[type=submit]").MustClick()
@@ -279,9 +282,9 @@ func TestBrowser_SignupValidation(t *testing.T) {
 	// =========================================================================
 	t.Log("Testing password mismatch validation")
 
-	inputText(page, "#email", "test@example.com")
-	inputText(page, "#password", "password123")
-	inputText(page, "#confirm_password", "differentpassword")
+	inputText(t, page, "#email", "test@example.com")
+	inputText(t, page, "#password", "password123")
+	inputText(t, page, "#confirm_password", "differentpassword")
 	page.MustElement("button[type=submit]").MustClick()
 	page.MustWaitLoad()
 
@@ -305,9 +308,9 @@ func TestBrowser_SignupValidation(t *testing.T) {
 	// Navigate fresh to avoid stale state
 	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
 
-	inputText(page, "#email", "test2@example.com")
-	inputText(page, "#password", "short")
-	inputText(page, "#confirm_password", "short")
+	inputText(t, page, "#email", "test2@example.com")
+	inputText(t, page, "#password", "short")
+	inputText(t, page, "#confirm_password", "short")
 	page.MustElement("button[type=submit]").MustClick()
 	page.MustWaitLoad()
 
@@ -346,8 +349,8 @@ func TestBrowser_LoginValidation(t *testing.T) {
 	// =========================================================================
 	t.Log("Testing invalid credentials")
 
-	inputText(page, "#email", "nonexistent@example.com")
-	inputText(page, "#password", "wrongpassword")
+	inputText(t, page, "#email", "nonexistent@example.com")
+	inputText(t, page, "#password", "wrongpassword")
 	page.MustElement("button[type=submit]").MustClick()
 	page.MustWaitLoad()
 
@@ -388,9 +391,9 @@ func TestBrowser_DashboardWithData(t *testing.T) {
 
 	// Signup
 	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
-	inputText(page, "#email", testEmail)
-	inputText(page, "#password", testPassword)
-	inputText(page, "#confirm_password", testPassword)
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	inputText(t, page, "#confirm_password", testPassword)
 	page.MustElement("button[type=submit]").MustClick()
 	page.MustWaitLoad()
 	page.MustWaitStable()
@@ -410,8 +413,8 @@ func TestBrowser_DashboardWithData(t *testing.T) {
 	})
 
 	// Login
-	inputText(page, "#email", testEmail)
-	inputText(page, "#password", testPassword)
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
 	page.MustElement("button[type=submit]").MustClick()
 	page.MustWaitLoad()
 	page.MustWaitStable()
