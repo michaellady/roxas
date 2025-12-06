@@ -774,3 +774,226 @@ func (s *MockCommitListerForWeb) ListCommitsByUser(ctx context.Context, userID s
 	}
 	return []*DashboardCommit{}, nil
 }
+
+// =============================================================================
+// TB-WEB-09: Web UI Integration Test (TDD)
+// Full flow: signup → login → dashboard → webhook → logout → redirect
+// =============================================================================
+
+func TestWebUI_FullAuthenticationFlow(t *testing.T) {
+	// Setup stores
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	commitLister := NewMockCommitListerForWeb()
+	router := NewRouterWithAllStores(userStore, repoStore, commitLister, nil)
+
+	const testEmail = "integration-test@example.com"
+	const testPassword = "securepassword123"
+
+	// =========================================================================
+	// Step 1: GET /signup → form renders
+	// =========================================================================
+	t.Log("Step 1: GET /signup - form renders")
+
+	reqSignupGet := httptest.NewRequest(http.MethodGet, "/signup", nil)
+	rrSignupGet := httptest.NewRecorder()
+	router.ServeHTTP(rrSignupGet, reqSignupGet)
+
+	if rrSignupGet.Code != http.StatusOK {
+		t.Fatalf("Step 1 FAILED: Expected 200 OK for GET /signup, got %d", rrSignupGet.Code)
+	}
+	if !strings.Contains(rrSignupGet.Body.String(), "Sign") {
+		t.Fatalf("Step 1 FAILED: Signup page should contain 'Sign' text")
+	}
+	t.Log("Step 1 PASSED: Signup form rendered")
+
+	// =========================================================================
+	// Step 2: POST /signup → user created, redirect to /login
+	// =========================================================================
+	t.Log("Step 2: POST /signup - user created, redirect to /login")
+
+	signupForm := url.Values{}
+	signupForm.Set("email", testEmail)
+	signupForm.Set("password", testPassword)
+	signupForm.Set("confirm_password", testPassword)
+
+	reqSignupPost := httptest.NewRequest(http.MethodPost, "/signup", strings.NewReader(signupForm.Encode()))
+	reqSignupPost.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rrSignupPost := httptest.NewRecorder()
+	router.ServeHTTP(rrSignupPost, reqSignupPost)
+
+	if rrSignupPost.Code != http.StatusSeeOther {
+		t.Fatalf("Step 2 FAILED: Expected 303 redirect for POST /signup, got %d: %s", rrSignupPost.Code, rrSignupPost.Body.String())
+	}
+	if rrSignupPost.Header().Get("Location") != "/login" {
+		t.Fatalf("Step 2 FAILED: Expected redirect to /login, got %s", rrSignupPost.Header().Get("Location"))
+	}
+
+	// Verify user was created in store
+	user, _ := userStore.GetUserByEmail(context.Background(), testEmail)
+	if user == nil {
+		t.Fatalf("Step 2 FAILED: User was not created in store")
+	}
+	t.Log("Step 2 PASSED: User created and redirected to login")
+
+	// =========================================================================
+	// Step 3: GET /login → form renders
+	// =========================================================================
+	t.Log("Step 3: GET /login - form renders")
+
+	reqLoginGet := httptest.NewRequest(http.MethodGet, "/login", nil)
+	rrLoginGet := httptest.NewRecorder()
+	router.ServeHTTP(rrLoginGet, reqLoginGet)
+
+	if rrLoginGet.Code != http.StatusOK {
+		t.Fatalf("Step 3 FAILED: Expected 200 OK for GET /login, got %d", rrLoginGet.Code)
+	}
+	if !strings.Contains(strings.ToLower(rrLoginGet.Body.String()), "login") {
+		t.Fatalf("Step 3 FAILED: Login page should contain 'login' text")
+	}
+	t.Log("Step 3 PASSED: Login form rendered")
+
+	// =========================================================================
+	// Step 4: POST /login → cookie set, redirect to /dashboard
+	// =========================================================================
+	t.Log("Step 4: POST /login - cookie set, redirect to /dashboard")
+
+	loginForm := url.Values{}
+	loginForm.Set("email", testEmail)
+	loginForm.Set("password", testPassword)
+
+	reqLoginPost := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(loginForm.Encode()))
+	reqLoginPost.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rrLoginPost := httptest.NewRecorder()
+	router.ServeHTTP(rrLoginPost, reqLoginPost)
+
+	if rrLoginPost.Code != http.StatusSeeOther {
+		t.Fatalf("Step 4 FAILED: Expected 303 redirect for POST /login, got %d: %s", rrLoginPost.Code, rrLoginPost.Body.String())
+	}
+	if rrLoginPost.Header().Get("Location") != "/dashboard" {
+		t.Fatalf("Step 4 FAILED: Expected redirect to /dashboard, got %s", rrLoginPost.Header().Get("Location"))
+	}
+
+	// Extract auth cookie
+	var authCookie *http.Cookie
+	for _, c := range rrLoginPost.Result().Cookies() {
+		if c.Name == "auth_token" {
+			authCookie = c
+			break
+		}
+	}
+	if authCookie == nil || authCookie.Value == "" {
+		t.Fatalf("Step 4 FAILED: Expected auth_token cookie to be set")
+	}
+	t.Log("Step 4 PASSED: Logged in, cookie set, redirected to dashboard")
+
+	// =========================================================================
+	// Step 5: GET /dashboard → shows empty state (no repos/commits yet)
+	// =========================================================================
+	t.Log("Step 5: GET /dashboard - shows empty state")
+
+	reqDashEmpty := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+	reqDashEmpty.AddCookie(authCookie)
+	rrDashEmpty := httptest.NewRecorder()
+	router.ServeHTTP(rrDashEmpty, reqDashEmpty)
+
+	if rrDashEmpty.Code != http.StatusOK {
+		t.Fatalf("Step 5 FAILED: Expected 200 OK for GET /dashboard, got %d", rrDashEmpty.Code)
+	}
+	dashBody := rrDashEmpty.Body.String()
+	// Should show empty state guidance
+	hasEmptyState := strings.Contains(strings.ToLower(dashBody), "get started") ||
+		(strings.Contains(strings.ToLower(dashBody), "add") && strings.Contains(strings.ToLower(dashBody), "repository"))
+	if !hasEmptyState {
+		t.Fatalf("Step 5 FAILED: Expected empty state guidance on dashboard")
+	}
+	t.Log("Step 5 PASSED: Dashboard shows empty state")
+
+	// =========================================================================
+	// Step 6: Simulate webhook creating a commit (add data to stores)
+	// =========================================================================
+	t.Log("Step 6: Simulate webhook creating commit")
+
+	// Add a repository for this user
+	repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/testuser/testrepo", "webhook-secret")
+
+	// Simulate webhook: add a commit for this user
+	commitLister.AddCommitForUser(user.ID, &DashboardCommit{
+		SHA:     "abc123def456",
+		Message: "feat: Add awesome new feature",
+		Author:  "testuser",
+	})
+	t.Log("Step 6 PASSED: Commit added via simulated webhook")
+
+	// =========================================================================
+	// Step 7: GET /dashboard → shows commit
+	// =========================================================================
+	t.Log("Step 7: GET /dashboard - shows commit")
+
+	reqDashWithData := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+	reqDashWithData.AddCookie(authCookie)
+	rrDashWithData := httptest.NewRecorder()
+	router.ServeHTTP(rrDashWithData, reqDashWithData)
+
+	if rrDashWithData.Code != http.StatusOK {
+		t.Fatalf("Step 7 FAILED: Expected 200 OK, got %d", rrDashWithData.Code)
+	}
+	dashWithDataBody := rrDashWithData.Body.String()
+	if !strings.Contains(dashWithDataBody, "Add awesome new feature") {
+		t.Fatalf("Step 7 FAILED: Expected commit message to be displayed, got: %s", dashWithDataBody[:min(len(dashWithDataBody), 500)])
+	}
+	t.Log("Step 7 PASSED: Dashboard shows commit")
+
+	// =========================================================================
+	// Step 8: POST /logout → cookie cleared, redirect to /login
+	// =========================================================================
+	t.Log("Step 8: POST /logout - cookie cleared, redirect to /login")
+
+	reqLogout := httptest.NewRequest(http.MethodPost, "/logout", nil)
+	reqLogout.AddCookie(authCookie)
+	rrLogout := httptest.NewRecorder()
+	router.ServeHTTP(rrLogout, reqLogout)
+
+	if rrLogout.Code != http.StatusSeeOther {
+		t.Fatalf("Step 8 FAILED: Expected 303 redirect, got %d", rrLogout.Code)
+	}
+	if rrLogout.Header().Get("Location") != "/login" {
+		t.Fatalf("Step 8 FAILED: Expected redirect to /login, got %s", rrLogout.Header().Get("Location"))
+	}
+
+	// Verify cookie is cleared
+	var clearedCookie *http.Cookie
+	for _, c := range rrLogout.Result().Cookies() {
+		if c.Name == "auth_token" {
+			clearedCookie = c
+			break
+		}
+	}
+	if clearedCookie == nil {
+		t.Fatalf("Step 8 FAILED: Expected auth_token cookie in response")
+	}
+	if clearedCookie.MaxAge >= 0 && clearedCookie.Value != "" {
+		t.Fatalf("Step 8 FAILED: Cookie should be cleared (MaxAge<0 or empty value)")
+	}
+	t.Log("Step 8 PASSED: Logged out, cookie cleared")
+
+	// =========================================================================
+	// Step 9: GET /dashboard → redirects to /login (not authenticated)
+	// =========================================================================
+	t.Log("Step 9: GET /dashboard without auth - redirects to /login")
+
+	reqDashNoAuth := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+	// No cookie attached
+	rrDashNoAuth := httptest.NewRecorder()
+	router.ServeHTTP(rrDashNoAuth, reqDashNoAuth)
+
+	if rrDashNoAuth.Code != http.StatusSeeOther {
+		t.Fatalf("Step 9 FAILED: Expected 303 redirect, got %d", rrDashNoAuth.Code)
+	}
+	if rrDashNoAuth.Header().Get("Location") != "/login" {
+		t.Fatalf("Step 9 FAILED: Expected redirect to /login, got %s", rrDashNoAuth.Header().Get("Location"))
+	}
+	t.Log("Step 9 PASSED: Unauthenticated dashboard access redirects to login")
+
+	t.Log("=== ALL 9 STEPS PASSED: Full authentication flow verified ===")
+}
