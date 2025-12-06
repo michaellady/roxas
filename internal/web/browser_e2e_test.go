@@ -54,10 +54,10 @@ func getBrowserConfig() browserTestConfig {
 	return cfg
 }
 
-// launchBrowser creates a browser instance with the given configuration
+// launchBrowser creates a browser instance with the given configuration.
+// Returns the browser and a cleanup function that properly closes both the
+// browser connection and kills the underlying Chromium process.
 func launchBrowser(cfg browserTestConfig) (*rod.Browser, func()) {
-	var browser *rod.Browser
-
 	// Create launcher with common settings for CI environments
 	l := launcher.New().
 		// Required for running in CI/Docker without root
@@ -69,14 +69,16 @@ func launchBrowser(cfg browserTestConfig) (*rod.Browser, func()) {
 	}
 
 	u := l.MustLaunch()
-	browser = rod.New().ControlURL(u).MustConnect()
+	browser := rod.New().ControlURL(u).MustConnect()
 
 	if !cfg.headless {
 		browser = browser.SlowMotion(cfg.slowMo)
 	}
 
+	// Cleanup must close browser AND kill the launcher process to avoid leaks
 	cleanup := func() {
 		browser.MustClose()
+		l.Cleanup() // Kill the Chromium process and clean up temp directories
 	}
 
 	return browser, cleanup
