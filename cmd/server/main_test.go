@@ -193,7 +193,7 @@ func TestCombinedRouterServesWebhook(t *testing.T) {
 	defer os.Unsetenv("WEBHOOK_SECRET")
 
 	config := loadConfig()
-	router := createRouter(config)
+	router := createRouter(config, nil)
 
 	payload := `{
 		"repository": {"html_url": "https://github.com/test/repo"},
@@ -224,7 +224,7 @@ func TestCombinedRouterWebhookTrailingSlash(t *testing.T) {
 	defer os.Unsetenv("WEBHOOK_SECRET")
 
 	config := loadConfig()
-	router := createRouter(config)
+	router := createRouter(config, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook/", strings.NewReader(`{"commits": []}`))
 	req.Header.Set("X-Hub-Signature-256", "sha256=test")
@@ -241,7 +241,7 @@ func TestCombinedRouterWebhookTrailingSlash(t *testing.T) {
 // TestCombinedRouterServesHomePage tests that / is routed to web UI
 func TestCombinedRouterServesHomePage(t *testing.T) {
 	config := loadConfig()
-	router := createRouter(config)
+	router := createRouter(config, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
@@ -260,7 +260,7 @@ func TestCombinedRouterServesHomePage(t *testing.T) {
 // TestCombinedRouterServesLoginPage tests that /login is routed to web UI
 func TestCombinedRouterServesLoginPage(t *testing.T) {
 	config := loadConfig()
-	router := createRouter(config)
+	router := createRouter(config, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/login", nil)
 	rec := httptest.NewRecorder()
