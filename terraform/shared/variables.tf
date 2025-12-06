@@ -104,6 +104,10 @@ variable "budget_alert_emails" {
   description = "Email addresses to receive budget alerts"
   type        = list(string)
   default     = []
+  validation {
+    condition     = length(var.budget_alert_emails) > 0
+    error_message = "At least one email address is required for budget alerts."
+  }
 }
 
 variable "circuit_breaker_threshold" {
