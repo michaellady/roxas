@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 )
@@ -57,5 +58,58 @@ func TestLoadConfigFromSecretsManager_MissingSecret(t *testing.T) {
 
 	if err == nil {
 		t.Error("Expected error for non-existent secret, got nil")
+	}
+}
+
+func TestPortType_UnmarshalJSON(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    int
+		wantErr bool
+	}{
+		{
+			name:    "integer port",
+			input:   `{"port": 5432}`,
+			want:    5432,
+			wantErr: false,
+		},
+		{
+			name:    "string port",
+			input:   `{"port": "5432"}`,
+			want:    5432,
+			wantErr: false,
+		},
+		{
+			name:    "invalid string port",
+			input:   `{"port": "not-a-number"}`,
+			want:    0,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var result struct {
+				Port PortType `json:"port"`
+			}
+			err := json.Unmarshal([]byte(tt.input), &result)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Error("Expected error but got nil")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("Unexpected error: %v", err)
+				return
+			}
+
+			if int(result.Port) != tt.want {
+				t.Errorf("Port = %d, want %d", result.Port, tt.want)
+			}
+		})
 	}
 }
