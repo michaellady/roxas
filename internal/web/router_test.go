@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -778,14 +779,42 @@ func (s *MockCommitListerForWeb) ListCommitsByUser(ctx context.Context, userID s
 // =============================================================================
 // TB-WEB-09: Web UI Integration Test (TDD)
 // Full flow: signup → login → dashboard → webhook → logout → redirect
+//
+// This test uses httptest.Server + http.Client to exercise the full HTTP stack
+// including cookie management and redirect handling, matching real browser behavior.
+//
+// Key design decisions:
+// - Uses the same router configuration as production (NewRouterWithAllStores)
+// - In-memory mock stores avoid DB dependency (DB-backed E2E deferred to TB21)
+// - Cookie jar automatically manages auth_token across requests
+// - CheckRedirect prevents auto-follow so we can verify redirect locations
+// - Catches regressions in redirect/cookie handling that direct handler calls miss
 // =============================================================================
 
 func TestWebUI_FullAuthenticationFlow(t *testing.T) {
-	// Setup stores
+	// Setup stores - same configuration as production
 	userStore := NewMockUserStore()
 	repoStore := NewMockRepositoryStoreForWeb()
 	commitLister := NewMockCommitListerForWeb()
 	router := NewRouterWithAllStores(userStore, repoStore, commitLister, nil)
+
+	// Start test server with production router
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Create cookie jar for automatic cookie management (like a real browser)
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("Failed to create cookie jar: %v", err)
+	}
+
+	// Create client that doesn't auto-follow redirects (so we can verify them)
+	client := &http.Client{
+		Jar: jar,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse // Don't follow redirects
+		},
+	}
 
 	const testEmail = "integration-test@example.com"
 	const testPassword = "securepassword123"
@@ -795,14 +824,19 @@ func TestWebUI_FullAuthenticationFlow(t *testing.T) {
 	// =========================================================================
 	t.Log("Step 1: GET /signup - form renders")
 
-	reqSignupGet := httptest.NewRequest(http.MethodGet, "/signup", nil)
-	rrSignupGet := httptest.NewRecorder()
-	router.ServeHTTP(rrSignupGet, reqSignupGet)
-
-	if rrSignupGet.Code != http.StatusOK {
-		t.Fatalf("Step 1 FAILED: Expected 200 OK for GET /signup, got %d", rrSignupGet.Code)
+	resp, err := client.Get(ts.URL + "/signup")
+	if err != nil {
+		t.Fatalf("Step 1 FAILED: Request error: %v", err)
 	}
-	if !strings.Contains(rrSignupGet.Body.String(), "Sign") {
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Step 1 FAILED: Expected 200 OK for GET /signup, got %d", resp.StatusCode)
+	}
+	bodyBytes := make([]byte, 4096)
+	n, _ := resp.Body.Read(bodyBytes)
+	body := string(bodyBytes[:n])
+	if !strings.Contains(body, "Sign") {
 		t.Fatalf("Step 1 FAILED: Signup page should contain 'Sign' text")
 	}
 	t.Log("Step 1 PASSED: Signup form rendered")
@@ -817,16 +851,17 @@ func TestWebUI_FullAuthenticationFlow(t *testing.T) {
 	signupForm.Set("password", testPassword)
 	signupForm.Set("confirm_password", testPassword)
 
-	reqSignupPost := httptest.NewRequest(http.MethodPost, "/signup", strings.NewReader(signupForm.Encode()))
-	reqSignupPost.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rrSignupPost := httptest.NewRecorder()
-	router.ServeHTTP(rrSignupPost, reqSignupPost)
-
-	if rrSignupPost.Code != http.StatusSeeOther {
-		t.Fatalf("Step 2 FAILED: Expected 303 redirect for POST /signup, got %d: %s", rrSignupPost.Code, rrSignupPost.Body.String())
+	resp, err = client.PostForm(ts.URL+"/signup", signupForm)
+	if err != nil {
+		t.Fatalf("Step 2 FAILED: Request error: %v", err)
 	}
-	if rrSignupPost.Header().Get("Location") != "/login" {
-		t.Fatalf("Step 2 FAILED: Expected redirect to /login, got %s", rrSignupPost.Header().Get("Location"))
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("Step 2 FAILED: Expected 303 redirect for POST /signup, got %d", resp.StatusCode)
+	}
+	if resp.Header.Get("Location") != "/login" {
+		t.Fatalf("Step 2 FAILED: Expected redirect to /login, got %s", resp.Header.Get("Location"))
 	}
 
 	// Verify user was created in store
@@ -837,18 +872,23 @@ func TestWebUI_FullAuthenticationFlow(t *testing.T) {
 	t.Log("Step 2 PASSED: User created and redirected to login")
 
 	// =========================================================================
-	// Step 3: GET /login → form renders
+	// Step 3: GET /login → form renders (follow redirect from signup)
 	// =========================================================================
 	t.Log("Step 3: GET /login - form renders")
 
-	reqLoginGet := httptest.NewRequest(http.MethodGet, "/login", nil)
-	rrLoginGet := httptest.NewRecorder()
-	router.ServeHTTP(rrLoginGet, reqLoginGet)
-
-	if rrLoginGet.Code != http.StatusOK {
-		t.Fatalf("Step 3 FAILED: Expected 200 OK for GET /login, got %d", rrLoginGet.Code)
+	resp, err = client.Get(ts.URL + "/login")
+	if err != nil {
+		t.Fatalf("Step 3 FAILED: Request error: %v", err)
 	}
-	if !strings.Contains(strings.ToLower(rrLoginGet.Body.String()), "login") {
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Step 3 FAILED: Expected 200 OK for GET /login, got %d", resp.StatusCode)
+	}
+	bodyBytes = make([]byte, 4096)
+	n, _ = resp.Body.Read(bodyBytes)
+	body = string(bodyBytes[:n])
+	if !strings.Contains(strings.ToLower(body), "login") {
 		t.Fatalf("Step 3 FAILED: Login page should contain 'login' text")
 	}
 	t.Log("Step 3 PASSED: Login form rendered")
@@ -862,28 +902,31 @@ func TestWebUI_FullAuthenticationFlow(t *testing.T) {
 	loginForm.Set("email", testEmail)
 	loginForm.Set("password", testPassword)
 
-	reqLoginPost := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(loginForm.Encode()))
-	reqLoginPost.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rrLoginPost := httptest.NewRecorder()
-	router.ServeHTTP(rrLoginPost, reqLoginPost)
-
-	if rrLoginPost.Code != http.StatusSeeOther {
-		t.Fatalf("Step 4 FAILED: Expected 303 redirect for POST /login, got %d: %s", rrLoginPost.Code, rrLoginPost.Body.String())
+	resp, err = client.PostForm(ts.URL+"/login", loginForm)
+	if err != nil {
+		t.Fatalf("Step 4 FAILED: Request error: %v", err)
 	}
-	if rrLoginPost.Header().Get("Location") != "/dashboard" {
-		t.Fatalf("Step 4 FAILED: Expected redirect to /dashboard, got %s", rrLoginPost.Header().Get("Location"))
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("Step 4 FAILED: Expected 303 redirect for POST /login, got %d", resp.StatusCode)
+	}
+	if resp.Header.Get("Location") != "/dashboard" {
+		t.Fatalf("Step 4 FAILED: Expected redirect to /dashboard, got %s", resp.Header.Get("Location"))
 	}
 
-	// Extract auth cookie
-	var authCookie *http.Cookie
-	for _, c := range rrLoginPost.Result().Cookies() {
-		if c.Name == "auth_token" {
-			authCookie = c
+	// Verify cookie was set (cookie jar handles this automatically)
+	tsURL, _ := url.Parse(ts.URL)
+	cookies := jar.Cookies(tsURL)
+	var hasAuthCookie bool
+	for _, c := range cookies {
+		if c.Name == "auth_token" && c.Value != "" {
+			hasAuthCookie = true
 			break
 		}
 	}
-	if authCookie == nil || authCookie.Value == "" {
-		t.Fatalf("Step 4 FAILED: Expected auth_token cookie to be set")
+	if !hasAuthCookie {
+		t.Fatalf("Step 4 FAILED: Expected auth_token cookie to be set in jar")
 	}
 	t.Log("Step 4 PASSED: Logged in, cookie set, redirected to dashboard")
 
@@ -892,15 +935,18 @@ func TestWebUI_FullAuthenticationFlow(t *testing.T) {
 	// =========================================================================
 	t.Log("Step 5: GET /dashboard - shows empty state")
 
-	reqDashEmpty := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
-	reqDashEmpty.AddCookie(authCookie)
-	rrDashEmpty := httptest.NewRecorder()
-	router.ServeHTTP(rrDashEmpty, reqDashEmpty)
-
-	if rrDashEmpty.Code != http.StatusOK {
-		t.Fatalf("Step 5 FAILED: Expected 200 OK for GET /dashboard, got %d", rrDashEmpty.Code)
+	resp, err = client.Get(ts.URL + "/dashboard")
+	if err != nil {
+		t.Fatalf("Step 5 FAILED: Request error: %v", err)
 	}
-	dashBody := rrDashEmpty.Body.String()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Step 5 FAILED: Expected 200 OK for GET /dashboard, got %d", resp.StatusCode)
+	}
+	bodyBytes = make([]byte, 8192)
+	n, _ = resp.Body.Read(bodyBytes)
+	dashBody := string(bodyBytes[:n])
 	// Should show empty state guidance
 	hasEmptyState := strings.Contains(strings.ToLower(dashBody), "get started") ||
 		(strings.Contains(strings.ToLower(dashBody), "add") && strings.Contains(strings.ToLower(dashBody), "repository"))
@@ -930,15 +976,18 @@ func TestWebUI_FullAuthenticationFlow(t *testing.T) {
 	// =========================================================================
 	t.Log("Step 7: GET /dashboard - shows commit")
 
-	reqDashWithData := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
-	reqDashWithData.AddCookie(authCookie)
-	rrDashWithData := httptest.NewRecorder()
-	router.ServeHTTP(rrDashWithData, reqDashWithData)
-
-	if rrDashWithData.Code != http.StatusOK {
-		t.Fatalf("Step 7 FAILED: Expected 200 OK, got %d", rrDashWithData.Code)
+	resp, err = client.Get(ts.URL + "/dashboard")
+	if err != nil {
+		t.Fatalf("Step 7 FAILED: Request error: %v", err)
 	}
-	dashWithDataBody := rrDashWithData.Body.String()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Step 7 FAILED: Expected 200 OK, got %d", resp.StatusCode)
+	}
+	bodyBytes = make([]byte, 8192)
+	n, _ = resp.Body.Read(bodyBytes)
+	dashWithDataBody := string(bodyBytes[:n])
 	if !strings.Contains(dashWithDataBody, "Add awesome new feature") {
 		t.Fatalf("Step 7 FAILED: Expected commit message to be displayed, got: %s", dashWithDataBody[:min(len(dashWithDataBody), 500)])
 	}
@@ -949,31 +998,30 @@ func TestWebUI_FullAuthenticationFlow(t *testing.T) {
 	// =========================================================================
 	t.Log("Step 8: POST /logout - cookie cleared, redirect to /login")
 
-	reqLogout := httptest.NewRequest(http.MethodPost, "/logout", nil)
-	reqLogout.AddCookie(authCookie)
-	rrLogout := httptest.NewRecorder()
-	router.ServeHTTP(rrLogout, reqLogout)
-
-	if rrLogout.Code != http.StatusSeeOther {
-		t.Fatalf("Step 8 FAILED: Expected 303 redirect, got %d", rrLogout.Code)
+	resp, err = client.PostForm(ts.URL+"/logout", nil)
+	if err != nil {
+		t.Fatalf("Step 8 FAILED: Request error: %v", err)
 	}
-	if rrLogout.Header().Get("Location") != "/login" {
-		t.Fatalf("Step 8 FAILED: Expected redirect to /login, got %s", rrLogout.Header().Get("Location"))
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("Step 8 FAILED: Expected 303 redirect, got %d", resp.StatusCode)
+	}
+	if resp.Header.Get("Location") != "/login" {
+		t.Fatalf("Step 8 FAILED: Expected redirect to /login, got %s", resp.Header.Get("Location"))
 	}
 
-	// Verify cookie is cleared
-	var clearedCookie *http.Cookie
-	for _, c := range rrLogout.Result().Cookies() {
-		if c.Name == "auth_token" {
-			clearedCookie = c
+	// Verify cookie is cleared in jar (MaxAge=-1 removes it from jar)
+	cookies = jar.Cookies(tsURL)
+	hasAuthCookie = false
+	for _, c := range cookies {
+		if c.Name == "auth_token" && c.Value != "" {
+			hasAuthCookie = true
 			break
 		}
 	}
-	if clearedCookie == nil {
-		t.Fatalf("Step 8 FAILED: Expected auth_token cookie in response")
-	}
-	if clearedCookie.MaxAge >= 0 && clearedCookie.Value != "" {
-		t.Fatalf("Step 8 FAILED: Cookie should be cleared (MaxAge<0 or empty value)")
+	if hasAuthCookie {
+		t.Fatalf("Step 8 FAILED: Expected auth_token cookie to be cleared from jar")
 	}
 	t.Log("Step 8 PASSED: Logged out, cookie cleared")
 
@@ -982,16 +1030,17 @@ func TestWebUI_FullAuthenticationFlow(t *testing.T) {
 	// =========================================================================
 	t.Log("Step 9: GET /dashboard without auth - redirects to /login")
 
-	reqDashNoAuth := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
-	// No cookie attached
-	rrDashNoAuth := httptest.NewRecorder()
-	router.ServeHTTP(rrDashNoAuth, reqDashNoAuth)
-
-	if rrDashNoAuth.Code != http.StatusSeeOther {
-		t.Fatalf("Step 9 FAILED: Expected 303 redirect, got %d", rrDashNoAuth.Code)
+	resp, err = client.Get(ts.URL + "/dashboard")
+	if err != nil {
+		t.Fatalf("Step 9 FAILED: Request error: %v", err)
 	}
-	if rrDashNoAuth.Header().Get("Location") != "/login" {
-		t.Fatalf("Step 9 FAILED: Expected redirect to /login, got %s", rrDashNoAuth.Header().Get("Location"))
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("Step 9 FAILED: Expected 303 redirect, got %d", resp.StatusCode)
+	}
+	if resp.Header.Get("Location") != "/login" {
+		t.Fatalf("Step 9 FAILED: Expected redirect to /login, got %s", resp.Header.Get("Location"))
 	}
 	t.Log("Step 9 PASSED: Unauthenticated dashboard access redirects to login")
 
