@@ -36,9 +36,6 @@ func getDeployURL(t *testing.T) string {
 
 // TestDeployed_FullAuthFlow tests the complete authentication flow against a deployed environment:
 // signup → login → dashboard → logout → redirect to login
-//
-// Note: This test requires the deployed environment to have a working database connection.
-// If authentication shows "not configured", the test will be skipped.
 func TestDeployed_FullAuthFlow(t *testing.T) {
 	baseURL := getDeployURL(t)
 
@@ -111,13 +108,7 @@ func TestDeployed_FullAuthFlow(t *testing.T) {
 	page.MustWaitStable()
 	currentURL := page.MustInfo().URL
 	if !strings.HasSuffix(currentURL, "/login") {
-		// Check if there's an error on the page
 		bodyText := page.MustElement("body").MustText()
-		// Skip if database is not configured (infrastructure issue, not code issue)
-		if strings.Contains(bodyText, "Registration not configured") ||
-			strings.Contains(bodyText, "not configured") {
-			t.Skip("Skipping: Database not available in deployed environment (infrastructure issue)")
-		}
 		t.Fatalf("Step 3 FAILED: Expected redirect to /login, got: %s\nPage content: %s", currentURL, bodyText[:min(len(bodyText), 500)])
 	}
 	t.Log("Step 3 PASSED: Signup successful, redirected to login")
