@@ -105,3 +105,9 @@ variable "budget_alert_emails" {
   type        = list(string)
   default     = []
 }
+
+variable "circuit_breaker_threshold" {
+  description = "Percentage of budget at which circuit breaker activates (stops services)"
+  type        = number
+  default     = 200
+}
