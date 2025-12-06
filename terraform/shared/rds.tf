@@ -61,6 +61,9 @@ resource "aws_db_instance" "main" {
   performance_insights_enabled    = false
   auto_minor_version_upgrade      = true
 
+  # Apply changes immediately in dev (VPC/subnet changes need this)
+  apply_immediately = var.environment == "dev"
+
   tags = merge(local.common_tags, {
     Name = "${local.name_prefix}-rds"
   })

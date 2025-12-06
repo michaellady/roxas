@@ -178,6 +178,14 @@ resource "aws_apigatewayv2_route" "webhook_post" {
   target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
 }
 
+# API Gateway Route - Catch-all for web UI
+# Routes all other requests (GET /, GET /login, POST /login, etc.) to Lambda
+resource "aws_apigatewayv2_route" "web_catchall" {
+  api_id    = aws_apigatewayv2_api.webhook.id
+  route_key = "$default"
+  target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
+}
+
 # Lambda Permission for API Gateway
 resource "aws_lambda_permission" "api_gateway" {
   statement_id  = "AllowAPIGatewayInvoke"

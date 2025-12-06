@@ -277,6 +277,32 @@ func TestCombinedRouterServesLoginPage(t *testing.T) {
 	}
 }
 
+// TestCombinedRouterServesStaticCSS tests that /static/css/style.css serves CSS
+func TestCombinedRouterServesStaticCSS(t *testing.T) {
+	config := loadConfig()
+	router := createRouter(config, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/static/css/style.css", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+
+	// Should return CSS content type
+	contentType := rec.Header().Get("Content-Type")
+	if !strings.Contains(contentType, "text/css") {
+		t.Errorf("Expected CSS content type, got %s", contentType)
+	}
+
+	// Should contain CSS content, not HTML
+	body := rec.Body.String()
+	if strings.Contains(body, "<!DOCTYPE html>") {
+		t.Error("Expected CSS content but got HTML")
+	}
+}
+
 // Helper function to generate HMAC signature for testing
 func generateTestSignature(payload []byte, secret string) string {
 	mac := hmac.New(sha256.New, []byte(secret))

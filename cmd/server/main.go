@@ -271,5 +271,6 @@ func main() {
 	router := createRouter(config, dbPool)
 
 	// Wrap with aws-lambda-go-api-proxy for Lambda compatibility
-	lambda.Start(httpadapter.New(router).ProxyWithContext)
+	// Using V2 adapter for API Gateway HTTP API (not REST API)
+	lambda.Start(httpadapter.NewV2(router).ProxyWithContext)
 }
