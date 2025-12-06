@@ -58,15 +58,20 @@ func getBrowserConfig() browserTestConfig {
 func launchBrowser(cfg browserTestConfig) (*rod.Browser, func()) {
 	var browser *rod.Browser
 
-	if cfg.headless {
-		browser = rod.New().MustConnect()
-	} else {
-		// Launch visible browser for debugging
-		u := launcher.New().
-			Headless(false).
-			Devtools(false).
-			MustLaunch()
-		browser = rod.New().ControlURL(u).MustConnect()
+	// Create launcher with common settings for CI environments
+	l := launcher.New().
+		// Required for running in CI/Docker without root
+		NoSandbox(true).
+		Headless(cfg.headless)
+
+	if !cfg.headless {
+		l = l.Devtools(false)
+	}
+
+	u := l.MustLaunch()
+	browser = rod.New().ControlURL(u).MustConnect()
+
+	if !cfg.headless {
 		browser = browser.SlowMotion(cfg.slowMo)
 	}
 
