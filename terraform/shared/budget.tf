@@ -138,16 +138,16 @@ resource "aws_iam_role_policy_attachment" "circuit_breaker_basic" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
-# Policy for circuit breaker Lambda to list and throttle functions
+# Policy for circuit breaker Lambda to stop all roxas-* resources
 resource "aws_iam_role_policy" "circuit_breaker_lambda" {
-  name = "lambda-concurrency-control"
+  name = "circuit-breaker-permissions"
   role = aws_iam_role.circuit_breaker_lambda.id
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "ListFunctions"
+        Sid    = "ListLambdaFunctions"
         Effect = "Allow"
         Action = [
           "lambda:ListFunctions"
@@ -155,13 +155,51 @@ resource "aws_iam_role_policy" "circuit_breaker_lambda" {
         Resource = "*"
       },
       {
-        Sid    = "ThrottleRoxasFunctions"
+        Sid    = "ThrottleRoxasLambdas"
         Effect = "Allow"
         Action = [
           "lambda:PutFunctionConcurrency",
           "lambda:DeleteFunctionConcurrency"
         ]
         Resource = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:roxas-*"
+      },
+      {
+        Sid    = "ListRDSInstances"
+        Effect = "Allow"
+        Action = [
+          "rds:DescribeDBInstances"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "StopRoxasRDS"
+        Effect = "Allow"
+        Action = [
+          "rds:StopDBInstance"
+        ]
+        Resource = "arn:aws:rds:${var.aws_region}:${data.aws_caller_identity.current.account_id}:db:roxas-*"
+      },
+      {
+        Sid    = "ListEC2Instances"
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeInstances"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "StopRoxasNATInstances"
+        Effect = "Allow"
+        Action = [
+          "ec2:StopInstances"
+        ]
+        # Condition restricts to instances tagged with roxas-*
+        Resource = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*"
+        Condition = {
+          StringLike = {
+            "ec2:ResourceTag/Name" = "roxas-*"
+          }
+        }
       }
     ]
   })
