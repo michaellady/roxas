@@ -10,10 +10,6 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.6"
     }
-    archive = {
-      source  = "hashicorp/archive"
-      version = "~> 2.4"
-    }
     null = {
       source  = "hashicorp/null"
       version = "~> 3.2"
@@ -353,52 +349,33 @@ resource "aws_cloudwatch_log_group" "cleanup_lambda" {
   tags = local.common_tags
 }
 
-# Build Lambda layer with pg8000 dependency
-resource "null_resource" "cleanup_lambda_layer" {
+# Build cleanup Lambda binary (Go)
+resource "null_resource" "cleanup_lambda_build" {
   triggers = {
-    requirements = filemd5("${path.module}/lambda/requirements.txt")
+    source_hash = filemd5("${path.module}/../../cmd/db-cleanup/main.go")
   }
 
   provisioner "local-exec" {
     command = <<-EOT
+      cd ${path.module}/../..
+      GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o ${path.module}/lambda/bootstrap ./cmd/db-cleanup
       cd ${path.module}/lambda
-      rm -rf python layer.zip
-      mkdir -p python
-      pip3 install -r requirements.txt -t python 2>/dev/null || pip install -r requirements.txt -t python
-      zip -r layer.zip python
+      zip -j db_cleanup.zip bootstrap
+      rm bootstrap
     EOT
   }
 }
 
-# Lambda layer for pg8000
-resource "aws_lambda_layer_version" "pg8000" {
-  filename            = "${path.module}/lambda/layer.zip"
-  layer_name          = "roxas-pg8000"
-  compatible_runtimes = ["python3.12"]
-
-  depends_on = [null_resource.cleanup_lambda_layer]
-}
-
-# Package Lambda function code
-data "archive_file" "cleanup_lambda" {
-  type        = "zip"
-  source_file = "${path.module}/lambda/db_cleanup.py"
-  output_path = "${path.module}/lambda/function.zip"
-}
-
-# Cleanup Lambda function
+# Cleanup Lambda function (Go)
 resource "aws_lambda_function" "cleanup" {
-  filename         = data.archive_file.cleanup_lambda.output_path
-  function_name    = "roxas-shared-rds-cleanup"
-  role             = aws_iam_role.cleanup_lambda.arn
-  handler          = "db_cleanup.handler"
-  source_code_hash = data.archive_file.cleanup_lambda.output_base64sha256
-  runtime          = "python3.12"
-  timeout          = 30
-  memory_size      = 128
-  architectures    = ["arm64"]
-
-  layers = [aws_lambda_layer_version.pg8000.arn]
+  filename      = "${path.module}/lambda/db_cleanup.zip"
+  function_name = "roxas-shared-rds-cleanup"
+  role          = aws_iam_role.cleanup_lambda.arn
+  handler       = "bootstrap"
+  runtime       = "provided.al2023"
+  timeout       = 30
+  memory_size   = 128
+  architectures = ["arm64"]
 
   environment {
     variables = {
@@ -412,6 +389,7 @@ resource "aws_lambda_function" "cleanup" {
   }
 
   depends_on = [
+    null_resource.cleanup_lambda_build,
     aws_cloudwatch_log_group.cleanup_lambda,
     aws_iam_role_policy_attachment.cleanup_lambda_vpc,
     aws_iam_role_policy.cleanup_lambda_secrets

@@ -1,3 +1,4 @@
 # Build artifacts
 python/
 *.zip
+bootstrap
