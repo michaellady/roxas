@@ -261,9 +261,10 @@ func handler(ctx context.Context, event Request) (Response, error) {
 	// Drop the database
 	// Note: Can't use parameters for database names in DROP DATABASE
 	// dbName is safe because it's "pr_" + validated integer (validated above)
+	// Using quoted identifier for defense-in-depth: DROP DATABASE IF EXISTS "pr_123"
 	log.Printf("Dropping database %s", dbName)
 
-	_, err = conn.Exec(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS %s", dbName))
+	_, err = conn.Exec(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS \"%s\"", dbName))
 	if err != nil {
 		log.Printf("Error dropping database: %v", err)
 		return Response{
