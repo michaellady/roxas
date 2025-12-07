@@ -3,6 +3,17 @@ name: PR Deploy to Dev
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to deploy/refresh'
+        required: true
+        type: string
+      force_refresh:
+        description: 'Force Lambda refresh (skip code change check)'
+        required: false
+        type: boolean
+        default: true
 
 jobs:
   deploy-dev:
@@ -18,8 +29,12 @@ jobs:
     # Wait for previous deployments to complete instead of canceling them
     # This prevents state locking issues and orphaned resources
     concurrency:
-      group: deploy-dev-pr-${{ github.event.pull_request.number }}
+      group: deploy-dev-pr-${{ github.event.pull_request.number || inputs.pr_number }}
       cancel-in-progress: false
+
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+      FORCE_REFRESH: ${{ inputs.force_refresh || 'false' }}
 
     steps:
       - name: Checkout code
@@ -30,6 +45,13 @@ jobs:
       - name: Check for code changes
         id: check-changes
         run: |
+          # If force_refresh is set via workflow_dispatch, always deploy
+          if [ "$FORCE_REFRESH" = "true" ]; then
+            echo "🔄 Force refresh requested - proceeding with deployment"
+            echo "needs_deployment=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
           # Get list of changed files in this PR
           git fetch origin ${{ github.base_ref }}
           CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
@@ -103,8 +125,8 @@ jobs:
         if: steps.check-changes.outputs.needs_deployment == 'true'
         working-directory: terraform/service
         run: |
-          terraform workspace new dev-pr-${{ github.event.pull_request.number }} || \
-          terraform workspace select dev-pr-${{ github.event.pull_request.number }}
+          terraform workspace new dev-pr-${{ env.PR_NUMBER }} || \
+          terraform workspace select dev-pr-${{ env.PR_NUMBER }}
 
       - name: Terraform Plan
         if: steps.check-changes.outputs.needs_deployment == 'true'
@@ -113,9 +135,9 @@ jobs:
           TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           TF_VAR_linkedin_access_token: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
           TF_VAR_webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
-          TF_VAR_function_name: roxas-webhook-handler-pr-${{ github.event.pull_request.number }}
+          TF_VAR_function_name: roxas-webhook-handler-pr-${{ env.PR_NUMBER }}
           TF_VAR_environment: dev
-          TF_VAR_pr_number: ${{ github.event.pull_request.number }}
+          TF_VAR_pr_number: ${{ env.PR_NUMBER }}
           TF_VAR_custom_domain_enabled: true
         run: terraform plan -out=tfplan
 
@@ -126,11 +148,28 @@ jobs:
           TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           TF_VAR_linkedin_access_token: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
           TF_VAR_webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
-          TF_VAR_function_name: roxas-webhook-handler-pr-${{ github.event.pull_request.number }}
+          TF_VAR_function_name: roxas-webhook-handler-pr-${{ env.PR_NUMBER }}
           TF_VAR_environment: dev
-          TF_VAR_pr_number: ${{ github.event.pull_request.number }}
+          TF_VAR_pr_number: ${{ env.PR_NUMBER }}
           TF_VAR_custom_domain_enabled: true
         run: terraform apply -auto-approve tfplan
+
+      - name: Force Lambda to pick up latest secrets
+        if: steps.check-changes.outputs.needs_deployment == 'true'
+        run: |
+          FUNCTION_NAME="roxas-webhook-handler-pr-${{ env.PR_NUMBER }}-dev"
+          echo "Forcing Lambda $FUNCTION_NAME to refresh configuration..."
+
+          # Update function configuration with a dummy env var change to force cold start
+          # This ensures the Lambda picks up any updated Secrets Manager values
+          aws lambda update-function-configuration \
+            --function-name "$FUNCTION_NAME" \
+            --environment "Variables={$(aws lambda get-function-configuration --function-name "$FUNCTION_NAME" --query 'Environment.Variables' --output json | jq -r 'to_entries | map("\(.key)=\(.value)") | join(",")'),_DEPLOY_TIMESTAMP=$(date +%s)}" \
+            --query 'LastModified' --output text
+
+          # Wait for update to complete
+          aws lambda wait function-updated --function-name "$FUNCTION_NAME"
+          echo "Lambda configuration refreshed successfully"
 
       - name: Get Webhook URL from Terraform
         if: steps.check-changes.outputs.needs_deployment == 'true'
@@ -242,12 +281,16 @@ jobs:
     outputs:
       needs_deployment: ${{ steps.check-changes.outputs.needs_deployment }}
       deploy_url: ${{ steps.deployment-info.outputs.url }}
+      pr_number: ${{ env.PR_NUMBER }}
 
   browser-e2e-test:
     name: Browser E2E Tests (Deployed)
     runs-on: ubuntu-latest
     needs: deploy-dev
     if: needs.deploy-dev.outputs.needs_deployment == 'true'
+
+    env:
+      PR_NUMBER: ${{ needs.deploy-dev.outputs.pr_number }}
 
     steps:
       - name: Checkout code
@@ -279,5 +322,5 @@ jobs:
 
       - name: Run deployed browser E2E tests
         env:
-          DEPLOY_URL: https://pr-${{ github.event.pull_request.number }}.roxasapp.com
+          DEPLOY_URL: https://pr-${{ env.PR_NUMBER }}.roxasapp.com
         run: go test -tags=browser -v ./internal/web -run TestDeployed -timeout 180s
