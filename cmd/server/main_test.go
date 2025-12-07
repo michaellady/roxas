@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,13 +12,56 @@ import (
 	"testing"
 )
 
-// TestWebhookHandlerValidWebhook tests successful webhook processing
+// TestWebhookHandlerValidWebhook tests successful webhook processing with mock APIs
 func TestWebhookHandlerValidWebhook(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping system test that requires real API credentials")
-	}
+	// Create mock OpenAI server
+	openAIMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/chat/completions") {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"choices": []map[string]interface{}{
+					{"message": map[string]string{"content": "Mock LinkedIn summary for test commit"}},
+				},
+			})
+		} else if strings.Contains(r.URL.Path, "/images/generations") {
+			// Use fake.openai.com which is recognized by the image downloader mock
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": []map[string]string{
+					{"url": "https://fake.openai.com/image.png"},
+				},
+			})
+		}
+	}))
+	defer openAIMock.Close()
 
-	// Set required environment variables
+	// Create mock LinkedIn server
+	var linkedInMock *httptest.Server
+	linkedInMock = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/userinfo") {
+			// Return person URN for authentication
+			json.NewEncoder(w).Encode(map[string]string{"sub": "urn:li:person:test-user"})
+		} else if strings.Contains(r.URL.Path, "/images") && r.Method == "POST" {
+			// Initialize upload response - must match linkedin.go struct
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"value": map[string]interface{}{
+					"uploadUrl":          linkedInMock.URL + "/upload",
+					"image":              "urn:li:image:mock123",
+					"uploadUrlExpiresAt": 9999999999999,
+				},
+			})
+		} else if strings.Contains(r.URL.Path, "/upload") {
+			// Image binary upload endpoint
+			w.WriteHeader(http.StatusCreated)
+		} else if strings.Contains(r.URL.Path, "/posts") {
+			// Create post response - return ID in header like real API
+			w.Header().Set("x-restli-id", "urn:li:share:mock-post-123")
+			w.WriteHeader(http.StatusCreated)
+		}
+	}))
+	defer linkedInMock.Close()
+
+	// Set required environment variables with mock server URLs
 	os.Setenv("OPENAI_API_KEY", "test-openai-key")
 	os.Setenv("LINKEDIN_ACCESS_TOKEN", "test-linkedin-token")
 	os.Setenv("WEBHOOK_SECRET", "test-secret")
@@ -27,8 +71,9 @@ func TestWebhookHandlerValidWebhook(t *testing.T) {
 		os.Unsetenv("WEBHOOK_SECRET")
 	}()
 
+	// Create config with mock URLs injected via custom handler
 	config := loadConfig()
-	handler := webhookHandler(config)
+	handler := webhookHandlerWithMocks(config, openAIMock.URL, linkedInMock.URL)
 
 	// Create valid GitHub webhook payload
 	payload := `{
@@ -53,6 +98,12 @@ func TestWebhookHandlerValidWebhook(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("Expected status 200, got %d", rec.Code)
 		t.Logf("Response body: %s", rec.Body.String())
+	}
+
+	// Verify the response contains success message
+	body := rec.Body.String()
+	if !strings.Contains(body, "processed successfully") {
+		t.Errorf("Expected success message, got: %s", body)
 	}
 }
 

@@ -61,6 +61,11 @@ func validateConfig(config Config) error {
 
 // webhookHandler handles GitHub webhook requests at /webhook
 func webhookHandler(config Config) http.HandlerFunc {
+	return webhookHandlerWithMocks(config, "", "")
+}
+
+// webhookHandlerWithMocks handles GitHub webhook requests with optional mock API URLs for testing
+func webhookHandlerWithMocks(config Config, openAIBaseURL, linkedInBaseURL string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Received webhook request: %s %s", r.Method, r.URL.Path)
 
@@ -103,9 +108,9 @@ func webhookHandler(config Config) http.HandlerFunc {
 			return
 		}
 
-		// Initialize API clients
-		openAIClient := clients.NewOpenAIClient(config.OpenAIAPIKey, "", config.OpenAIChatModel, config.OpenAIImageModel)
-		linkedInClient := clients.NewLinkedInClient(config.LinkedInAccessToken, "")
+		// Initialize API clients (use mock URLs if provided, otherwise use defaults)
+		openAIClient := clients.NewOpenAIClient(config.OpenAIAPIKey, openAIBaseURL, config.OpenAIChatModel, config.OpenAIImageModel)
+		linkedInClient := clients.NewLinkedInClient(config.LinkedInAccessToken, linkedInBaseURL)
 
 		// Initialize services
 		summarizer := services.NewSummarizer(openAIClient)
