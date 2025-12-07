@@ -7,6 +7,7 @@ on:
     paths:
       - 'terraform/shared/**'
       - 'terraform/backend-shared-*.hcl'
+      - 'cmd/circuit-breaker/**'
       - '.github/workflows/shared-infra.yml'
   workflow_dispatch:
     inputs:
@@ -38,6 +39,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache-dependency-path: go.sum
+
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
         with:
@@ -63,13 +70,58 @@ jobs:
         working-directory: terraform/shared
         env:
           TF_VAR_environment: dev
+          TF_VAR_budget_alert_emails: '["${{ secrets.BUDGET_ALERT_EMAIL }}"]'
         run: terraform plan -out=tfplan
 
       - name: Terraform Apply
         working-directory: terraform/shared
         env:
           TF_VAR_environment: dev
+          TF_VAR_budget_alert_emails: '["${{ secrets.BUDGET_ALERT_EMAIL }}"]'
         run: terraform apply -auto-approve tfplan
+
+      - name: Test Circuit Breaker (Dry Run)
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          FUNCTION_NAME="roxas-dev-circuit-breaker"
+          echo "Testing circuit breaker Lambda in dry-run mode..."
+
+          # Set DRY_RUN=true for testing
+          aws lambda update-function-configuration \
+            --function-name "$FUNCTION_NAME" \
+            --environment 'Variables={FUNCTION_PREFIX=roxas-,DRY_RUN=true}' \
+            --query 'FunctionArn' --output text
+
+          # Wait for configuration update
+          aws lambda wait function-updated --function-name "$FUNCTION_NAME"
+
+          # Invoke with test payload
+          aws lambda invoke \
+            --function-name "$FUNCTION_NAME" \
+            --cli-binary-format raw-in-base64-out \
+            --payload '{"Records":[{"Sns":{"Message":"{\"test\":true,\"source\":\"ci_test\"}"}}]}' \
+            /tmp/circuit-breaker-response.json
+
+          # Check response
+          echo "Circuit breaker response:"
+          cat /tmp/circuit-breaker-response.json | jq .
+
+          # Verify it ran successfully
+          STATUS=$(cat /tmp/circuit-breaker-response.json | jq -r '.status')
+          if [ "$STATUS" != "circuit_breaker_activated" ]; then
+            echo "ERROR: Circuit breaker did not activate properly"
+            exit 1
+          fi
+
+          # Remove DRY_RUN so Lambda is ready for real budget alerts
+          aws lambda update-function-configuration \
+            --function-name "$FUNCTION_NAME" \
+            --environment 'Variables={FUNCTION_PREFIX=roxas-}' \
+            --query 'FunctionArn' --output text
+
+          aws lambda wait function-updated --function-name "$FUNCTION_NAME"
+          echo "✓ Circuit breaker tested and ready for live budget alerts"
 
       - name: Output SSM Parameters Created
         working-directory: terraform/shared
@@ -82,6 +134,11 @@ jobs:
           echo "- /roxas/dev/shared/lambda-sg-id" >> $GITHUB_STEP_SUMMARY
           echo "- /roxas/dev/shared/rds-endpoint" >> $GITHUB_STEP_SUMMARY
           echo "- /roxas/dev/shared/acm-certificate-arn" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Circuit Breaker:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Lambda: roxas-dev-circuit-breaker (tested in dry-run, deployed live)" >> $GITHUB_STEP_SUMMARY
+          echo "- SNS Topic: roxas-dev-budget-circuit-breaker" >> $GITHUB_STEP_SUMMARY
+          echo "- Triggers at: 200% of \$100 budget" >> $GITHUB_STEP_SUMMARY
 
   # Deploy to prod after successful dev (on push to main) or directly (workflow_dispatch with prod)
   deploy-prod:
@@ -102,6 +159,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache-dependency-path: go.sum
 
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
@@ -128,13 +191,58 @@ jobs:
         working-directory: terraform/shared
         env:
           TF_VAR_environment: prod
+          TF_VAR_budget_alert_emails: '["${{ secrets.BUDGET_ALERT_EMAIL }}"]'
         run: terraform plan -out=tfplan
 
       - name: Terraform Apply
         working-directory: terraform/shared
         env:
           TF_VAR_environment: prod
+          TF_VAR_budget_alert_emails: '["${{ secrets.BUDGET_ALERT_EMAIL }}"]'
         run: terraform apply -auto-approve tfplan
+
+      - name: Test Circuit Breaker (Dry Run)
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          FUNCTION_NAME="roxas-prod-circuit-breaker"
+          echo "Testing circuit breaker Lambda in dry-run mode..."
+
+          # Set DRY_RUN=true for testing
+          aws lambda update-function-configuration \
+            --function-name "$FUNCTION_NAME" \
+            --environment 'Variables={FUNCTION_PREFIX=roxas-,DRY_RUN=true}' \
+            --query 'FunctionArn' --output text
+
+          # Wait for configuration update
+          aws lambda wait function-updated --function-name "$FUNCTION_NAME"
+
+          # Invoke with test payload
+          aws lambda invoke \
+            --function-name "$FUNCTION_NAME" \
+            --cli-binary-format raw-in-base64-out \
+            --payload '{"Records":[{"Sns":{"Message":"{\"test\":true,\"source\":\"ci_test\"}"}}]}' \
+            /tmp/circuit-breaker-response.json
+
+          # Check response
+          echo "Circuit breaker response:"
+          cat /tmp/circuit-breaker-response.json | jq .
+
+          # Verify it ran successfully
+          STATUS=$(cat /tmp/circuit-breaker-response.json | jq -r '.status')
+          if [ "$STATUS" != "circuit_breaker_activated" ]; then
+            echo "ERROR: Circuit breaker did not activate properly"
+            exit 1
+          fi
+
+          # Remove DRY_RUN so Lambda is ready for real budget alerts
+          aws lambda update-function-configuration \
+            --function-name "$FUNCTION_NAME" \
+            --environment 'Variables={FUNCTION_PREFIX=roxas-}' \
+            --query 'FunctionArn' --output text
+
+          aws lambda wait function-updated --function-name "$FUNCTION_NAME"
+          echo "✓ Circuit breaker tested and ready for live budget alerts"
 
       - name: Output SSM Parameters Created
         working-directory: terraform/shared
@@ -147,3 +255,8 @@ jobs:
           echo "- /roxas/prod/shared/lambda-sg-id" >> $GITHUB_STEP_SUMMARY
           echo "- /roxas/prod/shared/rds-endpoint" >> $GITHUB_STEP_SUMMARY
           echo "- /roxas/prod/shared/acm-certificate-arn" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Circuit Breaker:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Lambda: roxas-prod-circuit-breaker (tested in dry-run, deployed live)" >> $GITHUB_STEP_SUMMARY
+          echo "- SNS Topic: roxas-prod-budget-circuit-breaker" >> $GITHUB_STEP_SUMMARY
+          echo "- Triggers at: 200% of \$100 budget" >> $GITHUB_STEP_SUMMARY
