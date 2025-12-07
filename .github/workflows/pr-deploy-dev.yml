@@ -160,17 +160,22 @@ jobs:
           FUNCTION_NAME="roxas-webhook-handler-pr-${{ env.PR_NUMBER }}-dev"
           echo "Forcing Lambda $FUNCTION_NAME to refresh configuration..."
 
-          # Get current env vars, add timestamp, write to file to avoid shell escaping issues
+          # Get current env vars, add timestamp, write to file
           aws lambda get-function-configuration \
             --function-name "$FUNCTION_NAME" \
             --query 'Environment.Variables' --output json \
             | jq --arg ts "$(date +%s)" '. + {"DEPLOY_TIMESTAMP": $ts}' \
             > /tmp/env_vars.json
 
-          # Update Lambda with the new environment (using file:// to avoid escaping issues)
+          # Create the full environment JSON structure
+          echo '{"Variables":' > /tmp/env_update.json
+          cat /tmp/env_vars.json >> /tmp/env_update.json
+          echo '}' >> /tmp/env_update.json
+
+          # Update Lambda with the new environment using --cli-input-json
           aws lambda update-function-configuration \
             --function-name "$FUNCTION_NAME" \
-            --environment "Variables=$(cat /tmp/env_vars.json)" \
+            --environment file:///tmp/env_update.json \
             --query 'LastModified' --output text
 
           # Wait for update to complete
