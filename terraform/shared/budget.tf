@@ -1,7 +1,6 @@
 # AWS Budget - Monthly spending limit per account
 # Alerts at 50%, 80%, 100%, 120%, and 200% of budget
-# Circuit breaker at 200%: Attaches deny policy to Lambda execution role (prod only)
-# Note: Dev PR environments require manual intervention - see roxas-b2gx for SNS-based solution
+# Circuit breaker at 200%: SNS triggers Lambda to disable all roxas-* functions
 
 resource "aws_budgets_budget" "monthly_cost" {
   name         = "${local.name_prefix}-monthly-budget"
@@ -47,12 +46,14 @@ resource "aws_budgets_budget" "monthly_cost" {
   }
 
   # Notification at circuit breaker threshold (200%) - critical
+  # Publishes to SNS to trigger Lambda circuit breaker
   notification {
     comparison_operator        = "GREATER_THAN"
     threshold                  = var.circuit_breaker_threshold
     threshold_type             = "PERCENTAGE"
     notification_type          = "ACTUAL"
     subscriber_email_addresses = var.budget_alert_emails
+    subscriber_sns_topic_arns  = [aws_sns_topic.budget_circuit_breaker.arn]
   }
 
   # Forecasted notification at 100% - predicted to exceed
@@ -68,29 +69,52 @@ resource "aws_budgets_budget" "monthly_cost" {
 }
 
 # =============================================================================
-# Circuit Breaker: Automatic service shutdown at 200% budget
+# Circuit Breaker: SNS-triggered Lambda that disables all roxas-* functions
 #
-# LIMITATION: AWS Budget Actions with APPLY_IAM_POLICY require specifying
-# exact role names at deploy time. This works for prod (known role name) but
-# not for dev PR environments (dynamic role names).
+# When budget reaches 200%, SNS triggers a Lambda that:
+# 1. Lists all Lambda functions matching "roxas-*" prefix
+# 2. Sets reserved concurrent executions to 0 (disables invocation)
 #
-# For comprehensive circuit breaker coverage, see roxas-b2gx which implements
-# an SNS-triggered Lambda that can discover and disable all roxas-* functions.
+# This works for both prod and dev PR environments regardless of role names.
+#
+# Recovery (manual):
+#   aws lambda delete-function-concurrency --function-name FUNCTION_NAME
 # =============================================================================
 
-locals {
-  # Lambda execution role name follows convention: {function}-{env}-exec-role
-  # For prod: roxas-webhook-handler-prod-exec-role
-  # For dev: Role names are dynamic per PR, so circuit breaker only sends alerts
-  lambda_exec_role_name = var.environment == "prod" ? "roxas-webhook-handler-prod-exec-role" : null
-
-  # Only enable circuit breaker action for prod where we know the role name
-  enable_circuit_breaker_action = var.environment == "prod"
+# SNS Topic for budget circuit breaker alerts
+resource "aws_sns_topic" "budget_circuit_breaker" {
+  name = "${local.name_prefix}-budget-circuit-breaker"
+  tags = local.common_tags
 }
 
-# IAM Role for Budget Actions to execute cost control measures
-resource "aws_iam_role" "budget_action" {
-  name = "${local.name_prefix}-budget-action-role"
+# SNS Topic Policy - allow AWS Budgets to publish
+resource "aws_sns_topic_policy" "budget_circuit_breaker" {
+  arn = aws_sns_topic.budget_circuit_breaker.arn
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowBudgetsPublish"
+        Effect = "Allow"
+        Principal = {
+          Service = "budgets.amazonaws.com"
+        }
+        Action   = "sns:Publish"
+        Resource = aws_sns_topic.budget_circuit_breaker.arn
+        Condition = {
+          StringEquals = {
+            "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+          }
+        }
+      }
+    ]
+  })
+}
+
+# IAM Role for Circuit Breaker Lambda
+resource "aws_iam_role" "circuit_breaker_lambda" {
+  name = "${local.name_prefix}-circuit-breaker-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -98,7 +122,7 @@ resource "aws_iam_role" "budget_action" {
       {
         Effect = "Allow"
         Principal = {
-          Service = "budgets.amazonaws.com"
+          Service = "lambda.amazonaws.com"
         }
         Action = "sts:AssumeRole"
       }
@@ -108,103 +132,109 @@ resource "aws_iam_role" "budget_action" {
   tags = local.common_tags
 }
 
-# Policy allowing Budget Actions to attach/detach IAM policies
-resource "aws_iam_role_policy" "budget_action" {
-  name = "${local.name_prefix}-budget-action-policy"
-  role = aws_iam_role.budget_action.id
+# Lambda basic execution (CloudWatch Logs)
+resource "aws_iam_role_policy_attachment" "circuit_breaker_basic" {
+  role       = aws_iam_role.circuit_breaker_lambda.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# Policy for circuit breaker Lambda to list and throttle functions
+resource "aws_iam_role_policy" "circuit_breaker_lambda" {
+  name = "lambda-concurrency-control"
+  role = aws_iam_role.circuit_breaker_lambda.id
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "AllowAttachDetachPolicy"
+        Sid    = "ListFunctions"
         Effect = "Allow"
         Action = [
-          "iam:AttachRolePolicy",
-          "iam:DetachRolePolicy"
+          "lambda:ListFunctions"
         ]
-        # Allow attaching to Lambda execution role (prod only)
-        Resource = local.enable_circuit_breaker_action ? "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.lambda_exec_role_name}" : aws_iam_role.budget_action.arn
+        Resource = "*"
       },
       {
-        Sid    = "AllowGetPolicy"
+        Sid    = "ThrottleRoxasFunctions"
         Effect = "Allow"
         Action = [
-          "iam:GetPolicy"
-        ]
-        Resource = aws_iam_policy.budget_circuit_breaker_deny.arn
-      }
-    ]
-  })
-}
-
-# Budget Action: Circuit breaker at 200% - attaches deny policy to Lambda role
-# Only enabled for prod environment where Lambda role name is known
-resource "aws_budgets_budget_action" "circuit_breaker" {
-  count = local.enable_circuit_breaker_action ? 1 : 0
-
-  budget_name        = aws_budgets_budget.monthly_cost.name
-  action_type        = "APPLY_IAM_POLICY"
-  approval_model     = "AUTOMATIC"
-  notification_type  = "ACTUAL"
-
-  action_threshold {
-    action_threshold_type  = "PERCENTAGE"
-    action_threshold_value = var.circuit_breaker_threshold
-  }
-
-  execution_role_arn = aws_iam_role.budget_action.arn
-
-  # Attach deny policy to Lambda execution role
-  definition {
-    iam_action_definition {
-      policy_arn = aws_iam_policy.budget_circuit_breaker_deny.arn
-      roles      = [local.lambda_exec_role_name]
-    }
-  }
-
-  subscriber {
-    subscription_type = "EMAIL"
-    address           = var.budget_alert_emails[0]
-  }
-}
-
-# Deny policy that gets attached when circuit breaker triggers
-# Specifically denies Lambda invocation and API Gateway access
-resource "aws_iam_policy" "budget_circuit_breaker_deny" {
-  name        = "${local.name_prefix}-budget-circuit-breaker-deny"
-  description = "Deny policy attached by budget circuit breaker at ${var.circuit_breaker_threshold}% spend"
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "DenyLambdaInvocation"
-        Effect = "Deny"
-        Action = [
-          "lambda:InvokeFunction",
-          "lambda:InvokeAsync"
+          "lambda:PutFunctionConcurrency",
+          "lambda:DeleteFunctionConcurrency"
         ]
         Resource = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:roxas-*"
-      },
-      {
-        Sid    = "DenySecretsAccess"
-        Effect = "Deny"
-        Action = [
-          "secretsmanager:GetSecretValue"
-        ]
-        Resource = "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:roxas-*"
-      },
-      {
-        Sid    = "DenyRDSAccess"
-        Effect = "Deny"
-        Action = [
-          "rds-db:connect"
-        ]
-        Resource = "arn:aws:rds-db:${var.aws_region}:${data.aws_caller_identity.current.account_id}:dbuser:*/roxas_*"
       }
     ]
   })
+}
+
+# CloudWatch Log Group for circuit breaker Lambda
+resource "aws_cloudwatch_log_group" "circuit_breaker_lambda" {
+  name              = "/aws/lambda/${local.name_prefix}-circuit-breaker"
+  retention_in_days = 30
 
   tags = local.common_tags
 }
+
+# Build circuit breaker Lambda binary (Go)
+resource "null_resource" "circuit_breaker_build" {
+  triggers = {
+    source_hash = filemd5("${path.module}/../../cmd/circuit-breaker/main.go")
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      cd ${path.module}/../..
+      GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o ${path.module}/lambda/bootstrap ./cmd/circuit-breaker
+      cd ${path.module}/lambda
+      zip -j circuit_breaker.zip bootstrap
+      rm bootstrap
+    EOT
+  }
+}
+
+# Circuit Breaker Lambda function (Go)
+resource "aws_lambda_function" "circuit_breaker" {
+  filename         = "${path.module}/lambda/circuit_breaker.zip"
+  function_name    = "${local.name_prefix}-circuit-breaker"
+  role             = aws_iam_role.circuit_breaker_lambda.arn
+  handler          = "bootstrap"
+  runtime          = "provided.al2023"
+  timeout          = 60
+  memory_size      = 128
+  architectures    = ["arm64"]
+
+  environment {
+    variables = {
+      FUNCTION_PREFIX = "roxas-"
+    }
+  }
+
+  depends_on = [
+    null_resource.circuit_breaker_build,
+    aws_cloudwatch_log_group.circuit_breaker_lambda,
+    aws_iam_role_policy_attachment.circuit_breaker_basic,
+    aws_iam_role_policy.circuit_breaker_lambda
+  ]
+
+  tags = local.common_tags
+}
+
+# Allow SNS to invoke the circuit breaker Lambda
+resource "aws_lambda_permission" "circuit_breaker_sns" {
+  statement_id  = "AllowSNSInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.circuit_breaker.function_name
+  principal     = "sns.amazonaws.com"
+  source_arn    = aws_sns_topic.budget_circuit_breaker.arn
+}
+
+# Subscribe Lambda to SNS topic
+resource "aws_sns_topic_subscription" "circuit_breaker_lambda" {
+  topic_arn = aws_sns_topic.budget_circuit_breaker.arn
+  protocol  = "lambda"
+  endpoint  = aws_lambda_function.circuit_breaker.arn
+}
+
+# Budget notification to SNS at circuit breaker threshold
+# Note: This uses subscriber_sns_topic_arns on the budget notification
+# We update the 200% notification to also publish to SNS
