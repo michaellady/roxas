@@ -120,10 +120,10 @@ resource "null_resource" "cleanup_lambda_build" {
   provisioner "local-exec" {
     command = <<-EOT
       cd ${path.module}/../..
-      GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o ${path.module}/lambda/cleanup_bootstrap ./cmd/db-cleanup
+      GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o ${path.module}/lambda/bootstrap ./cmd/db-cleanup
       cd ${path.module}/lambda
-      zip -j db_cleanup.zip cleanup_bootstrap
-      rm cleanup_bootstrap
+      zip -j db_cleanup.zip bootstrap
+      rm bootstrap
     EOT
   }
 }
@@ -135,7 +135,7 @@ resource "aws_lambda_function" "cleanup" {
   filename         = "${path.module}/lambda/db_cleanup.zip"
   function_name    = "${local.name_prefix}-cleanup"
   role             = aws_iam_role.cleanup_lambda[0].arn
-  handler          = "cleanup_bootstrap"
+  handler          = "bootstrap"
   runtime          = "provided.al2023"
   timeout          = 30
   memory_size      = 128

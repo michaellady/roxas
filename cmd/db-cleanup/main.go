@@ -18,7 +18,6 @@ import (
 	"log"
 	"os"
 	"strconv"
-	"strings"
 
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -261,15 +260,10 @@ func handler(ctx context.Context, event Request) (Response, error) {
 
 	// Drop the database
 	// Note: Can't use parameters for database names in DROP DATABASE
-	// dbName is safe because it's "pr_" + validated integer
+	// dbName is safe because it's "pr_" + validated integer (validated above)
 	log.Printf("Dropping database %s", dbName)
 
-	// Use quoted identifier for safety, though our dbName is already safe
-	quotedDBName := pgx.Identifier{dbName}.Sanitize()
-	// Remove quotes since DROP DATABASE IF EXISTS doesn't need them for valid identifiers
-	quotedDBName = strings.Trim(quotedDBName, "\"")
-
-	_, err = conn.Exec(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS %s", quotedDBName))
+	_, err = conn.Exec(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS %s", dbName))
 	if err != nil {
 		log.Printf("Error dropping database: %v", err)
 		return Response{

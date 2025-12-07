@@ -97,8 +97,8 @@ echo
 RESPONSE_FILE=$(mktemp)
 AWS_PROFILE=$PROFILE aws lambda invoke \
     --function-name "$FUNCTION_NAME" \
-    --payload "$(echo "$PAYLOAD" | base64)" \
     --cli-binary-format raw-in-base64-out \
+    --payload "$PAYLOAD" \
     "$RESPONSE_FILE"
 
 echo
