@@ -352,15 +352,15 @@ resource "aws_cloudwatch_log_group" "cleanup_lambda" {
 # Build cleanup Lambda binary (Go)
 resource "null_resource" "cleanup_lambda_build" {
   triggers = {
-    source_hash = filemd5("${path.module}/../../cmd/db-cleanup/main.go")
+    source_hash = filemd5("${path.module}/../../cmd/pr-cleanup/main.go")
   }
 
   provisioner "local-exec" {
     command = <<-EOT
       cd ${path.module}/../..
-      GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o ${path.module}/lambda/bootstrap ./cmd/db-cleanup
+      GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o ${path.module}/lambda/bootstrap ./cmd/pr-cleanup
       cd ${path.module}/lambda
-      zip -j db_cleanup.zip bootstrap
+      zip -j pr_cleanup.zip bootstrap
       rm bootstrap
     EOT
   }
@@ -368,7 +368,7 @@ resource "null_resource" "cleanup_lambda_build" {
 
 # Cleanup Lambda function (Go)
 resource "aws_lambda_function" "cleanup" {
-  filename      = "${path.module}/lambda/db_cleanup.zip"
+  filename      = "${path.module}/lambda/pr_cleanup.zip"
   function_name = "roxas-shared-rds-cleanup"
   role          = aws_iam_role.cleanup_lambda.arn
   handler       = "bootstrap"

@@ -1,5 +1,8 @@
-# PR Database Cleanup Lambda (Dev Environment Only)
-# Drops PR databases when PRs are closed
+# PR Cleanup Lambda (Dev Environment Only)
+# Cleans up PR resources when PRs are closed:
+# - Drops PR databases from shared RDS
+# - Deletes orphaned ENIs
+# - Deletes orphaned security groups
 # Invoked by GitHub Actions workflow
 
 # Security group for cleanup Lambda
@@ -99,6 +102,50 @@ resource "aws_iam_role_policy" "cleanup_lambda_secrets" {
   })
 }
 
+# EC2 permissions for ENI and Security Group cleanup
+resource "aws_iam_role_policy" "cleanup_lambda_ec2" {
+  count = local.enable_cleanup_lambda ? 1 : 0
+
+  name = "ec2-cleanup-access"
+  role = aws_iam_role.cleanup_lambda[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "DescribeENIsAndSGs"
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:DescribeSecurityGroups"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "DeleteOrphanedENIs"
+        Effect = "Allow"
+        Action = [
+          "ec2:DeleteNetworkInterface"
+        ]
+        Resource = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:network-interface/*"
+        Condition = {
+          StringLike = {
+            "ec2:Description" = "*roxas*"
+          }
+        }
+      },
+      {
+        Sid    = "DeleteOrphanedSecurityGroups"
+        Effect = "Allow"
+        Action = [
+          "ec2:DeleteSecurityGroup"
+        ]
+        Resource = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:security-group/*"
+      }
+    ]
+  })
+}
+
 # CloudWatch log group for cleanup Lambda
 resource "aws_cloudwatch_log_group" "cleanup_lambda" {
   count = local.enable_cleanup_lambda ? 1 : 0
@@ -114,15 +161,15 @@ resource "null_resource" "cleanup_lambda_build" {
   count = local.enable_cleanup_lambda ? 1 : 0
 
   triggers = {
-    source_hash = filemd5("${path.module}/../../cmd/db-cleanup/main.go")
+    source_hash = filemd5("${path.module}/../../cmd/pr-cleanup/main.go")
   }
 
   provisioner "local-exec" {
     command = <<-EOT
       cd ${path.module}/../..
-      GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o ${path.module}/lambda/bootstrap ./cmd/db-cleanup
+      GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o ${path.module}/lambda/bootstrap ./cmd/pr-cleanup
       cd ${path.module}/lambda
-      zip -j db_cleanup.zip bootstrap
+      zip -j pr_cleanup.zip bootstrap
       rm bootstrap
     EOT
   }
@@ -132,7 +179,7 @@ resource "null_resource" "cleanup_lambda_build" {
 resource "aws_lambda_function" "cleanup" {
   count = local.enable_cleanup_lambda ? 1 : 0
 
-  filename         = "${path.module}/lambda/db_cleanup.zip"
+  filename         = "${path.module}/lambda/pr_cleanup.zip"
   function_name    = "${local.name_prefix}-cleanup"
   role             = aws_iam_role.cleanup_lambda[0].arn
   handler          = "bootstrap"

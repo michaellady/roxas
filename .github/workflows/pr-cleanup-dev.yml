@@ -111,18 +111,43 @@ jobs:
           TF_VAR_environment: dev
         run: terraform destroy -auto-approve
 
-      - name: Wait for Lambda ENI Cleanup
+      - name: Cleanup Orphaned ENIs and Security Groups
         if: steps.check-workspace.outputs.exists == 'true'
         run: |
-          FUNCTION_NAME="roxas-webhook-handler-pr-${{ github.event.pull_request.number }}"
-          echo "Waiting for Lambda ENIs to be released for: $FUNCTION_NAME"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          LAMBDA_NAME="roxas-shared-rds-cleanup"
 
-          # Run ENI cleanup wait script with 20-minute timeout
-          # This prevents VPC deletion failures due to attached network interfaces
-          ./scripts/wait-for-eni-cleanup.sh "$FUNCTION_NAME" 1200 || {
-            echo "⚠️ ENI cleanup script exited with status $?"
-            echo "Continuing with workflow - VPC deletion may fail if ENIs are still attached"
+          echo "Invoking cleanup Lambda for orphaned ENIs and security groups..."
+
+          # Invoke the cleanup Lambda to remove orphaned ENIs and security groups
+          # This actively cleans up resources instead of just waiting
+          RESPONSE=$(aws lambda invoke \
+            --function-name "$LAMBDA_NAME" \
+            --payload "{\"pr_number\": ${PR_NUMBER}, \"action\": \"cleanup_all\"}" \
+            --cli-binary-format raw-in-base64-out \
+            /tmp/cleanup-response.json 2>&1) || {
+            echo "Warning: Lambda invocation failed"
+            echo "$RESPONSE"
+            echo "Continuing with workflow - manual cleanup may be needed"
+            exit 0
           }
+
+          # Check Lambda response
+          if [ -f /tmp/cleanup-response.json ]; then
+            cat /tmp/cleanup-response.json
+            STATUS_CODE=$(jq -r '.statusCode' /tmp/cleanup-response.json 2>/dev/null || echo "unknown")
+            MESSAGE=$(jq -r '.body.message' /tmp/cleanup-response.json 2>/dev/null || echo "unknown")
+
+            echo ""
+            echo "Cleanup response: $MESSAGE"
+
+            if [ "$STATUS_CODE" = "200" ]; then
+              echo "ENI and security group cleanup completed successfully"
+            else
+              echo "Warning: Cleanup Lambda returned status $STATUS_CODE"
+              echo "Manual cleanup may be needed"
+            fi
+          fi
 
       - name: Delete Terraform Workspace
         if: steps.check-workspace.outputs.exists == 'true'
