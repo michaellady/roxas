@@ -92,3 +92,26 @@ variable "prod_hosted_zone_id" {
   type        = string
   default     = "Z04315832ENRI8EX7SUBL"
 }
+
+# Budget Configuration
+variable "monthly_budget_limit" {
+  description = "Monthly budget limit in USD"
+  type        = string
+  default     = "100"
+}
+
+variable "budget_alert_emails" {
+  description = "Email addresses to receive budget alerts"
+  type        = list(string)
+  default     = []
+  validation {
+    condition     = length(var.budget_alert_emails) > 0
+    error_message = "At least one email address is required for budget alerts."
+  }
+}
+
+variable "circuit_breaker_threshold" {
+  description = "Percentage of budget at which circuit breaker activates (stops services)"
+  type        = number
+  default     = 200
+}
