@@ -155,7 +155,7 @@ jobs:
         run: terraform apply -auto-approve tfplan
 
       - name: Force Lambda to pick up latest secrets
-        if: steps.check-changes.outputs.needs_deployment == 'true'
+        if: steps.check-changes.outputs.needs_deployment == 'true' && env.FORCE_REFRESH == 'true'
         run: |
           FUNCTION_NAME="roxas-webhook-handler-pr-${{ env.PR_NUMBER }}-dev"
           echo "Forcing Lambda $FUNCTION_NAME to refresh configuration..."
