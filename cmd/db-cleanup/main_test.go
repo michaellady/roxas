@@ -6,6 +6,9 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -395,5 +398,335 @@ func TestHandler_MissingDBSecretEnvVar(t *testing.T) {
 	}
 	if resp.Body.Action != "error" {
 		t.Errorf("expected action 'error', got %q", resp.Body.Action)
+	}
+}
+
+// =============================================================================
+// EC2 Mock for ENI/Security Group cleanup tests
+// =============================================================================
+
+// MockEC2Client implements EC2Client for testing
+type MockEC2Client struct {
+	DescribeNetworkInterfacesFunc func(ctx context.Context, params *ec2.DescribeNetworkInterfacesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error)
+	DeleteNetworkInterfaceFunc    func(ctx context.Context, params *ec2.DeleteNetworkInterfaceInput, optFns ...func(*ec2.Options)) (*ec2.DeleteNetworkInterfaceOutput, error)
+	DescribeSecurityGroupsFunc    func(ctx context.Context, params *ec2.DescribeSecurityGroupsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupsOutput, error)
+	DeleteSecurityGroupFunc       func(ctx context.Context, params *ec2.DeleteSecurityGroupInput, optFns ...func(*ec2.Options)) (*ec2.DeleteSecurityGroupOutput, error)
+}
+
+func (m *MockEC2Client) DescribeNetworkInterfaces(ctx context.Context, params *ec2.DescribeNetworkInterfacesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error) {
+	if m.DescribeNetworkInterfacesFunc != nil {
+		return m.DescribeNetworkInterfacesFunc(ctx, params, optFns...)
+	}
+	return &ec2.DescribeNetworkInterfacesOutput{}, nil
+}
+
+func (m *MockEC2Client) DeleteNetworkInterface(ctx context.Context, params *ec2.DeleteNetworkInterfaceInput, optFns ...func(*ec2.Options)) (*ec2.DeleteNetworkInterfaceOutput, error) {
+	if m.DeleteNetworkInterfaceFunc != nil {
+		return m.DeleteNetworkInterfaceFunc(ctx, params, optFns...)
+	}
+	return &ec2.DeleteNetworkInterfaceOutput{}, nil
+}
+
+func (m *MockEC2Client) DescribeSecurityGroups(ctx context.Context, params *ec2.DescribeSecurityGroupsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupsOutput, error) {
+	if m.DescribeSecurityGroupsFunc != nil {
+		return m.DescribeSecurityGroupsFunc(ctx, params, optFns...)
+	}
+	return &ec2.DescribeSecurityGroupsOutput{}, nil
+}
+
+func (m *MockEC2Client) DeleteSecurityGroup(ctx context.Context, params *ec2.DeleteSecurityGroupInput, optFns ...func(*ec2.Options)) (*ec2.DeleteSecurityGroupOutput, error) {
+	if m.DeleteSecurityGroupFunc != nil {
+		return m.DeleteSecurityGroupFunc(ctx, params, optFns...)
+	}
+	return &ec2.DeleteSecurityGroupOutput{}, nil
+}
+
+// =============================================================================
+// ENI Cleanup Tests (RED - these will fail until implemented)
+// =============================================================================
+
+func TestHandler_CleanupENIs_Success(t *testing.T) {
+	ctx := context.Background()
+
+	deletedENIs := []string{}
+	ec2Client = &MockEC2Client{
+		DescribeNetworkInterfacesFunc: func(ctx context.Context, params *ec2.DescribeNetworkInterfacesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error) {
+			// Return 2 available ENIs for PR 45
+			return &ec2.DescribeNetworkInterfacesOutput{
+				NetworkInterfaces: []types.NetworkInterface{
+					{
+						NetworkInterfaceId: aws.String("eni-111111111"),
+						Status:             types.NetworkInterfaceStatusAvailable,
+						Description:        aws.String("AWS Lambda VPC ENI-roxas-webhook-handler-pr-45-dev"),
+					},
+					{
+						NetworkInterfaceId: aws.String("eni-222222222"),
+						Status:             types.NetworkInterfaceStatusAvailable,
+						Description:        aws.String("AWS Lambda VPC ENI-roxas-webhook-handler-pr-45-dev"),
+					},
+				},
+			}, nil
+		},
+		DeleteNetworkInterfaceFunc: func(ctx context.Context, params *ec2.DeleteNetworkInterfaceInput, optFns ...func(*ec2.Options)) (*ec2.DeleteNetworkInterfaceOutput, error) {
+			deletedENIs = append(deletedENIs, *params.NetworkInterfaceId)
+			return &ec2.DeleteNetworkInterfaceOutput{}, nil
+		},
+	}
+	defer func() { ec2Client = nil }()
+
+	resp, err := handler(ctx, Request{PRNumber: 45, Action: "cleanup_enis"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.StatusCode != 200 {
+		t.Errorf("expected status 200, got %d: %s", resp.StatusCode, resp.Body.Message)
+	}
+	if resp.Body.Action != "enis_cleaned" {
+		t.Errorf("expected action 'enis_cleaned', got %q", resp.Body.Action)
+	}
+	if len(deletedENIs) != 2 {
+		t.Errorf("expected 2 ENIs deleted, got %d", len(deletedENIs))
+	}
+}
+
+func TestHandler_CleanupENIs_NoOrphanedENIs(t *testing.T) {
+	ctx := context.Background()
+
+	ec2Client = &MockEC2Client{
+		DescribeNetworkInterfacesFunc: func(ctx context.Context, params *ec2.DescribeNetworkInterfacesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error) {
+			// Return empty - no ENIs found
+			return &ec2.DescribeNetworkInterfacesOutput{
+				NetworkInterfaces: []types.NetworkInterface{},
+			}, nil
+		},
+	}
+	defer func() { ec2Client = nil }()
+
+	resp, err := handler(ctx, Request{PRNumber: 99, Action: "cleanup_enis"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.StatusCode != 200 {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+	if resp.Body.Action != "enis_cleaned" {
+		t.Errorf("expected action 'enis_cleaned', got %q", resp.Body.Action)
+	}
+}
+
+func TestHandler_CleanupENIs_SkipsInUseENIs(t *testing.T) {
+	ctx := context.Background()
+
+	deletedENIs := []string{}
+	ec2Client = &MockEC2Client{
+		DescribeNetworkInterfacesFunc: func(ctx context.Context, params *ec2.DescribeNetworkInterfacesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error) {
+			// Return 1 available and 1 in-use ENI
+			return &ec2.DescribeNetworkInterfacesOutput{
+				NetworkInterfaces: []types.NetworkInterface{
+					{
+						NetworkInterfaceId: aws.String("eni-available"),
+						Status:             types.NetworkInterfaceStatusAvailable,
+						Description:        aws.String("AWS Lambda VPC ENI-roxas-webhook-handler-pr-45-dev"),
+					},
+					{
+						NetworkInterfaceId: aws.String("eni-inuse"),
+						Status:             types.NetworkInterfaceStatusInUse,
+						Description:        aws.String("AWS Lambda VPC ENI-roxas-webhook-handler-pr-45-dev"),
+					},
+				},
+			}, nil
+		},
+		DeleteNetworkInterfaceFunc: func(ctx context.Context, params *ec2.DeleteNetworkInterfaceInput, optFns ...func(*ec2.Options)) (*ec2.DeleteNetworkInterfaceOutput, error) {
+			deletedENIs = append(deletedENIs, *params.NetworkInterfaceId)
+			return &ec2.DeleteNetworkInterfaceOutput{}, nil
+		},
+	}
+	defer func() { ec2Client = nil }()
+
+	resp, err := handler(ctx, Request{PRNumber: 45, Action: "cleanup_enis"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.StatusCode != 200 {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+	// Should only delete the available one
+	if len(deletedENIs) != 1 {
+		t.Errorf("expected 1 ENI deleted, got %d", len(deletedENIs))
+	}
+	if len(deletedENIs) > 0 && deletedENIs[0] != "eni-available" {
+		t.Errorf("expected eni-available to be deleted, got %s", deletedENIs[0])
+	}
+}
+
+// =============================================================================
+// Security Group Cleanup Tests (RED - these will fail until implemented)
+// =============================================================================
+
+func TestHandler_CleanupSGs_Success(t *testing.T) {
+	ctx := context.Background()
+
+	deletedSGs := []string{}
+	ec2Client = &MockEC2Client{
+		DescribeNetworkInterfacesFunc: func(ctx context.Context, params *ec2.DescribeNetworkInterfacesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error) {
+			// No ENIs using this security group
+			return &ec2.DescribeNetworkInterfacesOutput{
+				NetworkInterfaces: []types.NetworkInterface{},
+			}, nil
+		},
+		DescribeSecurityGroupsFunc: func(ctx context.Context, params *ec2.DescribeSecurityGroupsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupsOutput, error) {
+			return &ec2.DescribeSecurityGroupsOutput{
+				SecurityGroups: []types.SecurityGroup{
+					{
+						GroupId:   aws.String("sg-orphaned"),
+						GroupName: aws.String("roxas-webhook-handler-pr-45-dev-lambda"),
+						VpcId:     aws.String("vpc-123"),
+					},
+				},
+			}, nil
+		},
+		DeleteSecurityGroupFunc: func(ctx context.Context, params *ec2.DeleteSecurityGroupInput, optFns ...func(*ec2.Options)) (*ec2.DeleteSecurityGroupOutput, error) {
+			deletedSGs = append(deletedSGs, *params.GroupId)
+			return &ec2.DeleteSecurityGroupOutput{}, nil
+		},
+	}
+	defer func() { ec2Client = nil }()
+
+	resp, err := handler(ctx, Request{PRNumber: 45, Action: "cleanup_sgs"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.StatusCode != 200 {
+		t.Errorf("expected status 200, got %d: %s", resp.StatusCode, resp.Body.Message)
+	}
+	if resp.Body.Action != "sgs_cleaned" {
+		t.Errorf("expected action 'sgs_cleaned', got %q", resp.Body.Action)
+	}
+	if len(deletedSGs) != 1 {
+		t.Errorf("expected 1 SG deleted, got %d", len(deletedSGs))
+	}
+}
+
+func TestHandler_CleanupSGs_SkipsSGsWithENIs(t *testing.T) {
+	ctx := context.Background()
+
+	deletedSGs := []string{}
+	ec2Client = &MockEC2Client{
+		DescribeNetworkInterfacesFunc: func(ctx context.Context, params *ec2.DescribeNetworkInterfacesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error) {
+			// ENI still using this security group
+			return &ec2.DescribeNetworkInterfacesOutput{
+				NetworkInterfaces: []types.NetworkInterface{
+					{
+						NetworkInterfaceId: aws.String("eni-still-attached"),
+						Status:             types.NetworkInterfaceStatusInUse,
+					},
+				},
+			}, nil
+		},
+		DescribeSecurityGroupsFunc: func(ctx context.Context, params *ec2.DescribeSecurityGroupsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupsOutput, error) {
+			return &ec2.DescribeSecurityGroupsOutput{
+				SecurityGroups: []types.SecurityGroup{
+					{
+						GroupId:   aws.String("sg-in-use"),
+						GroupName: aws.String("roxas-webhook-handler-pr-45-dev-lambda"),
+						VpcId:     aws.String("vpc-123"),
+					},
+				},
+			}, nil
+		},
+		DeleteSecurityGroupFunc: func(ctx context.Context, params *ec2.DeleteSecurityGroupInput, optFns ...func(*ec2.Options)) (*ec2.DeleteSecurityGroupOutput, error) {
+			deletedSGs = append(deletedSGs, *params.GroupId)
+			return &ec2.DeleteSecurityGroupOutput{}, nil
+		},
+	}
+	defer func() { ec2Client = nil }()
+
+	resp, err := handler(ctx, Request{PRNumber: 45, Action: "cleanup_sgs"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.StatusCode != 200 {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+	// Should NOT delete the SG because it has ENIs
+	if len(deletedSGs) != 0 {
+		t.Errorf("expected 0 SGs deleted (in use), got %d", len(deletedSGs))
+	}
+}
+
+// =============================================================================
+// Full Cleanup Test (cleanup_all = ENIs + SGs)
+// =============================================================================
+
+func TestHandler_CleanupAll_Success(t *testing.T) {
+	ctx := context.Background()
+
+	deletedENIs := []string{}
+	deletedSGs := []string{}
+	describeENIsCalls := 0
+
+	ec2Client = &MockEC2Client{
+		DescribeNetworkInterfacesFunc: func(ctx context.Context, params *ec2.DescribeNetworkInterfacesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error) {
+			describeENIsCalls++
+			if describeENIsCalls == 1 {
+				// First call: return ENIs for cleanup
+				return &ec2.DescribeNetworkInterfacesOutput{
+					NetworkInterfaces: []types.NetworkInterface{
+						{
+							NetworkInterfaceId: aws.String("eni-cleanup"),
+							Status:             types.NetworkInterfaceStatusAvailable,
+							Description:        aws.String("AWS Lambda VPC ENI-roxas-webhook-handler-pr-45-dev"),
+						},
+					},
+				}, nil
+			}
+			// Subsequent calls: no ENIs (for SG dependency check)
+			return &ec2.DescribeNetworkInterfacesOutput{
+				NetworkInterfaces: []types.NetworkInterface{},
+			}, nil
+		},
+		DeleteNetworkInterfaceFunc: func(ctx context.Context, params *ec2.DeleteNetworkInterfaceInput, optFns ...func(*ec2.Options)) (*ec2.DeleteNetworkInterfaceOutput, error) {
+			deletedENIs = append(deletedENIs, *params.NetworkInterfaceId)
+			return &ec2.DeleteNetworkInterfaceOutput{}, nil
+		},
+		DescribeSecurityGroupsFunc: func(ctx context.Context, params *ec2.DescribeSecurityGroupsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupsOutput, error) {
+			return &ec2.DescribeSecurityGroupsOutput{
+				SecurityGroups: []types.SecurityGroup{
+					{
+						GroupId:   aws.String("sg-cleanup"),
+						GroupName: aws.String("roxas-webhook-handler-pr-45-dev-lambda"),
+						VpcId:     aws.String("vpc-123"),
+					},
+				},
+			}, nil
+		},
+		DeleteSecurityGroupFunc: func(ctx context.Context, params *ec2.DeleteSecurityGroupInput, optFns ...func(*ec2.Options)) (*ec2.DeleteSecurityGroupOutput, error) {
+			deletedSGs = append(deletedSGs, *params.GroupId)
+			return &ec2.DeleteSecurityGroupOutput{}, nil
+		},
+	}
+	defer func() { ec2Client = nil }()
+
+	resp, err := handler(ctx, Request{PRNumber: 45, Action: "cleanup_all"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.StatusCode != 200 {
+		t.Errorf("expected status 200, got %d: %s", resp.StatusCode, resp.Body.Message)
+	}
+	if resp.Body.Action != "all_cleaned" {
+		t.Errorf("expected action 'all_cleaned', got %q", resp.Body.Action)
+	}
+	if len(deletedENIs) != 1 {
+		t.Errorf("expected 1 ENI deleted, got %d", len(deletedENIs))
+	}
+	if len(deletedSGs) != 1 {
+		t.Errorf("expected 1 SG deleted, got %d", len(deletedSGs))
 	}
 }

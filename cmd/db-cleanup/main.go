@@ -18,9 +18,12 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -56,6 +59,14 @@ type DBCredentials struct {
 // SecretsManagerClient interface for testing
 type SecretsManagerClient interface {
 	GetSecretValue(ctx context.Context, params *secretsmanager.GetSecretValueInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error)
+}
+
+// EC2Client interface for testing
+type EC2Client interface {
+	DescribeNetworkInterfaces(ctx context.Context, params *ec2.DescribeNetworkInterfacesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error)
+	DeleteNetworkInterface(ctx context.Context, params *ec2.DeleteNetworkInterfaceInput, optFns ...func(*ec2.Options)) (*ec2.DeleteNetworkInterfaceOutput, error)
+	DescribeSecurityGroups(ctx context.Context, params *ec2.DescribeSecurityGroupsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupsOutput, error)
+	DeleteSecurityGroup(ctx context.Context, params *ec2.DeleteSecurityGroupInput, optFns ...func(*ec2.Options)) (*ec2.DeleteSecurityGroupOutput, error)
 }
 
 // DBConnector interface for testing
@@ -100,6 +111,7 @@ func (c *PgxConn) Close(ctx context.Context) error {
 
 var (
 	smClient    SecretsManagerClient
+	ec2Client   EC2Client
 	dbConnector DBConnector = &PgxConnector{}
 )
 
@@ -128,21 +140,6 @@ func handler(ctx context.Context, event Request) (Response, error) {
 	eventJSON, _ := json.Marshal(event)
 	log.Printf("Received event: %s", string(eventJSON))
 
-	// Initialize AWS client if not set (allows injection for testing)
-	if smClient == nil {
-		cfg, err := config.LoadDefaultConfig(ctx)
-		if err != nil {
-			return Response{
-				StatusCode: 500,
-				Body: ResponseBody{
-					Message: fmt.Sprintf("failed to load AWS config: %v", err),
-					Action:  "error",
-				},
-			}, nil
-		}
-		smClient = secretsmanager.NewFromConfig(cfg)
-	}
-
 	// Validate input
 	if event.PRNumber == 0 {
 		return Response{
@@ -154,22 +151,55 @@ func handler(ctx context.Context, event Request) (Response, error) {
 		}, nil
 	}
 
-	dbName := fmt.Sprintf("pr_%d", event.PRNumber)
 	action := event.Action
 	if action == "" {
 		action = "drop"
 	}
 
-	if action != "drop" {
+	// Initialize AWS config for clients
+	cfg, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
 		return Response{
-			StatusCode: 400,
+			StatusCode: 500,
 			Body: ResponseBody{
-				Message:  fmt.Sprintf("Unknown action: %s", action),
-				Database: dbName,
-				Action:   "error",
+				Message: fmt.Sprintf("failed to load AWS config: %v", err),
+				Action:  "error",
 			},
 		}, nil
 	}
+
+	// Initialize clients if not set (allows injection for testing)
+	if smClient == nil {
+		smClient = secretsmanager.NewFromConfig(cfg)
+	}
+	if ec2Client == nil {
+		ec2Client = ec2.NewFromConfig(cfg)
+	}
+
+	// Dispatch based on action
+	switch action {
+	case "drop":
+		return handleDropDatabase(ctx, event.PRNumber)
+	case "cleanup_enis":
+		return handleCleanupENIs(ctx, event.PRNumber)
+	case "cleanup_sgs":
+		return handleCleanupSGs(ctx, event.PRNumber)
+	case "cleanup_all":
+		return handleCleanupAll(ctx, event.PRNumber)
+	default:
+		return Response{
+			StatusCode: 400,
+			Body: ResponseBody{
+				Message: fmt.Sprintf("Unknown action: %s", action),
+				Action:  "error",
+			},
+		}, nil
+	}
+}
+
+// handleDropDatabase drops the PR database from shared RDS
+func handleDropDatabase(ctx context.Context, prNumber int) (Response, error) {
+	dbName := fmt.Sprintf("pr_%d", prNumber)
 
 	// Get credentials
 	creds, err := getDBCredentials(ctx)
@@ -244,13 +274,13 @@ func handler(ctx context.Context, event Request) (Response, error) {
 	}
 
 	// Validate pr_number contains only digits (sanitization for DROP DATABASE)
-	prStr := strconv.Itoa(event.PRNumber)
+	prStr := strconv.Itoa(prNumber)
 	for _, c := range prStr {
 		if c < '0' || c > '9' {
 			return Response{
 				StatusCode: 400,
 				Body: ResponseBody{
-					Message:  fmt.Sprintf("Invalid pr_number: %d", event.PRNumber),
+					Message:  fmt.Sprintf("Invalid pr_number: %d", prNumber),
 					Database: dbName,
 					Action:   "error",
 				},
@@ -286,6 +316,197 @@ func handler(ctx context.Context, event Request) (Response, error) {
 			Action:   "dropped",
 		},
 	}, nil
+}
+
+// handleCleanupENIs deletes orphaned ENIs for a PR
+func handleCleanupENIs(ctx context.Context, prNumber int) (Response, error) {
+	pattern := fmt.Sprintf("*pr-%d*", prNumber)
+	log.Printf("Cleaning up ENIs matching pattern: %s", pattern)
+
+	// Find ENIs matching the PR pattern
+	describeInput := &ec2.DescribeNetworkInterfacesInput{
+		Filters: []types.Filter{
+			{
+				Name:   stringPtr("description"),
+				Values: []string{fmt.Sprintf("*roxas*pr-%d*", prNumber)},
+			},
+		},
+	}
+
+	result, err := ec2Client.DescribeNetworkInterfaces(ctx, describeInput)
+	if err != nil {
+		log.Printf("Error describing ENIs: %v", err)
+		return Response{
+			StatusCode: 500,
+			Body: ResponseBody{
+				Message: fmt.Sprintf("Error describing ENIs: %v", err),
+				Action:  "error",
+			},
+		}, nil
+	}
+
+	deletedCount := 0
+	skippedCount := 0
+	var deleteErrors []string
+
+	for _, eni := range result.NetworkInterfaces {
+		eniID := *eni.NetworkInterfaceId
+
+		// Only delete ENIs that are "available" (not in-use)
+		if eni.Status != types.NetworkInterfaceStatusAvailable {
+			log.Printf("Skipping ENI %s - status is %s (not available)", eniID, eni.Status)
+			skippedCount++
+			continue
+		}
+
+		log.Printf("Deleting available ENI: %s", eniID)
+		_, err := ec2Client.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
+			NetworkInterfaceId: &eniID,
+		})
+		if err != nil {
+			log.Printf("Error deleting ENI %s: %v", eniID, err)
+			deleteErrors = append(deleteErrors, fmt.Sprintf("%s: %v", eniID, err))
+			continue
+		}
+		deletedCount++
+	}
+
+	msg := fmt.Sprintf("ENI cleanup complete: %d deleted, %d skipped (in-use)", deletedCount, skippedCount)
+	if len(deleteErrors) > 0 {
+		msg += fmt.Sprintf(", %d errors: %s", len(deleteErrors), strings.Join(deleteErrors, "; "))
+	}
+
+	log.Print(msg)
+	return Response{
+		StatusCode: 200,
+		Body: ResponseBody{
+			Message: msg,
+			Action:  "enis_cleaned",
+		},
+	}, nil
+}
+
+// handleCleanupSGs deletes orphaned security groups for a PR
+func handleCleanupSGs(ctx context.Context, prNumber int) (Response, error) {
+	pattern := fmt.Sprintf("roxas*pr-%d*", prNumber)
+	log.Printf("Cleaning up security groups matching pattern: %s", pattern)
+
+	// Find security groups matching the PR pattern
+	describeInput := &ec2.DescribeSecurityGroupsInput{
+		Filters: []types.Filter{
+			{
+				Name:   stringPtr("group-name"),
+				Values: []string{pattern},
+			},
+		},
+	}
+
+	result, err := ec2Client.DescribeSecurityGroups(ctx, describeInput)
+	if err != nil {
+		log.Printf("Error describing security groups: %v", err)
+		return Response{
+			StatusCode: 500,
+			Body: ResponseBody{
+				Message: fmt.Sprintf("Error describing security groups: %v", err),
+				Action:  "error",
+			},
+		}, nil
+	}
+
+	deletedCount := 0
+	skippedCount := 0
+	var deleteErrors []string
+
+	for _, sg := range result.SecurityGroups {
+		sgID := *sg.GroupId
+		sgName := *sg.GroupName
+
+		// Check if any ENIs are using this security group
+		eniCheck := &ec2.DescribeNetworkInterfacesInput{
+			Filters: []types.Filter{
+				{
+					Name:   stringPtr("group-id"),
+					Values: []string{sgID},
+				},
+			},
+		}
+
+		eniResult, err := ec2Client.DescribeNetworkInterfaces(ctx, eniCheck)
+		if err != nil {
+			log.Printf("Error checking ENIs for SG %s: %v", sgID, err)
+			deleteErrors = append(deleteErrors, fmt.Sprintf("%s: %v", sgID, err))
+			continue
+		}
+
+		if len(eniResult.NetworkInterfaces) > 0 {
+			log.Printf("Skipping SG %s (%s) - %d ENI(s) still using it", sgID, sgName, len(eniResult.NetworkInterfaces))
+			skippedCount++
+			continue
+		}
+
+		log.Printf("Deleting orphaned security group: %s (%s)", sgID, sgName)
+		_, err = ec2Client.DeleteSecurityGroup(ctx, &ec2.DeleteSecurityGroupInput{
+			GroupId: &sgID,
+		})
+		if err != nil {
+			log.Printf("Error deleting SG %s: %v", sgID, err)
+			deleteErrors = append(deleteErrors, fmt.Sprintf("%s: %v", sgID, err))
+			continue
+		}
+		deletedCount++
+	}
+
+	msg := fmt.Sprintf("SG cleanup complete: %d deleted, %d skipped (in-use)", deletedCount, skippedCount)
+	if len(deleteErrors) > 0 {
+		msg += fmt.Sprintf(", %d errors: %s", len(deleteErrors), strings.Join(deleteErrors, "; "))
+	}
+
+	log.Print(msg)
+	return Response{
+		StatusCode: 200,
+		Body: ResponseBody{
+			Message: msg,
+			Action:  "sgs_cleaned",
+		},
+	}, nil
+}
+
+// handleCleanupAll cleans up both ENIs and security groups for a PR
+func handleCleanupAll(ctx context.Context, prNumber int) (Response, error) {
+	log.Printf("Running full cleanup for PR %d", prNumber)
+
+	// First clean up ENIs (must be done before SGs)
+	eniResp, err := handleCleanupENIs(ctx, prNumber)
+	if err != nil {
+		return eniResp, err
+	}
+	if eniResp.StatusCode != 200 {
+		return eniResp, nil
+	}
+
+	// Then clean up security groups
+	sgResp, err := handleCleanupSGs(ctx, prNumber)
+	if err != nil {
+		return sgResp, err
+	}
+	if sgResp.StatusCode != 200 {
+		return sgResp, nil
+	}
+
+	msg := fmt.Sprintf("Full cleanup complete. ENIs: %s | SGs: %s", eniResp.Body.Message, sgResp.Body.Message)
+	log.Print(msg)
+	return Response{
+		StatusCode: 200,
+		Body: ResponseBody{
+			Message: msg,
+			Action:  "all_cleaned",
+		},
+	}, nil
+}
+
+// stringPtr returns a pointer to a string
+func stringPtr(s string) *string {
+	return &s
 }
 
 func main() {
