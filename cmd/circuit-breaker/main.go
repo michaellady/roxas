@@ -67,6 +67,7 @@ type EC2Client interface {
 
 var (
 	functionPrefix = getEnv("FUNCTION_PREFIX", "roxas-")
+	dryRun         = getEnv("DRY_RUN", "false") == "true"
 	lambdaClient   LambdaClient
 	rdsClient      RDSClient
 	ec2Client      EC2Client
@@ -83,6 +84,10 @@ func handler(ctx context.Context, snsEvent events.SNSEvent) (Response, error) {
 	// Log the triggering event
 	if len(snsEvent.Records) > 0 {
 		log.Printf("Circuit breaker triggered by SNS: %s", snsEvent.Records[0].SNS.Message)
+	}
+
+	if dryRun {
+		log.Println("*** DRY RUN MODE - no resources will be modified ***")
 	}
 
 	// Initialize AWS clients if not set (allows injection for testing)
@@ -154,6 +159,12 @@ func disableLambdaFunctions(ctx context.Context) (disabled, failed []string) {
 			}
 
 			// Disable function by setting concurrency to 0
+			if dryRun {
+				log.Printf("[DRY RUN] Would disable Lambda: %s", functionName)
+				disabled = append(disabled, functionName)
+				continue
+			}
+
 			_, err := lambdaClient.PutFunctionConcurrency(ctx, &awslambda.PutFunctionConcurrencyInput{
 				FunctionName:                 &functionName,
 				ReservedConcurrentExecutions: ptr(int32(0)),
@@ -207,6 +218,12 @@ func stopRDSInstances(ctx context.Context) (stopped, failed []string) {
 		}
 
 		// Stop the instance
+		if dryRun {
+			log.Printf("[DRY RUN] Would stop RDS: %s", dbID)
+			stopped = append(stopped, dbID)
+			continue
+		}
+
 		_, err := rdsClient.StopDBInstance(ctx, &rds.StopDBInstanceInput{
 			DBInstanceIdentifier: &dbID,
 		})
@@ -263,6 +280,12 @@ func stopNATInstances(ctx context.Context) (stopped, failed []string) {
 			}
 
 			// Stop the instance
+			if dryRun {
+				log.Printf("[DRY RUN] Would stop NAT instance: %s (%s)", instanceID, instanceName)
+				stopped = append(stopped, instanceID)
+				continue
+			}
+
 			_, err := ec2Client.StopInstances(ctx, &ec2.StopInstancesInput{
 				InstanceIds: []string{instanceID},
 			})
