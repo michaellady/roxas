@@ -160,11 +160,18 @@ jobs:
           FUNCTION_NAME="roxas-webhook-handler-pr-${{ env.PR_NUMBER }}-dev"
           echo "Forcing Lambda $FUNCTION_NAME to refresh configuration..."
 
-          # Update function configuration with a dummy env var change to force cold start
-          # This ensures the Lambda picks up any updated Secrets Manager values
+          # Get current env vars as JSON, add timestamp, update Lambda
+          # This forces a cold start so Lambda picks up updated Secrets Manager values
+          CURRENT_ENV=$(aws lambda get-function-configuration \
+            --function-name "$FUNCTION_NAME" \
+            --query 'Environment.Variables' --output json)
+
+          # Add or update the _DEPLOY_TIMESTAMP variable
+          UPDATED_ENV=$(echo "$CURRENT_ENV" | jq --arg ts "$(date +%s)" '. + {"_DEPLOY_TIMESTAMP": $ts}')
+
           aws lambda update-function-configuration \
             --function-name "$FUNCTION_NAME" \
-            --environment "Variables={$(aws lambda get-function-configuration --function-name "$FUNCTION_NAME" --query 'Environment.Variables' --output json | jq -r 'to_entries | map("\(.key)=\(.value)") | join(",")'),_DEPLOY_TIMESTAMP=$(date +%s)}" \
+            --environment "{\"Variables\": $UPDATED_ENV}" \
             --query 'LastModified' --output text
 
           # Wait for update to complete
