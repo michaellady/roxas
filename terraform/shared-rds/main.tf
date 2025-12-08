@@ -24,15 +24,15 @@ provider "aws" {
   region = var.aws_region
 }
 
-# Reference existing VPC from dev environment
+# Reference existing VPC from dev environment (created by terraform/shared)
 data "aws_vpc" "main" {
   filter {
     name   = "tag:Name"
-    values = ["roxas-webhook-handler-dev-vpc"]
+    values = ["roxas-dev-vpc"]
   }
 }
 
-# Reference existing private subnets
+# Reference existing private subnets (created by terraform/shared)
 data "aws_subnets" "private" {
   filter {
     name   = "vpc-id"
@@ -41,17 +41,17 @@ data "aws_subnets" "private" {
 
   filter {
     name   = "tag:Name"
-    values = ["roxas-webhook-handler-dev-private-*"]
+    values = ["roxas-dev-private-*"]
   }
 }
 
-# Reference existing RDS security group
+# Reference existing RDS security group (created by terraform/shared)
 data "aws_security_group" "rds" {
   vpc_id = data.aws_vpc.main.id
 
   filter {
     name   = "tag:Name"
-    values = ["roxas-webhook-handler-dev-rds-sg"]
+    values = ["roxas-dev-rds-sg"]
   }
 }
 
