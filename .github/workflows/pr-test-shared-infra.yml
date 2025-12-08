@@ -1,0 +1,390 @@
+name: PR Test Shared Infrastructure
+
+# Test shared infrastructure changes from a PR before merging
+# This workflow:
+# 1. Creates a deployment lock to prevent conflicts with other PR deploys
+# 2. Notifies all open PRs that shared infra is being modified
+# 3. Runs terraform plan/apply for shared infrastructure
+# 4. Cleans up and notifies when done
+
+on:
+  pull_request:
+    paths:
+      - 'terraform/shared/**'
+      - 'terraform/shared-rds/**'
+      - 'terraform/backend-shared-*.hcl'
+      - 'cmd/circuit-breaker/**'
+      - 'cmd/pr-cleanup/**'
+      - '.github/workflows/shared-infra.yml'
+      - '.github/workflows/pr-test-shared-infra.yml'
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to test (leave empty for current branch)'
+        required: false
+        type: string
+
+jobs:
+  # First job: Notify all open PRs that shared infra deployment is starting
+  notify-start:
+    name: Notify Shared Infra Deploy Starting
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+    outputs:
+      notified_prs: ${{ steps.notify.outputs.notified_prs }}
+
+    steps:
+      - name: Notify open PRs about shared infra deployment
+        id: notify
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const currentPR = context.payload.pull_request?.number || '${{ inputs.pr_number }}';
+
+            // Get all open PRs
+            const { data: openPRs } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open'
+            });
+
+            const notifiedPRs = [];
+
+            for (const pr of openPRs) {
+              // Don't notify the PR that triggered this workflow
+              if (pr.number == currentPR) continue;
+
+              try {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  body: `## ⚠️ Shared Infrastructure Deployment In Progress
+
+            **PR #${currentPR}** is testing shared infrastructure changes.
+
+            **What this means:**
+            - Your PR's dev environment may experience brief interruptions
+            - Wait for the "✅ Shared Infra Complete" notification before deploying
+            - If your deployment fails, re-run it after shared infra deployment completes
+
+            **Affected resources:**
+            - VPC, subnets, security groups
+            - RDS instance and credentials
+            - Cleanup Lambda functions
+            - Circuit breaker infrastructure
+
+            🔗 [View shared infra workflow run](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`
+                });
+                notifiedPRs.push(pr.number);
+                console.log(`Notified PR #${pr.number}`);
+              } catch (error) {
+                console.log(`Failed to notify PR #${pr.number}: ${error.message}`);
+              }
+            }
+
+            core.setOutput('notified_prs', JSON.stringify(notifiedPRs));
+            console.log(`Notified ${notifiedPRs.length} PRs: ${notifiedPRs.join(', ')}`);
+
+  # Deploy shared infrastructure to dev
+  deploy-shared-dev:
+    name: Test Shared Infra (Dev)
+    runs-on: ubuntu-latest
+    needs: [notify-start]
+    environment:
+      name: shared-infra-dev
+      url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+    permissions:
+      contents: read
+      pull-requests: write
+
+    # Prevent concurrent shared infra deployments
+    concurrency:
+      group: deploy-shared-dev
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache-dependency-path: go.sum
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Terraform Init (shared)
+        working-directory: terraform/shared
+        run: terraform init -backend-config=../backend-shared-dev.hcl
+
+      - name: Setup Terraform Workspace (shared)
+        working-directory: terraform/shared
+        run: |
+          terraform workspace new dev || terraform workspace select dev
+
+      - name: Terraform Plan (shared)
+        working-directory: terraform/shared
+        env:
+          TF_VAR_environment: dev
+          TF_VAR_budget_alert_emails: '["${{ secrets.BUDGET_ALERT_EMAIL }}"]'
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply (shared)
+        working-directory: terraform/shared
+        env:
+          TF_VAR_environment: dev
+          TF_VAR_budget_alert_emails: '["${{ secrets.BUDGET_ALERT_EMAIL }}"]'
+        run: terraform apply -auto-approve tfplan
+
+      - name: Test Circuit Breaker (Dry Run)
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          FUNCTION_NAME="roxas-dev-circuit-breaker"
+          echo "Testing circuit breaker Lambda in dry-run mode..."
+
+          # Set DRY_RUN=true for testing
+          aws lambda update-function-configuration \
+            --function-name "$FUNCTION_NAME" \
+            --environment 'Variables={FUNCTION_PREFIX=roxas-,DRY_RUN=true}' \
+            --query 'FunctionArn' --output text
+
+          aws lambda wait function-updated --function-name "$FUNCTION_NAME"
+
+          # Invoke with test payload
+          aws lambda invoke \
+            --function-name "$FUNCTION_NAME" \
+            --cli-binary-format raw-in-base64-out \
+            --payload '{"Records":[{"Sns":{"Message":"{\"test\":true,\"source\":\"ci_test\"}"}}]}' \
+            /tmp/circuit-breaker-response.json
+
+          echo "Circuit breaker response:"
+          cat /tmp/circuit-breaker-response.json | jq .
+
+          STATUS=$(cat /tmp/circuit-breaker-response.json | jq -r '.status')
+          if [ "$STATUS" != "circuit_breaker_activated" ]; then
+            echo "ERROR: Circuit breaker did not activate properly"
+            exit 1
+          fi
+
+          # Remove DRY_RUN
+          aws lambda update-function-configuration \
+            --function-name "$FUNCTION_NAME" \
+            --environment 'Variables={FUNCTION_PREFIX=roxas-}' \
+            --query 'FunctionArn' --output text
+
+          aws lambda wait function-updated --function-name "$FUNCTION_NAME"
+          echo "✓ Circuit breaker tested and ready"
+
+      - name: Comment PR with results
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const success = '${{ job.status }}' === 'success';
+            const emoji = success ? '✅' : '❌';
+            const status = success ? 'succeeded' : 'failed';
+
+            const body = `## ${emoji} Shared Infrastructure Deploy ${status.charAt(0).toUpperCase() + status.slice(1)}
+
+            **Module:** \`terraform/shared\` (dev)
+            **Status:** ${status}
+            **Run:** [View logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
+
+            ${success ? `
+            **Resources updated:**
+            - VPC and networking
+            - Security groups
+            - Cleanup Lambda
+            - Circuit breaker Lambda
+            ` : `
+            **Next steps:**
+            - Check the workflow logs for error details
+            - Fix the issue and push again
+            `}`;
+
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request?.number || ${{ inputs.pr_number || 0 }},
+              body: body
+            });
+
+  # Deploy shared-rds infrastructure
+  deploy-shared-rds:
+    name: Test Shared RDS Infra (Dev)
+    runs-on: ubuntu-latest
+    needs: [deploy-shared-dev]
+    environment:
+      name: shared-rds-dev
+      url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+    permissions:
+      contents: read
+      pull-requests: write
+
+    concurrency:
+      group: deploy-shared-rds-dev
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache-dependency-path: go.sum
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Terraform Init (shared-rds)
+        working-directory: terraform/shared-rds
+        run: terraform init -backend-config=../backend-shared-rds-dev.hcl
+
+      - name: Terraform Plan (shared-rds)
+        working-directory: terraform/shared-rds
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply (shared-rds)
+        working-directory: terraform/shared-rds
+        run: terraform apply -auto-approve tfplan
+
+      - name: Test Cleanup Lambda
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          FUNCTION_NAME="roxas-shared-rds-cleanup"
+          echo "Testing cleanup Lambda with non-existent PR..."
+
+          # Test with a PR number that doesn't exist (should return "skipped")
+          aws lambda invoke \
+            --function-name "$FUNCTION_NAME" \
+            --cli-binary-format raw-in-base64-out \
+            --payload '{"pr_number": 99999, "action": "drop"}' \
+            /tmp/cleanup-response.json
+
+          echo "Cleanup Lambda response:"
+          cat /tmp/cleanup-response.json | jq .
+
+          ACTION=$(cat /tmp/cleanup-response.json | jq -r '.body.action')
+          if [ "$ACTION" != "skipped" ]; then
+            echo "ERROR: Expected 'skipped' action for non-existent database"
+            exit 1
+          fi
+
+          echo "✓ Cleanup Lambda working correctly"
+
+      - name: Comment PR with results
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const success = '${{ job.status }}' === 'success';
+            const emoji = success ? '✅' : '❌';
+            const status = success ? 'succeeded' : 'failed';
+
+            const body = `## ${emoji} Shared RDS Infrastructure Deploy ${status.charAt(0).toUpperCase() + status.slice(1)}
+
+            **Module:** \`terraform/shared-rds\` (dev)
+            **Status:** ${status}
+            **Run:** [View logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
+
+            ${success ? `
+            **Resources updated:**
+            - Shared RDS instance
+            - PR cleanup Lambda (with EC2 permissions)
+            - CloudWatch alarms and dashboard
+            ` : `
+            **Next steps:**
+            - Check the workflow logs for error details
+            - Fix the issue and push again
+            `}`;
+
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request?.number || ${{ inputs.pr_number || 0 }},
+              body: body
+            });
+
+  # Notify all PRs when done
+  notify-complete:
+    name: Notify Shared Infra Complete
+    runs-on: ubuntu-latest
+    needs: [notify-start, deploy-shared-dev, deploy-shared-rds]
+    if: always()
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Notify open PRs that shared infra deployment is complete
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const currentPR = context.payload.pull_request?.number || '${{ inputs.pr_number }}';
+            const notifiedPRs = JSON.parse('${{ needs.notify-start.outputs.notified_prs }}' || '[]');
+            const devSuccess = '${{ needs.deploy-shared-dev.result }}' === 'success';
+            const rdsSuccess = '${{ needs.deploy-shared-rds.result }}' === 'success';
+            const allSuccess = devSuccess && rdsSuccess;
+
+            const emoji = allSuccess ? '✅' : '⚠️';
+            const status = allSuccess ? 'completed successfully' : 'completed with issues';
+
+            for (const prNumber of notifiedPRs) {
+              try {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  body: `## ${emoji} Shared Infrastructure Deployment ${status}
+
+            **PR #${currentPR}** finished testing shared infrastructure changes.
+
+            **Results:**
+            - terraform/shared: ${devSuccess ? '✅ Success' : '❌ Failed'}
+            - terraform/shared-rds: ${rdsSuccess ? '✅ Success' : '❌ Failed'}
+
+            ${allSuccess ? `
+            **You can now:**
+            - Re-run any failed deployments
+            - Continue normal development
+            ` : `
+            **Note:** Some shared infra changes failed. Your deployments may still be affected.
+            Check PR #${currentPR} for details.
+            `}
+
+            🔗 [View workflow run](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`
+                });
+                console.log(`Notified PR #${prNumber} of completion`);
+              } catch (error) {
+                console.log(`Failed to notify PR #${prNumber}: ${error.message}`);
+              }
+            }
