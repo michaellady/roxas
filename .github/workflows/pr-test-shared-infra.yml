@@ -280,7 +280,12 @@ jobs:
 
       - name: Terraform Init (shared-rds)
         working-directory: terraform/shared-rds
-        run: terraform init -backend-config=../backend-shared-rds-dev.hcl
+        run: |
+          terraform init \
+            -backend-config="bucket=roxas-terraform-state-dev" \
+            -backend-config="key=shared-rds/terraform.tfstate" \
+            -backend-config="region=us-east-1" \
+            -backend-config="dynamodb_table=roxas-terraform-locks-dev"
 
       - name: Terraform Plan (shared-rds)
         working-directory: terraform/shared-rds
