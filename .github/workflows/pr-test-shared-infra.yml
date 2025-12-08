@@ -93,9 +93,7 @@ jobs:
     name: Test Shared Infra (Dev)
     runs-on: ubuntu-latest
     needs: [notify-start]
-    environment:
-      name: shared-infra-dev
-      url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    environment: dev
 
     permissions:
       contents: read
@@ -230,9 +228,7 @@ jobs:
     name: Test Shared RDS Infra (Dev)
     runs-on: ubuntu-latest
     needs: [deploy-shared-dev]
-    environment:
-      name: shared-rds-dev
-      url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    environment: dev
 
     permissions:
       contents: read
