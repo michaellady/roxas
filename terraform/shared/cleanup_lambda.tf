@@ -165,13 +165,13 @@ resource "null_resource" "cleanup_lambda_build" {
   }
 
   provisioner "local-exec" {
-    command = <<-EOT
+    command     = <<-EOT
       cd ${path.module}/../..
       GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o ${path.module}/lambda/bootstrap ./cmd/pr-cleanup
-      cd ${path.module}/lambda
-      zip -j pr_cleanup.zip bootstrap
-      rm bootstrap
+      zip -j ${path.module}/lambda/pr_cleanup.zip ${path.module}/lambda/bootstrap
+      rm ${path.module}/lambda/bootstrap
     EOT
+    working_dir = path.module
   }
 }
 
