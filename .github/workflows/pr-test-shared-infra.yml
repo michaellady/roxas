@@ -126,6 +126,15 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
+      - name: Build Cleanup Lambda
+        run: |
+          mkdir -p terraform/shared/lambda
+          GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o terraform/shared/lambda/bootstrap ./cmd/pr-cleanup
+          cd terraform/shared/lambda
+          zip -j pr_cleanup.zip bootstrap
+          rm bootstrap
+          ls -la
+
       - name: Terraform Init (shared)
         working-directory: terraform/shared
         run: terraform init -backend-config=../backend-shared-dev.hcl
@@ -259,6 +268,15 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Build Cleanup Lambda
+        run: |
+          mkdir -p terraform/shared-rds/lambda
+          GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o terraform/shared-rds/lambda/bootstrap ./cmd/pr-cleanup
+          cd terraform/shared-rds/lambda
+          zip -j pr_cleanup.zip bootstrap
+          rm bootstrap
+          ls -la
 
       - name: Terraform Init (shared-rds)
         working-directory: terraform/shared-rds
