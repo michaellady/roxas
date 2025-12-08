@@ -134,8 +134,18 @@ resource "aws_db_instance" "shared" {
     Description = "Shared RDS instance for all PR deployments"
   })
 
+  # Avoid unexpected restarts - apply during maintenance window
+  apply_immediately = false
+
   lifecycle {
+    # Dev: allow destruction for cleanup
+    # Prod: would set prevent_destroy = true
     prevent_destroy = false
+
+    # Never recreate RDS - always update in-place
+    # This prevents data loss from PR databases
+    create_before_destroy = false
+
     ignore_changes = [
       # Ignore password changes after initial creation
       password,
@@ -392,6 +402,8 @@ resource "aws_cloudwatch_log_group" "cleanup_lambda" {
 }
 
 # Build cleanup Lambda binary (Go)
+# Note: In CI, the workflow builds the zip before terraform runs
+# This null_resource handles local development builds
 resource "null_resource" "cleanup_lambda_build" {
   triggers = {
     source_hash = filemd5("${path.module}/../../cmd/pr-cleanup/main.go")
@@ -401,9 +413,8 @@ resource "null_resource" "cleanup_lambda_build" {
     command = <<-EOT
       cd ${path.module}/../..
       GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o ${path.module}/lambda/bootstrap ./cmd/pr-cleanup
-      cd ${path.module}/lambda
-      zip -j pr_cleanup.zip bootstrap
-      rm bootstrap
+      zip -j ${path.module}/lambda/pr_cleanup.zip ${path.module}/lambda/bootstrap
+      rm -f ${path.module}/lambda/bootstrap
     EOT
   }
 }

@@ -6,8 +6,10 @@ on:
       - main
     paths:
       - 'terraform/shared/**'
+      - 'terraform/shared-rds/**'
       - 'terraform/backend-shared-*.hcl'
       - 'cmd/circuit-breaker/**'
+      - 'cmd/pr-cleanup/**'
       - '.github/workflows/shared-infra.yml'
   workflow_dispatch:
     inputs:
@@ -56,6 +58,16 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Build Cleanup Lambda (shared)
+        run: |
+          echo "Building cleanup Lambda for arm64..."
+          mkdir -p terraform/shared/lambda
+          GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o terraform/shared/lambda/bootstrap ./cmd/pr-cleanup
+          cd terraform/shared/lambda
+          zip -j pr_cleanup.zip bootstrap
+          rm bootstrap
+          ls -la pr_cleanup.zip
 
       - name: Terraform Init
         working-directory: terraform/shared
@@ -140,14 +152,107 @@ jobs:
           echo "- SNS Topic: roxas-dev-budget-circuit-breaker" >> $GITHUB_STEP_SUMMARY
           echo "- Triggers at: 200% of \$100 budget" >> $GITHUB_STEP_SUMMARY
 
+  # Deploy shared RDS after shared VPC/networking is ready
+  deploy-shared-rds-dev:
+    name: Deploy Shared RDS (Dev)
+    runs-on: ubuntu-latest
+    environment: dev
+    needs: [deploy-dev]
+    if: github.event_name == 'push' || github.event.inputs.environment == 'dev'
+
+    permissions:
+      contents: read
+
+    concurrency:
+      group: deploy-shared-rds-dev
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache-dependency-path: go.sum
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Build Cleanup Lambda
+        run: |
+          echo "Building cleanup Lambda for arm64..."
+          mkdir -p terraform/shared-rds/lambda
+          GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o terraform/shared-rds/lambda/bootstrap ./cmd/pr-cleanup
+          cd terraform/shared-rds/lambda
+          zip -j pr_cleanup.zip bootstrap
+          rm bootstrap
+          ls -la pr_cleanup.zip
+
+      - name: Terraform Init
+        working-directory: terraform/shared-rds
+        run: terraform init -backend-config=../backend-shared-rds-dev.hcl
+
+      - name: Terraform Plan
+        working-directory: terraform/shared-rds
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        working-directory: terraform/shared-rds
+        run: terraform apply -auto-approve tfplan
+
+      - name: Smoke Test - Cleanup Lambda
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          FUNCTION_NAME="roxas-shared-rds-cleanup"
+          echo "Testing cleanup Lambda with non-existent PR (should return 'skipped')..."
+
+          aws lambda invoke \
+            --function-name "$FUNCTION_NAME" \
+            --cli-binary-format raw-in-base64-out \
+            --payload '{"pr_number": 99999, "action": "drop"}' \
+            /tmp/cleanup-response.json
+
+          echo "Cleanup Lambda response:"
+          cat /tmp/cleanup-response.json | jq .
+
+          ACTION=$(cat /tmp/cleanup-response.json | jq -r '.body.action')
+          if [ "$ACTION" != "skipped" ]; then
+            echo "ERROR: Expected 'skipped' action for non-existent database, got: $ACTION"
+            exit 1
+          fi
+
+          echo "✓ Cleanup Lambda working correctly"
+
+      - name: Output Shared RDS Status
+        run: |
+          echo "### Shared RDS Deployed to Dev" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Resources:**" >> $GITHUB_STEP_SUMMARY
+          echo "- RDS Instance: roxas-shared-pr-rds" >> $GITHUB_STEP_SUMMARY
+          echo "- Cleanup Lambda: roxas-shared-rds-cleanup (smoke tested)" >> $GITHUB_STEP_SUMMARY
+          echo "- CloudWatch Dashboard: roxas-shared-rds-health" >> $GITHUB_STEP_SUMMARY
+
   # Deploy to prod after successful dev (on push to main) or directly (workflow_dispatch with prod)
+  # Note: shared-rds is dev-only (PR databases), so prod only deploys terraform/shared
   deploy-prod:
     name: Deploy to Prod
     runs-on: ubuntu-latest
     environment: prod
-    needs: [deploy-dev]
+    needs: [deploy-dev, deploy-shared-rds-dev]
     # Run if: push to main (after dev succeeds) OR workflow_dispatch with prod (even if dev was skipped)
-    if: always() && (github.event_name == 'push' && needs.deploy-dev.result == 'success') || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'prod')
+    if: always() && (github.event_name == 'push' && needs.deploy-dev.result == 'success' && needs.deploy-shared-rds-dev.result == 'success') || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'prod')
 
     permissions:
       contents: read
@@ -177,6 +282,16 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Build Cleanup Lambda (shared)
+        run: |
+          echo "Building cleanup Lambda for arm64..."
+          mkdir -p terraform/shared/lambda
+          GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o terraform/shared/lambda/bootstrap ./cmd/pr-cleanup
+          cd terraform/shared/lambda
+          zip -j pr_cleanup.zip bootstrap
+          rm bootstrap
+          ls -la pr_cleanup.zip
 
       - name: Terraform Init
         working-directory: terraform/shared
