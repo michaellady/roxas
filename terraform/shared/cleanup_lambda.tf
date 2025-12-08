@@ -168,9 +168,8 @@ resource "null_resource" "cleanup_lambda_build" {
     command = <<-EOT
       cd ${path.module}/../..
       GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o ${path.module}/lambda/bootstrap ./cmd/pr-cleanup
-      cd ${path.module}/lambda
-      zip -j pr_cleanup.zip bootstrap
-      rm bootstrap
+      zip -j ${path.module}/lambda/pr_cleanup.zip ${path.module}/lambda/bootstrap
+      rm -f ${path.module}/lambda/bootstrap
     EOT
   }
 }
