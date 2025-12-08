@@ -112,7 +112,7 @@ jobs:
         run: terraform destroy -auto-approve
 
       - name: Cleanup Orphaned ENIs and Security Groups
-        if: steps.check-workspace.outputs.exists == 'true'
+        if: always() && steps.check-workspace.outputs.exists == 'true'
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
           LAMBDA_NAME="roxas-shared-rds-cleanup"

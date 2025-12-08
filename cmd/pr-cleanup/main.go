@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
@@ -320,15 +321,15 @@ func handleDropDatabase(ctx context.Context, prNumber int) (Response, error) {
 
 // handleCleanupENIs deletes orphaned ENIs for a PR
 func handleCleanupENIs(ctx context.Context, prNumber int) (Response, error) {
-	pattern := fmt.Sprintf("*pr-%d*", prNumber)
-	log.Printf("Cleaning up ENIs matching pattern: %s", pattern)
+	pattern := fmt.Sprintf("*roxas*pr-%d*", prNumber)
+	log.Printf("Cleaning up ENIs matching description pattern: %s", pattern)
 
 	// Find ENIs matching the PR pattern
 	describeInput := &ec2.DescribeNetworkInterfacesInput{
 		Filters: []types.Filter{
 			{
-				Name:   stringPtr("description"),
-				Values: []string{fmt.Sprintf("*roxas*pr-%d*", prNumber)},
+				Name:   aws.String("description"),
+				Values: []string{pattern},
 			},
 		},
 	}
@@ -374,6 +375,14 @@ func handleCleanupENIs(ctx context.Context, prNumber int) (Response, error) {
 	msg := fmt.Sprintf("ENI cleanup complete: %d deleted, %d skipped (in-use)", deletedCount, skippedCount)
 	if len(deleteErrors) > 0 {
 		msg += fmt.Sprintf(", %d errors: %s", len(deleteErrors), strings.Join(deleteErrors, "; "))
+		log.Print(msg)
+		return Response{
+			StatusCode: 500,
+			Body: ResponseBody{
+				Message: msg,
+				Action:  "error",
+			},
+		}, nil
 	}
 
 	log.Print(msg)
@@ -389,13 +398,13 @@ func handleCleanupENIs(ctx context.Context, prNumber int) (Response, error) {
 // handleCleanupSGs deletes orphaned security groups for a PR
 func handleCleanupSGs(ctx context.Context, prNumber int) (Response, error) {
 	pattern := fmt.Sprintf("roxas*pr-%d*", prNumber)
-	log.Printf("Cleaning up security groups matching pattern: %s", pattern)
+	log.Printf("Cleaning up security groups matching group-name pattern: %s", pattern)
 
 	// Find security groups matching the PR pattern
 	describeInput := &ec2.DescribeSecurityGroupsInput{
 		Filters: []types.Filter{
 			{
-				Name:   stringPtr("group-name"),
+				Name:   aws.String("group-name"),
 				Values: []string{pattern},
 			},
 		},
@@ -425,7 +434,7 @@ func handleCleanupSGs(ctx context.Context, prNumber int) (Response, error) {
 		eniCheck := &ec2.DescribeNetworkInterfacesInput{
 			Filters: []types.Filter{
 				{
-					Name:   stringPtr("group-id"),
+					Name:   aws.String("group-id"),
 					Values: []string{sgID},
 				},
 			},
@@ -459,6 +468,14 @@ func handleCleanupSGs(ctx context.Context, prNumber int) (Response, error) {
 	msg := fmt.Sprintf("SG cleanup complete: %d deleted, %d skipped (in-use)", deletedCount, skippedCount)
 	if len(deleteErrors) > 0 {
 		msg += fmt.Sprintf(", %d errors: %s", len(deleteErrors), strings.Join(deleteErrors, "; "))
+		log.Print(msg)
+		return Response{
+			StatusCode: 500,
+			Body: ResponseBody{
+				Message: msg,
+				Action:  "error",
+			},
+		}, nil
 	}
 
 	log.Print(msg)
@@ -502,11 +519,6 @@ func handleCleanupAll(ctx context.Context, prNumber int) (Response, error) {
 			Action:  "all_cleaned",
 		},
 	}, nil
-}
-
-// stringPtr returns a pointer to a string
-func stringPtr(s string) *string {
-	return &s
 }
 
 func main() {

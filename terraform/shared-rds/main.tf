@@ -341,6 +341,48 @@ resource "aws_iam_role_policy" "cleanup_lambda_secrets" {
   })
 }
 
+# EC2 permissions for ENI and Security Group cleanup
+resource "aws_iam_role_policy" "cleanup_lambda_ec2" {
+  name = "ec2-cleanup-access"
+  role = aws_iam_role.cleanup_lambda.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "DescribeENIsAndSGs"
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:DescribeSecurityGroups"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "DeleteOrphanedENIs"
+        Effect = "Allow"
+        Action = [
+          "ec2:DeleteNetworkInterface"
+        ]
+        Resource = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:network-interface/*"
+        Condition = {
+          StringLike = {
+            "ec2:Description" = "*roxas*"
+          }
+        }
+      },
+      {
+        Sid    = "DeleteOrphanedSecurityGroups"
+        Effect = "Allow"
+        Action = [
+          "ec2:DeleteSecurityGroup"
+        ]
+        Resource = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:security-group/*"
+      }
+    ]
+  })
+}
+
 # CloudWatch log group for cleanup Lambda
 resource "aws_cloudwatch_log_group" "cleanup_lambda" {
   name              = "/aws/lambda/roxas-shared-rds-cleanup"
