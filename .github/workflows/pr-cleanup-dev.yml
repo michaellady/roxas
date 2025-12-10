@@ -64,41 +64,67 @@ jobs:
           PR_NUMBER="${{ github.event.pull_request.number }}"
           LAMBDA_NAME="roxas-shared-rds-cleanup"
 
-          echo "Invoking cleanup Lambda for PR database pr_${PR_NUMBER}..."
+          echo "Dropping PR database pr_${PR_NUMBER} via cleanup Lambda..."
 
-          # Invoke the VPC Lambda to drop the database
-          # The Lambda runs inside the VPC and can reach the private RDS
-          RESPONSE=$(aws lambda invoke \
-            --function-name "$LAMBDA_NAME" \
-            --payload "{\"pr_number\": ${PR_NUMBER}, \"action\": \"drop\"}" \
-            --cli-binary-format raw-in-base64-out \
-            /tmp/lambda-response.json 2>&1) || {
-            echo "Warning: Lambda invocation failed"
-            echo "$RESPONSE"
-            echo "Skipping database cleanup - proceeding with infrastructure teardown"
-            exit 0
-          }
-
-          # Check Lambda response
-          if [ -f /tmp/lambda-response.json ]; then
-            cat /tmp/lambda-response.json
-            STATUS_CODE=$(jq -r '.statusCode' /tmp/lambda-response.json 2>/dev/null || echo "unknown")
-            ACTION=$(jq -r '.body.action' /tmp/lambda-response.json 2>/dev/null || echo "unknown")
-            MESSAGE=$(jq -r '.body.message' /tmp/lambda-response.json 2>/dev/null || echo "unknown")
-
+          # Retry with exponential backoff (handles race condition with shared-infra deploy)
+          MAX_RETRIES=5
+          for i in $(seq 1 $MAX_RETRIES); do
             echo ""
-            echo "Lambda response: $MESSAGE (action: $ACTION)"
+            echo "=== Attempt $i/$MAX_RETRIES ==="
 
-            if [ "$STATUS_CODE" = "200" ]; then
-              echo "Database cleanup completed successfully"
-            else
-              echo "Warning: Lambda returned status $STATUS_CODE"
-              echo "Proceeding with infrastructure teardown"
+            # Check if Lambda exists
+            if ! aws lambda get-function --function-name "$LAMBDA_NAME" >/dev/null 2>&1; then
+              if [ $i -lt $MAX_RETRIES ]; then
+                WAIT=$((i * 15))
+                echo "Lambda not found (may still be deploying). Waiting ${WAIT}s..."
+                sleep $WAIT
+                continue
+              else
+                echo "ERROR: Lambda $LAMBDA_NAME not available after $MAX_RETRIES attempts"
+                exit 1
+              fi
             fi
-          else
-            echo "Warning: No response file from Lambda"
-            echo "Proceeding with infrastructure teardown"
-          fi
+
+            echo "Lambda found, invoking..."
+
+            # Invoke the VPC Lambda to drop the database
+            if aws lambda invoke \
+              --function-name "$LAMBDA_NAME" \
+              --payload "{\"pr_number\": ${PR_NUMBER}, \"action\": \"drop\"}" \
+              --cli-binary-format raw-in-base64-out \
+              /tmp/lambda-response.json; then
+
+              # Check Lambda response
+              cat /tmp/lambda-response.json
+              STATUS_CODE=$(jq -r '.statusCode' /tmp/lambda-response.json 2>/dev/null || echo "unknown")
+              ACTION=$(jq -r '.body.action' /tmp/lambda-response.json 2>/dev/null || echo "unknown")
+              MESSAGE=$(jq -r '.body.message' /tmp/lambda-response.json 2>/dev/null || echo "unknown")
+
+              echo ""
+              echo "Lambda response: $MESSAGE (action: $ACTION)"
+
+              if [ "$STATUS_CODE" = "200" ]; then
+                echo "Database cleanup completed successfully"
+                exit 0
+              else
+                echo "ERROR: Lambda returned status $STATUS_CODE"
+                exit 1
+              fi
+            else
+              if [ $i -lt $MAX_RETRIES ]; then
+                WAIT=$((i * 15))
+                echo "Lambda invocation failed. Waiting ${WAIT}s before retry..."
+                sleep $WAIT
+                continue
+              else
+                echo "ERROR: Lambda invocation failed after $MAX_RETRIES attempts"
+                exit 1
+              fi
+            fi
+          done
+
+          echo "ERROR: Unexpected exit from retry loop"
+          exit 1
 
       - name: Terraform Destroy
         if: steps.check-workspace.outputs.exists == 'true'
@@ -117,37 +143,64 @@ jobs:
           PR_NUMBER="${{ github.event.pull_request.number }}"
           LAMBDA_NAME="roxas-shared-rds-cleanup"
 
-          echo "Invoking cleanup Lambda for orphaned ENIs and security groups..."
+          echo "Cleaning up orphaned ENIs and security groups for PR ${PR_NUMBER}..."
 
-          # Invoke the cleanup Lambda to remove orphaned ENIs and security groups
-          # This actively cleans up resources instead of just waiting
-          RESPONSE=$(aws lambda invoke \
-            --function-name "$LAMBDA_NAME" \
-            --payload "{\"pr_number\": ${PR_NUMBER}, \"action\": \"cleanup_all\"}" \
-            --cli-binary-format raw-in-base64-out \
-            /tmp/cleanup-response.json 2>&1) || {
-            echo "Warning: Lambda invocation failed"
-            echo "$RESPONSE"
-            echo "Continuing with workflow - manual cleanup may be needed"
-            exit 0
-          }
-
-          # Check Lambda response
-          if [ -f /tmp/cleanup-response.json ]; then
-            cat /tmp/cleanup-response.json
-            STATUS_CODE=$(jq -r '.statusCode' /tmp/cleanup-response.json 2>/dev/null || echo "unknown")
-            MESSAGE=$(jq -r '.body.message' /tmp/cleanup-response.json 2>/dev/null || echo "unknown")
-
+          # Retry with exponential backoff
+          MAX_RETRIES=5
+          for i in $(seq 1 $MAX_RETRIES); do
             echo ""
-            echo "Cleanup response: $MESSAGE"
+            echo "=== Attempt $i/$MAX_RETRIES ==="
 
-            if [ "$STATUS_CODE" = "200" ]; then
-              echo "ENI and security group cleanup completed successfully"
-            else
-              echo "Warning: Cleanup Lambda returned status $STATUS_CODE"
-              echo "Manual cleanup may be needed"
+            # Check if Lambda exists
+            if ! aws lambda get-function --function-name "$LAMBDA_NAME" >/dev/null 2>&1; then
+              if [ $i -lt $MAX_RETRIES ]; then
+                WAIT=$((i * 15))
+                echo "Lambda not found. Waiting ${WAIT}s..."
+                sleep $WAIT
+                continue
+              else
+                echo "ERROR: Lambda $LAMBDA_NAME not available after $MAX_RETRIES attempts"
+                exit 1
+              fi
             fi
-          fi
+
+            echo "Lambda found, invoking cleanup_all..."
+
+            if aws lambda invoke \
+              --function-name "$LAMBDA_NAME" \
+              --payload "{\"pr_number\": ${PR_NUMBER}, \"action\": \"cleanup_all\"}" \
+              --cli-binary-format raw-in-base64-out \
+              /tmp/cleanup-response.json; then
+
+              cat /tmp/cleanup-response.json
+              STATUS_CODE=$(jq -r '.statusCode' /tmp/cleanup-response.json 2>/dev/null || echo "unknown")
+              MESSAGE=$(jq -r '.body.message' /tmp/cleanup-response.json 2>/dev/null || echo "unknown")
+
+              echo ""
+              echo "Cleanup response: $MESSAGE"
+
+              if [ "$STATUS_CODE" = "200" ]; then
+                echo "ENI and security group cleanup completed successfully"
+                exit 0
+              else
+                echo "ERROR: Cleanup Lambda returned status $STATUS_CODE"
+                exit 1
+              fi
+            else
+              if [ $i -lt $MAX_RETRIES ]; then
+                WAIT=$((i * 15))
+                echo "Lambda invocation failed. Waiting ${WAIT}s before retry..."
+                sleep $WAIT
+                continue
+              else
+                echo "ERROR: Lambda invocation failed after $MAX_RETRIES attempts"
+                exit 1
+              fi
+            fi
+          done
+
+          echo "ERROR: Unexpected exit from retry loop"
+          exit 1
 
       - name: Delete Terraform Workspace
         if: steps.check-workspace.outputs.exists == 'true'
