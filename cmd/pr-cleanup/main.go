@@ -14,6 +14,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -27,6 +28,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/aws/smithy-go"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -136,7 +138,8 @@ func getDBCredentials(ctx context.Context) (*DBCredentials, error) {
 			break
 		}
 		// Check if it's a ResourceNotFoundException (secret version not ready)
-		if strings.Contains(err.Error(), "ResourceNotFoundException") && i < maxRetries-1 {
+		var apiErr smithy.APIError
+		if errors.As(err, &apiErr) && apiErr.ErrorCode() == "ResourceNotFoundException" && i < maxRetries-1 {
 			waitTime := (i + 1) * 2 // 2, 4, 6 seconds
 			log.Printf("Secret not ready, retrying in %ds (attempt %d/%d): %v", waitTime, i+1, maxRetries, err)
 			select {

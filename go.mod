@@ -10,6 +10,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/lambda v1.86.0
 	github.com/aws/aws-sdk-go-v2/service/rds v1.112.0
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.40.1
+	github.com/aws/smithy-go v1.24.0
 	github.com/awslabs/aws-lambda-go-api-proxy v0.16.2
 	github.com/go-rod/rod v0.116.2
 	github.com/golang-jwt/jwt/v5 v5.3.0
@@ -33,7 +34,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.30.4 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.9 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.1 // indirect
-	github.com/aws/smithy-go v1.24.0 // indirect
 	github.com/dhui/dktest v0.4.6 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
