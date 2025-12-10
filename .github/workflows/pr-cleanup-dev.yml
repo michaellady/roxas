@@ -59,7 +59,9 @@ jobs:
         run: terraform workspace select dev-pr-${{ github.event.pull_request.number }}
 
       - name: Drop PR Database from Shared RDS
+        id: drop-database
         if: steps.check-workspace.outputs.exists == 'true'
+        continue-on-error: true
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
           LAMBDA_NAME="roxas-shared-rds-cleanup"
@@ -127,7 +129,7 @@ jobs:
           exit 1
 
       - name: Terraform Destroy
-        if: steps.check-workspace.outputs.exists == 'true'
+        if: always() && steps.check-workspace.outputs.exists == 'true'
         working-directory: terraform/service
         env:
           TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
@@ -138,7 +140,9 @@ jobs:
         run: terraform destroy -auto-approve
 
       - name: Cleanup Orphaned ENIs and Security Groups
+        id: cleanup-enis
         if: always() && steps.check-workspace.outputs.exists == 'true'
+        continue-on-error: true
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
           LAMBDA_NAME="roxas-shared-rds-cleanup"
@@ -245,3 +249,20 @@ jobs:
               repo: context.repo.repo,
               body: body
             });
+
+      - name: Check Lambda cleanup status
+        if: always() && steps.check-workspace.outputs.exists == 'true'
+        run: |
+          # Fail the job if either Lambda step failed
+          # This runs after terraform destroy to ensure infrastructure is cleaned up first
+          if [ "${{ steps.drop-database.outcome }}" = "failure" ]; then
+            echo "ERROR: Drop PR Database step failed"
+            echo "The PR database may not have been cleaned up"
+            exit 1
+          fi
+          if [ "${{ steps.cleanup-enis.outcome }}" = "failure" ]; then
+            echo "ERROR: Cleanup Orphaned ENIs step failed"
+            echo "Some ENIs or security groups may not have been cleaned up"
+            exit 1
+          fi
+          echo "All Lambda cleanup steps completed successfully"
