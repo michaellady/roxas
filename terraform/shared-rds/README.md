@@ -31,10 +31,10 @@ AWS_PROFILE=dev-admin terraform apply
 
 ## Dependencies
 
-Requires existing VPC infrastructure from main app deployment:
-- VPC: `roxas-webhook-handler-dev-vpc`
-- Private subnets: `roxas-webhook-handler-dev-private-*`
-- RDS security group: `roxas-webhook-handler-dev-rds-sg`
+Requires existing VPC infrastructure from `terraform/shared`:
+- VPC: `roxas-dev-vpc`
+- Private subnets: `roxas-dev-private-*`
+- RDS security group: `roxas-dev-rds-sg`
 
 ## Outputs
 
