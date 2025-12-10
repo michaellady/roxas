@@ -1,6 +1,0 @@
-apply.log
-
-# Lambda build artifacts
-lambda/python/
-lambda/layer.zip
-lambda/function.zip
