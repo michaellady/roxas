@@ -69,6 +69,16 @@ jobs:
           rm bootstrap
           ls -la pr_cleanup.zip
 
+      - name: Build Circuit Breaker Lambda
+        run: |
+          echo "Building circuit breaker Lambda for arm64..."
+          mkdir -p terraform/shared/lambda
+          GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o terraform/shared/lambda/bootstrap ./cmd/circuit-breaker
+          cd terraform/shared/lambda
+          zip -j circuit_breaker.zip bootstrap
+          rm bootstrap
+          ls -la circuit_breaker.zip
+
       - name: Terraform Init
         working-directory: terraform/shared
         run: terraform init -backend-config=../backend-shared-dev.hcl
@@ -292,6 +302,16 @@ jobs:
           zip -j pr_cleanup.zip bootstrap
           rm bootstrap
           ls -la pr_cleanup.zip
+
+      - name: Build Circuit Breaker Lambda
+        run: |
+          echo "Building circuit breaker Lambda for arm64..."
+          mkdir -p terraform/shared/lambda
+          GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o terraform/shared/lambda/bootstrap ./cmd/circuit-breaker
+          cd terraform/shared/lambda
+          zip -j circuit_breaker.zip bootstrap
+          rm bootstrap
+          ls -la circuit_breaker.zip
 
       - name: Terraform Init
         working-directory: terraform/shared

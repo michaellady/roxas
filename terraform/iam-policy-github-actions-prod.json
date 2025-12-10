@@ -9,7 +9,7 @@
         "s3:PutObject",
         "s3:DeleteObject"
       ],
-      "Resource": "arn:aws:s3:::roxas-terraform-state-dev/*"
+      "Resource": "arn:aws:s3:::roxas-terraform-state-prod/*"
     },
     {
       "Sid": "TerraformBackendS3List",
@@ -17,7 +17,7 @@
       "Action": [
         "s3:ListBucket"
       ],
-      "Resource": "arn:aws:s3:::roxas-terraform-state-dev"
+      "Resource": "arn:aws:s3:::roxas-terraform-state-prod"
     },
     {
       "Sid": "TerraformBackendDynamoDBLocking",
@@ -27,7 +27,7 @@
         "dynamodb:PutItem",
         "dynamodb:DeleteItem"
       ],
-      "Resource": "arn:aws:dynamodb:us-east-1:539402214167:table/roxas-terraform-locks-dev"
+      "Resource": "arn:aws:dynamodb:us-east-1:598821842404:table/roxas-terraform-locks-prod"
     },
     {
       "Sid": "IAMRoleManagement",
@@ -49,7 +49,7 @@
         "iam:UntagRole"
       ],
       "Resource": [
-        "arn:aws:iam::539402214167:role/roxas-*"
+        "arn:aws:iam::598821842404:role/roxas-*"
       ]
     },
     {
@@ -67,7 +67,7 @@
         "iam:UntagPolicy"
       ],
       "Resource": [
-        "arn:aws:iam::539402214167:policy/roxas-*"
+        "arn:aws:iam::598821842404:policy/roxas-*"
       ]
     },
     {
@@ -83,7 +83,7 @@
         "iam:UntagInstanceProfile"
       ],
       "Resource": [
-        "arn:aws:iam::539402214167:instance-profile/roxas-*"
+        "arn:aws:iam::598821842404:instance-profile/roxas-*"
       ]
     },
     {
@@ -107,10 +107,13 @@
         "lambda:UpdateFunctionUrlConfig",
         "lambda:AddPermission",
         "lambda:RemovePermission",
-        "lambda:GetPolicy"
+        "lambda:GetPolicy",
+        "lambda:InvokeFunction",
+        "lambda:PutFunctionConcurrency",
+        "lambda:DeleteFunctionConcurrency"
       ],
       "Resource": [
-        "arn:aws:lambda:us-east-1:539402214167:function:roxas-*"
+        "arn:aws:lambda:us-east-1:598821842404:function:roxas-*"
       ]
     },
     {
@@ -156,8 +159,8 @@
         "logs:ListTagsLogGroup"
       ],
       "Resource": [
-        "arn:aws:logs:us-east-1:539402214167:log-group:/aws/lambda/roxas-*",
-        "arn:aws:logs:us-east-1:539402214167:log-group:/aws/apigateway/roxas-*"
+        "arn:aws:logs:us-east-1:598821842404:log-group:/aws/lambda/roxas-*",
+        "arn:aws:logs:us-east-1:598821842404:log-group:/aws/apigateway/roxas-*"
       ]
     },
     {
@@ -169,8 +172,8 @@
         "logs:FilterLogEvents"
       ],
       "Resource": [
-        "arn:aws:logs:us-east-1:539402214167:log-group:/aws/lambda/roxas-*:*",
-        "arn:aws:logs:us-east-1:539402214167:log-group:/aws/apigateway/roxas-*:*"
+        "arn:aws:logs:us-east-1:598821842404:log-group:/aws/lambda/roxas-*:*",
+        "arn:aws:logs:us-east-1:598821842404:log-group:/aws/apigateway/roxas-*:*"
       ]
     },
     {
@@ -188,7 +191,7 @@
         "secretsmanager:UntagResource"
       ],
       "Resource": [
-        "arn:aws:secretsmanager:us-east-1:539402214167:secret:roxas-*"
+        "arn:aws:secretsmanager:us-east-1:598821842404:secret:roxas-*"
       ]
     },
     {
@@ -226,8 +229,64 @@
         "ssm:ListTagsForResource"
       ],
       "Resource": [
-        "arn:aws:ssm:us-east-1:539402214167:parameter/roxas/*"
+        "arn:aws:ssm:us-east-1:598821842404:parameter/roxas/*"
       ]
+    },
+    {
+      "Sid": "SNSManagement",
+      "Effect": "Allow",
+      "Action": [
+        "sns:CreateTopic",
+        "sns:DeleteTopic",
+        "sns:GetTopicAttributes",
+        "sns:SetTopicAttributes",
+        "sns:Subscribe",
+        "sns:Unsubscribe",
+        "sns:TagResource",
+        "sns:UntagResource",
+        "sns:ListTagsForResource"
+      ],
+      "Resource": [
+        "arn:aws:sns:us-east-1:598821842404:roxas-*"
+      ]
+    },
+    {
+      "Sid": "BudgetsManagement",
+      "Effect": "Allow",
+      "Action": [
+        "budgets:ViewBudget",
+        "budgets:ModifyBudget",
+        "budgets:CreateBudgetAction",
+        "budgets:DeleteBudgetAction",
+        "budgets:UpdateBudgetAction",
+        "budgets:DescribeBudgetAction",
+        "budgets:DescribeBudgetActionsForBudget"
+      ],
+      "Resource": [
+        "arn:aws:budgets::598821842404:budget/roxas-*"
+      ]
+    },
+    {
+      "Sid": "Route53RecordManagement",
+      "Effect": "Allow",
+      "Action": [
+        "route53:ChangeResourceRecordSets",
+        "route53:GetHostedZone",
+        "route53:ListResourceRecordSets"
+      ],
+      "Resource": [
+        "arn:aws:route53:::hostedzone/*"
+      ]
+    },
+    {
+      "Sid": "ACMCertificateRead",
+      "Effect": "Allow",
+      "Action": [
+        "acm:DescribeCertificate",
+        "acm:ListCertificates",
+        "acm:ListTagsForCertificate"
+      ],
+      "Resource": "*"
     }
   ]
 }
