@@ -14,11 +14,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -26,6 +28,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/aws/smithy-go"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -122,9 +125,31 @@ func getDBCredentials(ctx context.Context) (*DBCredentials, error) {
 		return nil, fmt.Errorf("DB_SECRET_NAME environment variable not set")
 	}
 
-	output, err := smClient.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{
-		SecretId: &secretName,
-	})
+	// Retry with exponential backoff for secret retrieval
+	// This handles race conditions during infrastructure deployment
+	var output *secretsmanager.GetSecretValueOutput
+	var err error
+	maxRetries := 3
+	for i := 0; i < maxRetries; i++ {
+		output, err = smClient.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{
+			SecretId: &secretName,
+		})
+		if err == nil {
+			break
+		}
+		// Check if it's a ResourceNotFoundException (secret version not ready)
+		var apiErr smithy.APIError
+		if errors.As(err, &apiErr) && apiErr.ErrorCode() == "ResourceNotFoundException" && i < maxRetries-1 {
+			waitTime := (i + 1) * 2 // 2, 4, 6 seconds
+			log.Printf("Secret not ready, retrying in %ds (attempt %d/%d): %v", waitTime, i+1, maxRetries, err)
+			select {
+			case <-ctx.Done():
+				return nil, fmt.Errorf("context cancelled while waiting for secret: %w", ctx.Err())
+			case <-sleepChan(waitTime):
+				continue
+			}
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get secret: %w", err)
 	}
@@ -135,6 +160,16 @@ func getDBCredentials(ctx context.Context) (*DBCredentials, error) {
 	}
 
 	return &creds, nil
+}
+
+// sleepChan returns a channel that receives after duration seconds (for testing)
+var sleepChan = func(seconds int) <-chan struct{} {
+	ch := make(chan struct{})
+	go func() {
+		time.Sleep(time.Duration(seconds) * time.Second)
+		close(ch)
+	}()
+	return ch
 }
 
 func handler(ctx context.Context, event Request) (Response, error) {

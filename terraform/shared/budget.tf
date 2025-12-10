@@ -213,26 +213,11 @@ resource "aws_cloudwatch_log_group" "circuit_breaker_lambda" {
   tags = local.common_tags
 }
 
-# Build circuit breaker Lambda binary (Go)
-resource "null_resource" "circuit_breaker_build" {
-  triggers = {
-    source_hash = filemd5("${path.module}/../../cmd/circuit-breaker/main.go")
-  }
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      cd ${path.module}/../..
-      GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o ${path.module}/lambda/bootstrap ./cmd/circuit-breaker
-      cd ${path.module}/lambda
-      zip -j circuit_breaker.zip bootstrap
-      rm bootstrap
-    EOT
-  }
-}
-
 # Circuit Breaker Lambda function (Go)
+# Note: The ZIP file is built by CI before terraform apply (see shared-infra.yml)
 resource "aws_lambda_function" "circuit_breaker" {
   filename         = "${path.module}/lambda/circuit_breaker.zip"
+  source_code_hash = filebase64sha256("${path.module}/lambda/circuit_breaker.zip")
   function_name    = "${local.name_prefix}-circuit-breaker"
   role             = aws_iam_role.circuit_breaker_lambda.arn
   handler          = "bootstrap"
@@ -248,7 +233,6 @@ resource "aws_lambda_function" "circuit_breaker" {
   }
 
   depends_on = [
-    null_resource.circuit_breaker_build,
     aws_cloudwatch_log_group.circuit_breaker_lambda,
     aws_iam_role_policy_attachment.circuit_breaker_basic,
     aws_iam_role_policy.circuit_breaker_lambda

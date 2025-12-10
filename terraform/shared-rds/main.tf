@@ -452,7 +452,8 @@ resource "aws_lambda_function" "cleanup" {
     null_resource.cleanup_lambda_build,
     aws_cloudwatch_log_group.cleanup_lambda,
     aws_iam_role_policy_attachment.cleanup_lambda_vpc,
-    aws_iam_role_policy.cleanup_lambda_secrets
+    aws_iam_role_policy.cleanup_lambda_secrets,
+    aws_secretsmanager_secret_version.shared_db_credentials
   ]
 
   tags = merge(local.common_tags, {
