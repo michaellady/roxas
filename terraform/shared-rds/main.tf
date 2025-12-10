@@ -164,10 +164,17 @@ resource "aws_secretsmanager_secret" "shared_db_credentials" {
   })
 }
 
-# Note: Secret version is managed outside Terraform after initial setup
-# The secret was pre-populated with correct credentials when RDS was created
-# Terraform only manages the secret resource itself, not versions
-# resource "aws_secretsmanager_secret_version" "shared_db_credentials" { ... }
+# Store the RDS credentials in the secret
+resource "aws_secretsmanager_secret_version" "shared_db_credentials" {
+  secret_id = aws_secretsmanager_secret.shared_db_credentials.id
+  secret_string = jsonencode({
+    username = aws_db_instance.shared.username
+    password = random_password.shared_db_password.result
+    host     = aws_db_instance.shared.address
+    port     = aws_db_instance.shared.port
+    database = aws_db_instance.shared.db_name
+  })
+}
 
 # SSM Parameter to store the secret name for dynamic discovery by PR workspaces
 resource "aws_ssm_parameter" "shared_db_secret_name" {
