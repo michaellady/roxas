@@ -1,5 +1,6 @@
 # SQLite databases
 *.db
+*.db?*
 *.db-journal
 *.db-wal
 *.db-shm
@@ -14,7 +15,7 @@ bd.sock
 db.sqlite
 bd.db
 
-# Temporary merge/sync files (created during three-way merge)
+# Merge artifacts (temporary files from 3-way merge)
 beads.base.jsonl
 beads.base.meta.json
 beads.left.jsonl
@@ -23,8 +24,6 @@ beads.right.jsonl
 beads.right.meta.json
 
 # Keep JSONL exports and config (source of truth for git)
-!*.jsonl
-!beads.jsonl
 !issues.jsonl
 !metadata.json
 !config.json
