@@ -85,6 +85,12 @@ jobs:
               STATE=$(echo "$LAMBDA_INFO" | jq -r '.Configuration.State')
               UPDATE_STATUS=$(echo "$LAMBDA_INFO" | jq -r '.Configuration.LastUpdateStatus // "Successful"')
 
+              # Fail fast if Lambda is in a failed state
+              if [ "$STATE" = "Failed" ]; then
+                echo "ERROR: Lambda is in Failed state"
+                return 1
+              fi
+
               if [ "$STATE" = "Active" ] && [ "$UPDATE_STATUS" != "InProgress" ]; then
                 echo "✓ Lambda ready (State: $STATE, LastUpdateStatus: $UPDATE_STATUS)"
                 return 0
@@ -199,6 +205,12 @@ jobs:
 
               STATE=$(echo "$LAMBDA_INFO" | jq -r '.Configuration.State')
               UPDATE_STATUS=$(echo "$LAMBDA_INFO" | jq -r '.Configuration.LastUpdateStatus // "Successful"')
+
+              # Fail fast if Lambda is in a failed state
+              if [ "$STATE" = "Failed" ]; then
+                echo "ERROR: Lambda is in Failed state"
+                return 1
+              fi
 
               if [ "$STATE" = "Active" ] && [ "$UPDATE_STATUS" != "InProgress" ]; then
                 echo "✓ Lambda ready (State: $STATE, LastUpdateStatus: $UPDATE_STATUS)"
