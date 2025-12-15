@@ -730,3 +730,104 @@ func TestHandler_CleanupAll_Success(t *testing.T) {
 		t.Errorf("expected 1 SG deleted, got %d", len(deletedSGs))
 	}
 }
+
+// =============================================================================
+// Orphaned ENI Cleanup Tests (cleanup_orphaned_enis - scheduled daily)
+// =============================================================================
+
+func TestHandler_CleanupOrphanedENIs_Success(t *testing.T) {
+	ctx := context.Background()
+
+	deletedENIs := []string{}
+	ec2Client = &MockEC2Client{
+		DescribeNetworkInterfacesFunc: func(ctx context.Context, params *ec2.DescribeNetworkInterfacesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error) {
+			// Return multiple orphaned ENIs from different PRs
+			return &ec2.DescribeNetworkInterfacesOutput{
+				NetworkInterfaces: []types.NetworkInterface{
+					{
+						NetworkInterfaceId: aws.String("eni-pr-50-orphan"),
+						Status:             types.NetworkInterfaceStatusAvailable,
+						Description:        aws.String("AWS Lambda VPC ENI-roxas-webhook-handler-pr-50-dev"),
+					},
+					{
+						NetworkInterfaceId: aws.String("eni-pr-51-orphan"),
+						Status:             types.NetworkInterfaceStatusAvailable,
+						Description:        aws.String("AWS Lambda VPC ENI-roxas-webhook-handler-pr-51-dev"),
+					},
+					{
+						NetworkInterfaceId: aws.String("eni-pr-52-orphan"),
+						Status:             types.NetworkInterfaceStatusAvailable,
+						Description:        aws.String("AWS Lambda VPC ENI-roxas-webhook-handler-pr-52-dev"),
+					},
+				},
+			}, nil
+		},
+		DeleteNetworkInterfaceFunc: func(ctx context.Context, params *ec2.DeleteNetworkInterfaceInput, optFns ...func(*ec2.Options)) (*ec2.DeleteNetworkInterfaceOutput, error) {
+			deletedENIs = append(deletedENIs, *params.NetworkInterfaceId)
+			return &ec2.DeleteNetworkInterfaceOutput{}, nil
+		},
+	}
+	defer func() { ec2Client = nil }()
+
+	// Note: pr_number=0 is allowed for cleanup_orphaned_enis
+	resp, err := handler(ctx, Request{PRNumber: 0, Action: "cleanup_orphaned_enis"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.StatusCode != 200 {
+		t.Errorf("expected status 200, got %d: %s", resp.StatusCode, resp.Body.Message)
+	}
+	if resp.Body.Action != "orphaned_enis_cleaned" {
+		t.Errorf("expected action 'orphaned_enis_cleaned', got %q", resp.Body.Action)
+	}
+	if len(deletedENIs) != 3 {
+		t.Errorf("expected 3 ENIs deleted, got %d", len(deletedENIs))
+	}
+}
+
+func TestHandler_CleanupOrphanedENIs_SkipsInUse(t *testing.T) {
+	ctx := context.Background()
+
+	deletedENIs := []string{}
+	ec2Client = &MockEC2Client{
+		DescribeNetworkInterfacesFunc: func(ctx context.Context, params *ec2.DescribeNetworkInterfacesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error) {
+			// Return mix of available and in-use ENIs
+			return &ec2.DescribeNetworkInterfacesOutput{
+				NetworkInterfaces: []types.NetworkInterface{
+					{
+						NetworkInterfaceId: aws.String("eni-orphan"),
+						Status:             types.NetworkInterfaceStatusAvailable,
+						Description:        aws.String("AWS Lambda VPC ENI-roxas-webhook-handler-pr-50-dev"),
+					},
+					{
+						NetworkInterfaceId: aws.String("eni-active"),
+						Status:             types.NetworkInterfaceStatusInUse,
+						Description:        aws.String("AWS Lambda VPC ENI-roxas-webhook-handler-pr-74-dev"),
+					},
+				},
+			}, nil
+		},
+		DeleteNetworkInterfaceFunc: func(ctx context.Context, params *ec2.DeleteNetworkInterfaceInput, optFns ...func(*ec2.Options)) (*ec2.DeleteNetworkInterfaceOutput, error) {
+			deletedENIs = append(deletedENIs, *params.NetworkInterfaceId)
+			return &ec2.DeleteNetworkInterfaceOutput{}, nil
+		},
+	}
+	defer func() { ec2Client = nil }()
+
+	resp, err := handler(ctx, Request{PRNumber: 0, Action: "cleanup_orphaned_enis"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.StatusCode != 200 {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+	// Should only delete the available ENI, skip the in-use one
+	if len(deletedENIs) != 1 {
+		t.Errorf("expected 1 ENI deleted (skipping in-use), got %d", len(deletedENIs))
+	}
+	if len(deletedENIs) > 0 && deletedENIs[0] != "eni-orphan" {
+		t.Errorf("expected eni-orphan to be deleted, got %s", deletedENIs[0])
+	}
+}
