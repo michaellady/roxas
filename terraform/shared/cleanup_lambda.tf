@@ -219,3 +219,39 @@ resource "aws_lambda_permission" "cleanup_invoke" {
   function_name = aws_lambda_function.cleanup[0].function_name
   principal     = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
 }
+
+# ============================================================================
+# Scheduled ENI Cleanup (EventBridge)
+# ============================================================================
+# Lambda ENIs stay "in-use" for 10-20 minutes after function deletion.
+# The PR cleanup runs immediately on PR close, so it skips these ENIs.
+# This daily schedule catches any orphaned ENIs that became available later.
+
+resource "aws_cloudwatch_event_rule" "cleanup_schedule" {
+  count = local.enable_cleanup_lambda ? 1 : 0
+
+  name                = "${local.name_prefix}-eni-cleanup-schedule"
+  description         = "Daily cleanup of orphaned Lambda ENIs"
+  schedule_expression = "rate(1 day)"
+
+  tags = local.common_tags
+}
+
+resource "aws_cloudwatch_event_target" "cleanup_lambda" {
+  count = local.enable_cleanup_lambda ? 1 : 0
+
+  rule      = aws_cloudwatch_event_rule.cleanup_schedule[0].name
+  target_id = "cleanup-lambda"
+  arn       = aws_lambda_function.cleanup[0].arn
+  input     = jsonencode({ action = "cleanup_orphaned_enis" })
+}
+
+resource "aws_lambda_permission" "cleanup_eventbridge" {
+  count = local.enable_cleanup_lambda ? 1 : 0
+
+  statement_id  = "AllowEventBridgeInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.cleanup[0].function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.cleanup_schedule[0].arn
+}

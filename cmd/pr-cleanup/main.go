@@ -176,8 +176,13 @@ func handler(ctx context.Context, event Request) (Response, error) {
 	eventJSON, _ := json.Marshal(event)
 	log.Printf("Received event: %s", string(eventJSON))
 
-	// Validate input
-	if event.PRNumber == 0 {
+	action := event.Action
+	if action == "" {
+		action = "drop"
+	}
+
+	// Validate input - pr_number not required for cleanup_orphaned_enis
+	if event.PRNumber == 0 && action != "cleanup_orphaned_enis" {
 		return Response{
 			StatusCode: 400,
 			Body: ResponseBody{
@@ -185,11 +190,6 @@ func handler(ctx context.Context, event Request) (Response, error) {
 				Action:  "error",
 			},
 		}, nil
-	}
-
-	action := event.Action
-	if action == "" {
-		action = "drop"
 	}
 
 	// Initialize AWS config for clients
@@ -222,6 +222,8 @@ func handler(ctx context.Context, event Request) (Response, error) {
 		return handleCleanupSGs(ctx, event.PRNumber)
 	case "cleanup_all":
 		return handleCleanupAll(ctx, event.PRNumber)
+	case "cleanup_orphaned_enis":
+		return handleCleanupOrphanedENIs(ctx)
 	default:
 		return Response{
 			StatusCode: 400,
@@ -552,6 +554,88 @@ func handleCleanupAll(ctx context.Context, prNumber int) (Response, error) {
 		Body: ResponseBody{
 			Message: msg,
 			Action:  "all_cleaned",
+		},
+	}, nil
+}
+
+// handleCleanupOrphanedENIs deletes ALL orphaned Lambda ENIs in the account
+// This is triggered by a scheduled EventBridge rule to clean up ENIs that
+// became available after PR cleanup ran (Lambda ENIs take 10-20 min to release)
+func handleCleanupOrphanedENIs(ctx context.Context) (Response, error) {
+	pattern := "AWS Lambda VPC ENI-roxas-*"
+	log.Printf("Cleaning up ALL orphaned Lambda ENIs matching description pattern: %s", pattern)
+
+	// Find all Lambda ENIs for roxas project
+	describeInput := &ec2.DescribeNetworkInterfacesInput{
+		Filters: []types.Filter{
+			{
+				Name:   aws.String("description"),
+				Values: []string{pattern},
+			},
+		},
+	}
+
+	result, err := ec2Client.DescribeNetworkInterfaces(ctx, describeInput)
+	if err != nil {
+		log.Printf("Error describing ENIs: %v", err)
+		return Response{
+			StatusCode: 500,
+			Body: ResponseBody{
+				Message: fmt.Sprintf("Error describing ENIs: %v", err),
+				Action:  "error",
+			},
+		}, nil
+	}
+
+	deletedCount := 0
+	skippedCount := 0
+	var deleteErrors []string
+
+	for _, eni := range result.NetworkInterfaces {
+		eniID := *eni.NetworkInterfaceId
+		desc := ""
+		if eni.Description != nil {
+			desc = *eni.Description
+		}
+
+		// Only delete ENIs that are "available" (not in-use)
+		if eni.Status != types.NetworkInterfaceStatusAvailable {
+			log.Printf("Skipping ENI %s (%s) - status is %s (not available)", eniID, desc, eni.Status)
+			skippedCount++
+			continue
+		}
+
+		log.Printf("Deleting orphaned ENI: %s (%s)", eniID, desc)
+		_, err := ec2Client.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
+			NetworkInterfaceId: &eniID,
+		})
+		if err != nil {
+			log.Printf("Error deleting ENI %s: %v", eniID, err)
+			deleteErrors = append(deleteErrors, fmt.Sprintf("%s: %v", eniID, err))
+			continue
+		}
+		deletedCount++
+	}
+
+	msg := fmt.Sprintf("Orphaned ENI cleanup complete: %d deleted, %d skipped (in-use)", deletedCount, skippedCount)
+	if len(deleteErrors) > 0 {
+		msg += fmt.Sprintf(", %d errors: %s", len(deleteErrors), strings.Join(deleteErrors, "; "))
+		log.Print(msg)
+		return Response{
+			StatusCode: 500,
+			Body: ResponseBody{
+				Message: msg,
+				Action:  "error",
+			},
+		}, nil
+	}
+
+	log.Print(msg)
+	return Response{
+		StatusCode: 200,
+		Body: ResponseBody{
+			Message: msg,
+			Action:  "orphaned_enis_cleaned",
 		},
 	}, nil
 }
