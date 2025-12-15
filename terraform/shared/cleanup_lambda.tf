@@ -179,6 +179,7 @@ resource "aws_lambda_function" "cleanup" {
   count = local.enable_cleanup_lambda ? 1 : 0
 
   filename         = "${path.module}/lambda/pr_cleanup.zip"
+  source_code_hash = filebase64sha256("${path.module}/lambda/pr_cleanup.zip")
   function_name    = "${local.name_prefix}-cleanup"
   role             = aws_iam_role.cleanup_lambda[0].arn
   handler          = "bootstrap"
