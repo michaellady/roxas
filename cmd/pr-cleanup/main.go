@@ -571,56 +571,67 @@ func handleCleanupOrphanedENIs(ctx context.Context) (Response, error) {
 	pattern := "AWS Lambda VPC ENI-roxas-*"
 	log.Printf("Cleaning up ALL orphaned Lambda ENIs matching description pattern: %s", pattern)
 
-	// Find all Lambda ENIs for roxas project
-	describeInput := &ec2.DescribeNetworkInterfacesInput{
-		Filters: []types.Filter{
-			{
-				Name:   aws.String("description"),
-				Values: []string{pattern},
-			},
-		},
-	}
-
-	result, err := ec2Client.DescribeNetworkInterfaces(ctx, describeInput)
-	if err != nil {
-		log.Printf("Error describing ENIs: %v", err)
-		return Response{
-			StatusCode: 500,
-			Body: ResponseBody{
-				Message: fmt.Sprintf("Error describing ENIs: %v", err),
-				Action:  "error",
-			},
-		}, nil
-	}
-
 	deletedCount := 0
 	skippedCount := 0
 	var deleteErrors []string
+	var nextToken *string
 
-	for _, eni := range result.NetworkInterfaces {
-		eniID := *eni.NetworkInterfaceId
-		desc := ""
-		if eni.Description != nil {
-			desc = *eni.Description
+	// Paginate through all ENIs matching the pattern
+	for {
+		describeInput := &ec2.DescribeNetworkInterfacesInput{
+			Filters: []types.Filter{
+				{
+					Name:   aws.String("description"),
+					Values: []string{pattern},
+				},
+			},
+			NextToken: nextToken,
 		}
 
-		// Only delete ENIs that are "available" (not in-use)
-		if eni.Status != types.NetworkInterfaceStatusAvailable {
-			log.Printf("Skipping ENI %s (%s) - status is %s (not available)", eniID, desc, eni.Status)
-			skippedCount++
-			continue
-		}
-
-		log.Printf("Deleting orphaned ENI: %s (%s)", eniID, desc)
-		_, err := ec2Client.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
-			NetworkInterfaceId: &eniID,
-		})
+		result, err := ec2Client.DescribeNetworkInterfaces(ctx, describeInput)
 		if err != nil {
-			log.Printf("Error deleting ENI %s: %v", eniID, err)
-			deleteErrors = append(deleteErrors, fmt.Sprintf("%s: %v", eniID, err))
-			continue
+			log.Printf("Error describing ENIs: %v", err)
+			return Response{
+				StatusCode: 500,
+				Body: ResponseBody{
+					Message: fmt.Sprintf("Error describing ENIs: %v", err),
+					Action:  "error",
+				},
+			}, nil
 		}
-		deletedCount++
+
+		for _, eni := range result.NetworkInterfaces {
+			eniID := *eni.NetworkInterfaceId
+			desc := ""
+			if eni.Description != nil {
+				desc = *eni.Description
+			}
+
+			// Only delete ENIs that are "available" (not in-use)
+			if eni.Status != types.NetworkInterfaceStatusAvailable {
+				log.Printf("Skipping ENI %s (%s) - status is %s (not available)", eniID, desc, eni.Status)
+				skippedCount++
+				continue
+			}
+
+			log.Printf("Deleting orphaned ENI: %s (%s)", eniID, desc)
+			_, err := ec2Client.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
+				NetworkInterfaceId: &eniID,
+			})
+			if err != nil {
+				log.Printf("Error deleting ENI %s: %v", eniID, err)
+				deleteErrors = append(deleteErrors, fmt.Sprintf("%s: %v", eniID, err))
+				continue
+			}
+			deletedCount++
+		}
+
+		// Check if there are more pages
+		if result.NextToken == nil {
+			break
+		}
+		nextToken = result.NextToken
+		log.Printf("Fetching next page of ENIs...")
 	}
 
 	msg := fmt.Sprintf("Orphaned ENI cleanup complete: %d deleted, %d skipped (in-use)", deletedCount, skippedCount)
