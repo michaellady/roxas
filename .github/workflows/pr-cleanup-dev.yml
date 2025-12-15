@@ -68,26 +68,55 @@ jobs:
 
           echo "Dropping PR database pr_${PR_NUMBER} via cleanup Lambda..."
 
-          # Retry with exponential backoff (handles race condition with shared-infra deploy)
+          # Function to wait for Lambda to be ready (handles concurrent shared-infra deployments)
+          wait_for_lambda_ready() {
+            local max_wait=120
+            local waited=0
+            echo "Checking Lambda readiness..."
+            while [ $waited -lt $max_wait ]; do
+              LAMBDA_INFO=$(aws lambda get-function --function-name "$LAMBDA_NAME" 2>/dev/null || echo "NOT_FOUND")
+              if [ "$LAMBDA_INFO" = "NOT_FOUND" ]; then
+                echo "Lambda not found, waiting..."
+                sleep 10
+                waited=$((waited + 10))
+                continue
+              fi
+
+              STATE=$(echo "$LAMBDA_INFO" | jq -r '.Configuration.State')
+              UPDATE_STATUS=$(echo "$LAMBDA_INFO" | jq -r '.Configuration.LastUpdateStatus // "Successful"')
+
+              # Fail fast if Lambda is in a failed state
+              if [ "$STATE" = "Failed" ]; then
+                echo "ERROR: Lambda is in Failed state"
+                return 1
+              fi
+
+              if [ "$STATE" = "Active" ] && [ "$UPDATE_STATUS" != "InProgress" ]; then
+                echo "✓ Lambda ready (State: $STATE, LastUpdateStatus: $UPDATE_STATUS)"
+                return 0
+              fi
+
+              echo "Waiting for Lambda (State: $STATE, LastUpdateStatus: $UPDATE_STATUS)..."
+              sleep 10
+              waited=$((waited + 10))
+            done
+
+            echo "ERROR: Lambda not ready after ${max_wait}s"
+            return 1
+          }
+
+          # Wait for Lambda to be ready before attempting invocation
+          if ! wait_for_lambda_ready; then
+            exit 1
+          fi
+
+          # Retry with exponential backoff (handles VPC cold start timeouts)
           MAX_RETRIES=5
           for i in $(seq 1 $MAX_RETRIES); do
             echo ""
             echo "=== Attempt $i/$MAX_RETRIES ==="
 
-            # Check if Lambda exists
-            if ! aws lambda get-function --function-name "$LAMBDA_NAME" >/dev/null 2>&1; then
-              if [ $i -lt $MAX_RETRIES ]; then
-                WAIT=$((i * 15))
-                echo "Lambda not found (may still be deploying). Waiting ${WAIT}s..."
-                sleep $WAIT
-                continue
-              else
-                echo "ERROR: Lambda $LAMBDA_NAME not available after $MAX_RETRIES attempts"
-                exit 1
-              fi
-            fi
-
-            echo "Lambda found, invoking..."
+            echo "Invoking Lambda..."
 
             # Invoke the VPC Lambda to drop the database
             if aws lambda invoke \
@@ -108,10 +137,21 @@ jobs:
               if [ "$STATUS_CODE" = "200" ]; then
                 echo "Database cleanup completed successfully"
                 exit 0
-              else
-                echo "ERROR: Lambda returned status $STATUS_CODE"
-                exit 1
               fi
+
+              # Check for transient VPC/connection errors (retry these)
+              if [[ "$MESSAGE" == *"timeout"* ]] || [[ "$MESSAGE" == *"timed out"* ]] || [[ "$MESSAGE" == *"connection refused"* ]]; then
+                if [ $i -lt $MAX_RETRIES ]; then
+                  WAIT=$((i * 20))
+                  echo "Transient connection error (VPC cold start). Waiting ${WAIT}s before retry..."
+                  sleep $WAIT
+                  continue
+                fi
+              fi
+
+              # Non-transient error, fail immediately
+              echo "ERROR: Lambda returned status $STATUS_CODE"
+              exit 1
             else
               if [ $i -lt $MAX_RETRIES ]; then
                 WAIT=$((i * 15))
@@ -149,26 +189,55 @@ jobs:
 
           echo "Cleaning up orphaned ENIs and security groups for PR ${PR_NUMBER}..."
 
+          # Function to wait for Lambda to be ready
+          wait_for_lambda_ready() {
+            local max_wait=120
+            local waited=0
+            echo "Checking Lambda readiness..."
+            while [ $waited -lt $max_wait ]; do
+              LAMBDA_INFO=$(aws lambda get-function --function-name "$LAMBDA_NAME" 2>/dev/null || echo "NOT_FOUND")
+              if [ "$LAMBDA_INFO" = "NOT_FOUND" ]; then
+                echo "Lambda not found, waiting..."
+                sleep 10
+                waited=$((waited + 10))
+                continue
+              fi
+
+              STATE=$(echo "$LAMBDA_INFO" | jq -r '.Configuration.State')
+              UPDATE_STATUS=$(echo "$LAMBDA_INFO" | jq -r '.Configuration.LastUpdateStatus // "Successful"')
+
+              # Fail fast if Lambda is in a failed state
+              if [ "$STATE" = "Failed" ]; then
+                echo "ERROR: Lambda is in Failed state"
+                return 1
+              fi
+
+              if [ "$STATE" = "Active" ] && [ "$UPDATE_STATUS" != "InProgress" ]; then
+                echo "✓ Lambda ready (State: $STATE, LastUpdateStatus: $UPDATE_STATUS)"
+                return 0
+              fi
+
+              echo "Waiting for Lambda (State: $STATE, LastUpdateStatus: $UPDATE_STATUS)..."
+              sleep 10
+              waited=$((waited + 10))
+            done
+
+            echo "ERROR: Lambda not ready after ${max_wait}s"
+            return 1
+          }
+
+          # Wait for Lambda to be ready
+          if ! wait_for_lambda_ready; then
+            exit 1
+          fi
+
           # Retry with exponential backoff
           MAX_RETRIES=5
           for i in $(seq 1 $MAX_RETRIES); do
             echo ""
             echo "=== Attempt $i/$MAX_RETRIES ==="
 
-            # Check if Lambda exists
-            if ! aws lambda get-function --function-name "$LAMBDA_NAME" >/dev/null 2>&1; then
-              if [ $i -lt $MAX_RETRIES ]; then
-                WAIT=$((i * 15))
-                echo "Lambda not found. Waiting ${WAIT}s..."
-                sleep $WAIT
-                continue
-              else
-                echo "ERROR: Lambda $LAMBDA_NAME not available after $MAX_RETRIES attempts"
-                exit 1
-              fi
-            fi
-
-            echo "Lambda found, invoking cleanup_all..."
+            echo "Invoking cleanup_all..."
 
             if aws lambda invoke \
               --function-name "$LAMBDA_NAME" \
@@ -186,10 +255,21 @@ jobs:
               if [ "$STATUS_CODE" = "200" ]; then
                 echo "ENI and security group cleanup completed successfully"
                 exit 0
-              else
-                echo "ERROR: Cleanup Lambda returned status $STATUS_CODE"
-                exit 1
               fi
+
+              # Check for transient VPC/connection errors (retry these)
+              if [[ "$MESSAGE" == *"timeout"* ]] || [[ "$MESSAGE" == *"timed out"* ]] || [[ "$MESSAGE" == *"connection refused"* ]]; then
+                if [ $i -lt $MAX_RETRIES ]; then
+                  WAIT=$((i * 20))
+                  echo "Transient connection error. Waiting ${WAIT}s before retry..."
+                  sleep $WAIT
+                  continue
+                fi
+              fi
+
+              # Non-transient error, fail immediately
+              echo "ERROR: Cleanup Lambda returned status $STATUS_CODE"
+              exit 1
             else
               if [ $i -lt $MAX_RETRIES ]; then
                 WAIT=$((i * 15))
