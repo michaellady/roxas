@@ -150,24 +150,47 @@ jobs:
         run: |
           FUNCTION_NAME="roxas-dev-cleanup"
 
+          # Data-driven wait times based on observed VPC Lambda cold start behavior:
+          # - VPC ENI creation: 10-20s (handled by warmup call)
+          # - Lambda timeout: 30s (configured in Terraform)
+          # - DB connection establishment: 5-10s after VPC ready
+          # - Total worst-case cold start: ~50s
+          WARMUP_SETTLE_TIME=5      # Wait after warmup for DB connections to stabilize
+          INITIAL_RETRY_DELAY=15    # First retry: Lambda just timed out, VPC likely ready
+          MAX_RETRIES=3             # Total attempts including exponential backoff
+
           # Warmup: Invoke with cleanup_orphaned_enis action to establish VPC connection
           # This action doesn't need DB access, so it warms up the Lambda without timeout risk
           echo "Warming up cleanup Lambda (VPC cold start may take 10-20s)..."
+          WARMUP_START=$(date +%s)
           aws lambda invoke \
             --function-name "$FUNCTION_NAME" \
             --cli-binary-format raw-in-base64-out \
             --payload '{"action": "cleanup_orphaned_enis"}' \
             /tmp/warmup-response.json || true
+          WARMUP_END=$(date +%s)
+          WARMUP_DURATION=$((WARMUP_END - WARMUP_START))
+
+          echo "Warmup completed in ${WARMUP_DURATION}s"
           echo "Warmup response:"
           cat /tmp/warmup-response.json | jq . || echo "(no response)"
 
+          # Check if warmup succeeded - if so, VPC ENI is established
+          WARMUP_STATUS=$(cat /tmp/warmup-response.json | jq -r '.statusCode' 2>/dev/null || echo "unknown")
+          if [ "$WARMUP_STATUS" = "200" ]; then
+            echo "✓ Warmup succeeded, VPC ENI established. Waiting ${WARMUP_SETTLE_TIME}s for connection pool..."
+            sleep $WARMUP_SETTLE_TIME
+          else
+            echo "⚠ Warmup returned non-200 status, proceeding with retries..."
+          fi
+
           # Test: Invoke with retry logic for VPC cold start resilience
           echo "Testing cleanup Lambda with non-existent PR (should return 'skipped')..."
-          MAX_RETRIES=3
-          RETRY_DELAY=10
+          RETRY_DELAY=$INITIAL_RETRY_DELAY
 
           for i in $(seq 1 $MAX_RETRIES); do
             echo "Attempt $i of $MAX_RETRIES..."
+            ATTEMPT_START=$(date +%s)
 
             aws lambda invoke \
               --function-name "$FUNCTION_NAME" \
@@ -175,7 +198,10 @@ jobs:
               --payload '{"pr_number": 99999, "action": "drop"}' \
               /tmp/cleanup-response.json
 
-            echo "Cleanup Lambda response:"
+            ATTEMPT_END=$(date +%s)
+            ATTEMPT_DURATION=$((ATTEMPT_END - ATTEMPT_START))
+
+            echo "Cleanup Lambda response (${ATTEMPT_DURATION}s):"
             cat /tmp/cleanup-response.json | jq .
 
             ACTION=$(cat /tmp/cleanup-response.json | jq -r '.body.action')
@@ -186,7 +212,11 @@ jobs:
             elif [ "$ACTION" = "error" ]; then
               MESSAGE=$(cat /tmp/cleanup-response.json | jq -r '.body.message')
               if echo "$MESSAGE" | grep -q "timeout\|connection"; then
-                echo "Connection timeout (VPC cold start), retrying in ${RETRY_DELAY}s..."
+                # If Lambda took full 30s timeout, VPC ENI likely still initializing
+                if [ $ATTEMPT_DURATION -ge 25 ]; then
+                  echo "Full timeout detected (${ATTEMPT_DURATION}s >= 25s), VPC likely cold starting..."
+                fi
+                echo "Connection timeout, retrying in ${RETRY_DELAY}s..."
                 sleep $RETRY_DELAY
                 RETRY_DELAY=$((RETRY_DELAY * 2))
                 continue
@@ -198,7 +228,7 @@ jobs:
             exit 1
           done
 
-          echo "ERROR: Max retries exceeded"
+          echo "ERROR: Max retries exceeded after $MAX_RETRIES attempts"
           exit 1
 
       - name: Output SSM Parameters Created
