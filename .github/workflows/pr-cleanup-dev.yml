@@ -58,13 +58,13 @@ jobs:
         working-directory: terraform/service
         run: terraform workspace select dev-pr-${{ github.event.pull_request.number }}
 
-      - name: Drop PR Database from Shared RDS
+      - name: Drop PR Database
         id: drop-database
         if: steps.check-workspace.outputs.exists == 'true'
         continue-on-error: true
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
-          LAMBDA_NAME="roxas-shared-rds-cleanup"
+          LAMBDA_NAME="roxas-dev-cleanup"
 
           echo "Dropping PR database pr_${PR_NUMBER} via cleanup Lambda..."
 
@@ -145,7 +145,7 @@ jobs:
         continue-on-error: true
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
-          LAMBDA_NAME="roxas-shared-rds-cleanup"
+          LAMBDA_NAME="roxas-dev-cleanup"
 
           echo "Cleaning up orphaned ENIs and security groups for PR ${PR_NUMBER}..."
 

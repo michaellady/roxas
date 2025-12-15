@@ -245,9 +245,9 @@ graph TB
 | Row-Level Security | ❌ Weak | ❌ Complex | ❌ No |
 
 **Database Naming:**
-- Master: `roxas_shared` (RDS default database)
+- Master: `roxas` (RDS default database)
 - PR databases: `pr_{number}` (e.g., `pr_22`, `pr_156`)
-- Connection: `postgres://roxas_app:PWD@shared-rds:5432/pr_{PR_NUMBER}`
+- Connection: `postgres://roxas_app:PWD@roxas-dev-rds:5432/pr_{PR_NUMBER}`
 
 **Resource Limits & Connection Pool Sizing:**
 - **Instance:** db.t4g.micro (~80 max connections, ~400MB RAM)
@@ -257,7 +257,7 @@ graph TB
 - **Scaling Trigger:** Consistently >3 PRs OR >16GB disk usage → upgrade to db.t4g.small (~$24/month)
 
 **CloudWatch Monitoring:**
-- **Dashboard:** `roxas-shared-rds-health` - Connections, CPU, Memory, Storage, IOPS
+- **Dashboard:** `roxas-dev-health` - Connections, CPU, Memory, Storage, IOPS
 - **Alarms:** Connection count >60, CPU >80%, Free memory <100MB, Storage <4GB free
 - **Logs:** PostgreSQL and upgrade logs exported to CloudWatch
 
@@ -267,13 +267,13 @@ graph TB
 - Network: Private subnets only
 - SSL/TLS: Required (`sslmode=require`)
 
-### Shared RDS Operations Runbook
+### Dev RDS Operations Runbook
 
-**1. Check which PRs are using shared RDS:**
+**1. Check which PRs are using dev RDS:**
 ```bash
 # Get RDS credentials
 SECRET_ARN=$(AWS_PROFILE=dev-admin aws secretsmanager list-secrets \
-  --query 'SecretList[?starts_with(Name, `roxas-shared-pr-rds-credentials-`) && DeletedDate == null].ARN | [0]' \
+  --query 'SecretList[?starts_with(Name, `roxas-dev-db-credentials-`) && DeletedDate == null].ARN | [0]' \
   --output text)
 SECRET=$(AWS_PROFILE=dev-admin aws secretsmanager get-secret-value \
   --secret-id "$SECRET_ARN" --query SecretString --output text)
@@ -345,18 +345,14 @@ PGPASSWORD=$DB_PASS psql -h $DB_HOST -U $DB_USER -d pr_123 -c "VACUUM FULL;"
 | Concurrent PRs | 3 comfortable | >3 sustained | Upgrade to db.t4g.small (~$24/month) |
 
 ```bash
-# Scale up via Terraform (in terraform/shared-rds/)
-# Edit main.tf: change instance_class = "db.t4g.small"
+# Scale up via Terraform (in terraform/shared/)
+# Edit rds.tf: change instance_class = "db.t4g.small"
 # Then: terraform plan && terraform apply
 ```
 
-**6. Migration to dedicated RDS (if PR needs isolation):**
+**6. Dedicated RDS for special cases:**
 
-For PRs requiring dedicated resources (load testing, sensitive data):
-1. Don't use shared RDS - deploy dedicated RDS via Terraform workspace
-2. Set `use_shared_rds = false` in PR terraform variables
-3. PR will provision its own db.t4g.micro instance (~6 min deploy)
-4. Cost: ~$12/month additional per isolated PR
+All PR deployments use the shared `roxas-dev-rds` instance by default. For PRs requiring dedicated resources (load testing, sensitive data), contact the infrastructure team to provision a dedicated RDS instance manually.
 
 ## Quick Start
 
