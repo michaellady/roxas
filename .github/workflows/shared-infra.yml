@@ -149,24 +149,57 @@ jobs:
           AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
           FUNCTION_NAME="roxas-dev-cleanup"
-          echo "Testing cleanup Lambda with non-existent PR (should return 'skipped')..."
 
+          # Warmup: Invoke with cleanup_orphaned_enis action to establish VPC connection
+          # This action doesn't need DB access, so it warms up the Lambda without timeout risk
+          echo "Warming up cleanup Lambda (VPC cold start may take 10-20s)..."
           aws lambda invoke \
             --function-name "$FUNCTION_NAME" \
             --cli-binary-format raw-in-base64-out \
-            --payload '{"pr_number": 99999, "action": "drop"}' \
-            /tmp/cleanup-response.json
+            --payload '{"action": "cleanup_orphaned_enis"}' \
+            /tmp/warmup-response.json || true
+          echo "Warmup response:"
+          cat /tmp/warmup-response.json | jq . || echo "(no response)"
 
-          echo "Cleanup Lambda response:"
-          cat /tmp/cleanup-response.json | jq .
+          # Test: Invoke with retry logic for VPC cold start resilience
+          echo "Testing cleanup Lambda with non-existent PR (should return 'skipped')..."
+          MAX_RETRIES=3
+          RETRY_DELAY=10
 
-          ACTION=$(cat /tmp/cleanup-response.json | jq -r '.body.action')
-          if [ "$ACTION" != "skipped" ]; then
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "Attempt $i of $MAX_RETRIES..."
+
+            aws lambda invoke \
+              --function-name "$FUNCTION_NAME" \
+              --cli-binary-format raw-in-base64-out \
+              --payload '{"pr_number": 99999, "action": "drop"}' \
+              /tmp/cleanup-response.json
+
+            echo "Cleanup Lambda response:"
+            cat /tmp/cleanup-response.json | jq .
+
+            ACTION=$(cat /tmp/cleanup-response.json | jq -r '.body.action')
+
+            if [ "$ACTION" = "skipped" ]; then
+              echo "✓ Cleanup Lambda working correctly"
+              exit 0
+            elif [ "$ACTION" = "error" ]; then
+              MESSAGE=$(cat /tmp/cleanup-response.json | jq -r '.body.message')
+              if echo "$MESSAGE" | grep -q "timeout\|connection"; then
+                echo "Connection timeout (VPC cold start), retrying in ${RETRY_DELAY}s..."
+                sleep $RETRY_DELAY
+                RETRY_DELAY=$((RETRY_DELAY * 2))
+                continue
+              fi
+            fi
+
+            # Non-retryable failure
             echo "ERROR: Expected 'skipped' action for non-existent database, got: $ACTION"
             exit 1
-          fi
+          done
 
-          echo "✓ Cleanup Lambda working correctly"
+          echo "ERROR: Max retries exceeded"
+          exit 1
 
       - name: Output SSM Parameters Created
         working-directory: terraform/shared
