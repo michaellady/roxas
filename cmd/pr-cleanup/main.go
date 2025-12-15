@@ -562,6 +562,12 @@ func handleCleanupAll(ctx context.Context, prNumber int) (Response, error) {
 // This is triggered by a scheduled EventBridge rule to clean up ENIs that
 // became available after PR cleanup ran (Lambda ENIs take 10-20 min to release)
 func handleCleanupOrphanedENIs(ctx context.Context) (Response, error) {
+	// Pattern matches all roxas Lambda ENIs. This is intentionally broad to catch
+	// orphans from any roxas Lambda (PR environments, cleanup Lambda itself, etc).
+	// Safety: Only ENIs with status "available" are deleted. The cleanup Lambda's
+	// own ENIs are always "in-use" during execution, so they won't be deleted.
+	// If more persistent Lambdas are added to dev, consider narrowing to:
+	// "AWS Lambda VPC ENI-roxas-webhook-handler-pr-*"
 	pattern := "AWS Lambda VPC ENI-roxas-*"
 	log.Printf("Cleaning up ALL orphaned Lambda ENIs matching description pattern: %s", pattern)
 
