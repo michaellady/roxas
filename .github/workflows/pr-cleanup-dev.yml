@@ -58,7 +58,7 @@ jobs:
         working-directory: terraform/service
         run: terraform workspace select dev-pr-${{ github.event.pull_request.number }}
 
-      - name: Drop PR Database from Shared RDS
+      - name: Drop PR Database
         id: drop-database
         if: steps.check-workspace.outputs.exists == 'true'
         continue-on-error: true
