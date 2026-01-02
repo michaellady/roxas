@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -71,6 +72,18 @@ func (m *MockPostStore) GetPostsByUserID(ctx context.Context, userID string) ([]
 		result = append(result, p)
 	}
 	return result, nil
+}
+
+func (m *MockPostStore) UpdatePostStatus(ctx context.Context, postID, status string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	post, ok := m.posts[postID]
+	if !ok {
+		return errors.New("post not found")
+	}
+	post.Status = status
+	return nil
 }
 
 // MockCommitStoreForPosts extends commit store with user ownership lookup

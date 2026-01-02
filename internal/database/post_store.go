@@ -2,9 +2,24 @@ package database
 
 import (
 	"context"
+	"errors"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/mikelady/roxas/internal/web"
 )
+
+// Post-related errors
+var (
+	ErrPostNotFound  = errors.New("post not found")
+	ErrInvalidStatus = errors.New("invalid status")
+)
+
+// Valid post statuses (must match DB check constraint)
+var validPostStatuses = map[string]bool{
+	"draft":  true,
+	"posted": true,
+	"failed": true,
+}
 
 // Compile-time interface compliance check
 var _ web.PostLister = (*PostStore)(nil)
@@ -50,4 +65,43 @@ func (s *PostStore) ListPostsByUser(ctx context.Context, userID string) ([]*web.
 	}
 
 	return posts, nil
+}
+
+// UpdatePostStatus updates the status of a post
+// Valid statuses: "draft", "posted", "failed"
+func (s *PostStore) UpdatePostStatus(ctx context.Context, postID, status string) error {
+	// Validate status before hitting DB
+	if !validPostStatuses[status] {
+		return ErrInvalidStatus
+	}
+
+	result, err := s.pool.Exec(ctx,
+		`UPDATE posts SET status = $1 WHERE id = $2`,
+		status, postID,
+	)
+
+	if err != nil {
+		// Check for check constraint violation (invalid status)
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23514" {
+			return ErrInvalidStatus
+		}
+		return err
+	}
+
+	// Check if any row was updated
+	if result.RowsAffected() == 0 {
+		// Verify post doesn't exist (vs. some other issue)
+		var exists bool
+		err = s.pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM posts WHERE id = $1)", postID).Scan(&exists)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return ErrPostNotFound
+		}
+		// Post exists but status didn't change (same value) - this is OK
+	}
+
+	return nil
 }
