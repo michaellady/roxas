@@ -1,6 +1,9 @@
 {{define "content"}}
 <div class="success-container">
     <div class="card">
+        {{if .Error}}
+        <div class="alert alert-error">{{.Error}}</div>
+        {{end}}
         <div class="success-header">
             <h1>Repository Added Successfully!</h1>
             <p class="lead">Your repository has been registered with Roxas. Complete the webhook setup below to start receiving commits.</p>

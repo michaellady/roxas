@@ -605,6 +605,19 @@ func (r *Router) handleRepositoriesSuccess(w http.ResponseWriter, req *http.Requ
 	webhookURL := req.URL.Query().Get("webhook_url")
 	webhookSecret := req.URL.Query().Get("webhook_secret")
 
+	// Validate required params
+	if webhookURL == "" || webhookSecret == "" {
+		r.renderPage(w, "repository_success.html", PageData{
+			Title: "Repository Added",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Missing webhook configuration. Please add your repository again.",
+		})
+		return
+	}
+
 	r.renderPage(w, "repository_success.html", PageData{
 		Title: "Repository Added",
 		User: &UserData{
