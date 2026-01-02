@@ -164,6 +164,7 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("/dashboard", r.handleDashboard)
 	r.mux.HandleFunc("/logout", r.handleLogout)
 	r.mux.HandleFunc("/repositories/new", r.handleRepositoriesNew)
+	r.mux.HandleFunc("/repositories/success", r.handleRepositoriesSuccess)
 }
 
 func (r *Router) handleHome(w http.ResponseWriter, req *http.Request) {
@@ -577,6 +578,44 @@ func (r *Router) validateGitHubURL(rawURL string) error {
 	}
 
 	return nil
+}
+
+// RepositorySuccessData holds data for the repository success page
+type RepositorySuccessData struct {
+	WebhookURL    string
+	WebhookSecret string
+}
+
+func (r *Router) handleRepositoriesSuccess(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get query params
+	webhookURL := req.URL.Query().Get("webhook_url")
+	webhookSecret := req.URL.Query().Get("webhook_secret")
+
+	r.renderPage(w, "repository_success.html", PageData{
+		Title: "Repository Added",
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+		Data: &RepositorySuccessData{
+			WebhookURL:    webhookURL,
+			WebhookSecret: webhookSecret,
+		},
+	})
 }
 
 func (r *Router) renderPage(w http.ResponseWriter, page string, data PageData) {
