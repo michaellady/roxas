@@ -487,7 +487,7 @@ func TestRouter_GetDashboard_WithAuth_ReturnsHTML(t *testing.T) {
 func TestRouter_GetDashboard_WithAuth_ShowsRepositories(t *testing.T) {
 	userStore := NewMockUserStore()
 	repoStore := NewMockRepositoryStoreForWeb()
-	router := NewRouterWithAllStores(userStore, repoStore, nil, nil)
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, nil, "")
 
 	// Create a test user
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
@@ -521,7 +521,7 @@ func TestRouter_GetDashboard_WithAuth_ShowsCommits(t *testing.T) {
 	userStore := NewMockUserStore()
 	repoStore := NewMockRepositoryStoreForWeb()
 	commitLister := NewMockCommitListerForWeb()
-	router := NewRouterWithAllStores(userStore, repoStore, commitLister, nil)
+	router := NewRouterWithAllStores(userStore, repoStore, commitLister, nil, nil, "")
 
 	// Create a test user
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
@@ -796,7 +796,7 @@ func TestWebUI_FullAuthenticationFlow(t *testing.T) {
 	userStore := NewMockUserStore()
 	repoStore := NewMockRepositoryStoreForWeb()
 	commitLister := NewMockCommitListerForWeb()
-	router := NewRouterWithAllStores(userStore, repoStore, commitLister, nil)
+	router := NewRouterWithAllStores(userStore, repoStore, commitLister, nil, nil, "")
 
 	// Start test server with production router
 	ts := httptest.NewServer(router)

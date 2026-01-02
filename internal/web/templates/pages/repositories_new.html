@@ -8,8 +8,9 @@
         <div class="form-group">
             <label for="github_url">GitHub Repository URL</label>
             <input type="url" id="github_url" name="github_url" required
-                   placeholder="https://github.com/username/repository"
-                   pattern="https://github\.com/[^/]+/[^/]+.*">
+                   placeholder="https://github.com/owner/repo"
+                   pattern="https://github\.com/[^/]+/[^/]+"
+                   title="Enter a valid GitHub repository URL (https://github.com/owner/repo)">
             <p class="form-help">Enter the full URL of your GitHub repository</p>
         </div>
         <button type="submit" class="btn btn-primary btn-block">Add Repository</button>
