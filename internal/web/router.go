@@ -23,7 +23,7 @@ var pageTemplates map[string]*template.Template
 
 func init() {
 	pageTemplates = make(map[string]*template.Template)
-	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html"}
+	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "repositories_new.html", "repository_success.html"}
 
 	for _, page := range pages {
 		// Clone the base template and parse the page
@@ -150,6 +150,7 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("/signup", r.handleSignup)
 	r.mux.HandleFunc("/dashboard", r.handleDashboard)
 	r.mux.HandleFunc("/logout", r.handleLogout)
+	r.mux.HandleFunc("/repositories/new", r.handleRepositoriesNew)
 }
 
 func (r *Router) handleHome(w http.ResponseWriter, req *http.Request) {
@@ -420,6 +421,61 @@ func (r *Router) handleLogout(w http.ResponseWriter, req *http.Request) {
 
 	// Redirect to login page
 	http.Redirect(w, req, "/login", http.StatusSeeOther)
+}
+
+func (r *Router) handleRepositoriesNew(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	_, err = auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// GET: render the form
+	if req.Method == http.MethodGet {
+		r.renderPage(w, "repositories_new.html", PageData{
+			Title: "Add Repository",
+		})
+		return
+	}
+
+	// POST: process the form (to be implemented in ro-6)
+	if req.Method == http.MethodPost {
+		// Parse form
+		if err := req.ParseForm(); err != nil {
+			r.renderPage(w, "repositories_new.html", PageData{
+				Title: "Add Repository",
+				Error: "Invalid form data",
+			})
+			return
+		}
+
+		githubURL := req.FormValue("github_url")
+		if githubURL == "" {
+			r.renderPage(w, "repositories_new.html", PageData{
+				Title: "Add Repository",
+				Error: "GitHub URL is required",
+			})
+			return
+		}
+
+		// TODO: Validate URL and create repository (ro-6)
+		// For now, just show the URL was received
+		r.renderPage(w, "repositories_new.html", PageData{
+			Title: "Add Repository",
+			Error: "Repository creation not yet implemented",
+		})
+		return
+	}
+
+	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 }
 
 func (r *Router) renderPage(w http.ResponseWriter, page string, data PageData) {

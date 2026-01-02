@@ -1,0 +1,19 @@
+{{define "content"}}
+<div class="auth-container">
+    <h1>Add Repository</h1>
+    {{if .Error}}
+    <div class="alert alert-error">{{.Error}}</div>
+    {{end}}
+    <form action="/repositories/new" method="POST" class="auth-form">
+        <div class="form-group">
+            <label for="github_url">GitHub Repository URL</label>
+            <input type="url" id="github_url" name="github_url" required
+                   placeholder="https://github.com/username/repository"
+                   pattern="https://github\.com/[^/]+/[^/]+.*">
+            <p class="form-help">Enter the full URL of your GitHub repository</p>
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">Add Repository</button>
+    </form>
+    <p class="auth-link"><a href="/dashboard">&larr; Back to Dashboard</a></p>
+</div>
+{{end}}

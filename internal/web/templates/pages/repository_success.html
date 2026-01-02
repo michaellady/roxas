@@ -1,0 +1,66 @@
+{{define "content"}}
+<div class="success-container">
+    <div class="card">
+        <div class="success-header">
+            <h1>Repository Added Successfully!</h1>
+            <p class="lead">Your repository has been registered with Roxas. Complete the webhook setup below to start receiving commits.</p>
+        </div>
+
+        <section class="webhook-config">
+            <h2>Webhook Configuration</h2>
+            <p>Add these settings to your GitHub repository webhook:</p>
+
+            <div class="config-field">
+                <label for="webhook-url">Payload URL</label>
+                <div class="input-group">
+                    <input type="text" id="webhook-url" value="{{.Data.WebhookURL}}" readonly class="config-input">
+                    <button type="button" class="btn-copy" data-copy-target="webhook-url">Copy</button>
+                </div>
+            </div>
+
+            <div class="config-field">
+                <label>Content Type</label>
+                <div class="config-value">
+                    <code>application/json</code>
+                </div>
+            </div>
+
+            <div class="config-field">
+                <label for="webhook-secret">Secret</label>
+                <div class="input-group">
+                    <input type="text" id="webhook-secret" value="{{.Data.WebhookSecret}}" readonly class="config-input secret-value">
+                    <button type="button" class="btn-copy" data-copy-target="webhook-secret">Copy</button>
+                </div>
+                <p class="warning-text">This secret is shown only once. Copy it now and store it securely.</p>
+            </div>
+
+            <div class="config-field">
+                <label>Events</label>
+                <div class="config-value">
+                    <code>push</code> events only
+                </div>
+            </div>
+        </section>
+
+        <section class="setup-instructions">
+            <h2>GitHub Setup Instructions</h2>
+            <ol class="instruction-list">
+                <li>Go to your repository on GitHub</li>
+                <li>Navigate to <strong>Settings</strong> &rarr; <strong>Webhooks</strong></li>
+                <li>Click <strong>Add webhook</strong></li>
+                <li>Paste the <strong>Payload URL</strong> from above</li>
+                <li>Set <strong>Content type</strong> to <code>application/json</code></li>
+                <li>Paste the <strong>Secret</strong> from above</li>
+                <li>Under "Which events would you like to trigger this webhook?", select <strong>Just the push event</strong></li>
+                <li>Ensure <strong>Active</strong> is checked</li>
+                <li>Click <strong>Add webhook</strong></li>
+            </ol>
+        </section>
+
+        <div class="action-buttons">
+            <a href="/dashboard" class="btn btn-primary">Go to Dashboard</a>
+        </div>
+    </div>
+</div>
+<script src="/static/js/clipboard.js"></script>
+{{end}}

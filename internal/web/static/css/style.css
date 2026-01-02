@@ -219,6 +219,12 @@ main {
     color: var(--primary);
 }
 
+.form-help {
+    margin-top: 0.25rem;
+    font-size: 0.75rem;
+    color: var(--secondary);
+}
+
 /* Alerts */
 .alert {
     padding: 1rem;
@@ -286,4 +292,137 @@ main {
     text-align: center;
     padding: 2rem;
     color: var(--secondary);
+}
+
+/* Copy to clipboard buttons */
+.btn-copy {
+    padding: 0.375rem 0.75rem;
+    font-size: 0.875rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 0.25rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-copy:hover {
+    background: white;
+    border-color: var(--primary);
+}
+
+.btn-copy.copy-success {
+    background: var(--success);
+    color: white;
+    border-color: var(--success);
+}
+
+.btn-copy.copy-error {
+    background: var(--error);
+    color: white;
+    border-color: var(--error);
+}
+
+/* Repository success page */
+.success-container {
+    max-width: 700px;
+    margin: 0 auto;
+}
+
+.success-header {
+    text-align: center;
+    margin-bottom: 2rem;
+}
+
+.success-header h1 {
+    color: var(--success);
+    margin-bottom: 0.5rem;
+}
+
+.webhook-config,
+.setup-instructions {
+    margin-bottom: 2rem;
+}
+
+.webhook-config h2,
+.setup-instructions h2 {
+    font-size: 1.25rem;
+    margin-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.5rem;
+}
+
+.config-field {
+    margin-bottom: 1.25rem;
+}
+
+.config-field label {
+    display: block;
+    font-weight: 500;
+    margin-bottom: 0.5rem;
+    font-size: 0.875rem;
+}
+
+.input-group {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.config-input {
+    flex: 1;
+    padding: 0.625rem;
+    border: 1px solid var(--border);
+    border-radius: 0.375rem;
+    font-family: monospace;
+    font-size: 0.875rem;
+    background: var(--bg);
+}
+
+.config-input:focus {
+    outline: none;
+    border-color: var(--primary);
+}
+
+.secret-value {
+    font-family: monospace;
+    letter-spacing: 0.05em;
+}
+
+.config-value {
+    padding: 0.625rem;
+    background: var(--bg);
+    border-radius: 0.375rem;
+    border: 1px solid var(--border);
+}
+
+.config-value code {
+    background: none;
+    padding: 0;
+}
+
+.warning-text {
+    margin-top: 0.5rem;
+    font-size: 0.75rem;
+    color: var(--error);
+}
+
+.instruction-list {
+    padding-left: 1.5rem;
+}
+
+.instruction-list li {
+    margin-bottom: 0.75rem;
+    line-height: 1.6;
+}
+
+.instruction-list code {
+    background: var(--bg);
+    padding: 0.125rem 0.375rem;
+    border-radius: 0.25rem;
+    font-size: 0.875rem;
+}
+
+.action-buttons {
+    text-align: center;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
 }
