@@ -3,8 +3,11 @@ package database
 import (
 	"context"
 	"errors"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/mikelady/roxas/internal/handlers"
 	"github.com/mikelady/roxas/internal/web"
 )
 
@@ -21,8 +24,11 @@ var validPostStatuses = map[string]bool{
 	"failed": true,
 }
 
-// Compile-time interface compliance check
-var _ web.PostLister = (*PostStore)(nil)
+// Compile-time interface compliance checks
+var (
+	_ web.PostLister     = (*PostStore)(nil)
+	_ handlers.PostStore = (*PostStore)(nil)
+)
 
 // PostStore implements web.PostLister using PostgreSQL
 type PostStore struct {
@@ -32,6 +38,88 @@ type PostStore struct {
 // NewPostStore creates a new database-backed post store
 func NewPostStore(pool *Pool) *PostStore {
 	return &PostStore{pool: pool}
+}
+
+// CreatePost creates a new post in the database with status 'draft'
+func (s *PostStore) CreatePost(ctx context.Context, commitID, platform, content string) (*handlers.Post, error) {
+	var post handlers.Post
+	var createdAt time.Time
+
+	err := s.pool.QueryRow(ctx,
+		`INSERT INTO posts (commit_id, platform, content, status)
+		 VALUES ($1, $2, $3, 'draft')
+		 RETURNING id, commit_id, platform, content, status, created_at`,
+		commitID, platform, content,
+	).Scan(&post.ID, &post.CommitID, &post.Platform, &post.Content, &post.Status, &createdAt)
+
+	if err != nil {
+		// Check for unique constraint violation (duplicate commit_id + platform + version)
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return nil, handlers.ErrDuplicatePost
+		}
+		return nil, err
+	}
+
+	post.CreatedAt = createdAt
+	return &post, nil
+}
+
+// GetPostByID retrieves a post by its ID
+func (s *PostStore) GetPostByID(ctx context.Context, postID string) (*handlers.Post, error) {
+	var post handlers.Post
+	var createdAt time.Time
+
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, commit_id, platform, content, status, created_at
+		 FROM posts
+		 WHERE id = $1`,
+		postID,
+	).Scan(&post.ID, &post.CommitID, &post.Platform, &post.Content, &post.Status, &createdAt)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	post.CreatedAt = createdAt
+	return &post, nil
+}
+
+// GetPostsByUserID retrieves all posts for a user (via their commits)
+func (s *PostStore) GetPostsByUserID(ctx context.Context, userID string) ([]*handlers.Post, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT p.id, p.commit_id, p.platform, p.content, p.status, p.created_at
+		 FROM posts p
+		 JOIN commits c ON p.commit_id = c.id
+		 JOIN repositories r ON c.repository_id = r.id
+		 WHERE r.user_id = $1
+		 ORDER BY p.created_at DESC`,
+		userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var posts []*handlers.Post
+	for rows.Next() {
+		var post handlers.Post
+		var createdAt time.Time
+		if err := rows.Scan(&post.ID, &post.CommitID, &post.Platform, &post.Content, &post.Status, &createdAt); err != nil {
+			return nil, err
+		}
+		post.CreatedAt = createdAt
+		posts = append(posts, &post)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return posts, nil
 }
 
 // ListPostsByUser retrieves all posts for a user's commits (for dashboard)
