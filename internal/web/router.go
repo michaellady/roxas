@@ -3,9 +3,12 @@ package web
 import (
 	"context"
 	"embed"
+	"fmt"
 	"html/template"
 	"io/fs"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/mikelady/roxas/internal/auth"
 	"github.com/mikelady/roxas/internal/handlers"
@@ -65,6 +68,12 @@ type UserStore interface {
 // RepositoryStore interface for repository operations
 type RepositoryStore interface {
 	ListRepositoriesByUser(ctx context.Context, userID string) ([]*handlers.Repository, error)
+	CreateRepository(ctx context.Context, userID, githubURL, webhookSecret string) (*handlers.Repository, error)
+}
+
+// SecretGenerator generates webhook secrets
+type SecretGenerator interface {
+	Generate() (string, error)
 }
 
 // CommitLister interface for listing commits
@@ -100,6 +109,8 @@ type Router struct {
 	repoStore    RepositoryStore
 	commitLister CommitLister
 	postLister   PostLister
+	secretGen    SecretGenerator
+	webhookURL   string
 }
 
 // NewRouter creates a new web router with all routes configured (no user store)
@@ -122,13 +133,15 @@ func NewRouterWithStores(userStore UserStore) *Router {
 }
 
 // NewRouterWithAllStores creates a new web router with all stores
-func NewRouterWithAllStores(userStore UserStore, repoStore RepositoryStore, commitLister CommitLister, postLister PostLister) *Router {
+func NewRouterWithAllStores(userStore UserStore, repoStore RepositoryStore, commitLister CommitLister, postLister PostLister, secretGen SecretGenerator, webhookURL string) *Router {
 	r := &Router{
 		mux:          http.NewServeMux(),
 		userStore:    userStore,
 		repoStore:    repoStore,
 		commitLister: commitLister,
 		postLister:   postLister,
+		secretGen:    secretGen,
+		webhookURL:   webhookURL,
 	}
 	r.setupRoutes()
 	return r
@@ -432,50 +445,138 @@ func (r *Router) handleRepositoriesNew(w http.ResponseWriter, req *http.Request)
 	}
 
 	// Validate token
-	_, err = auth.ValidateToken(cookie.Value)
+	claims, err := auth.ValidateToken(cookie.Value)
 	if err != nil {
 		http.Redirect(w, req, "/login", http.StatusSeeOther)
 		return
 	}
 
-	// GET: render the form
-	if req.Method == http.MethodGet {
-		r.renderPage(w, "repositories_new.html", PageData{
-			Title: "Add Repository",
-		})
-		return
-	}
-
-	// POST: process the form (to be implemented in ro-6)
 	if req.Method == http.MethodPost {
-		// Parse form
-		if err := req.ParseForm(); err != nil {
-			r.renderPage(w, "repositories_new.html", PageData{
-				Title: "Add Repository",
-				Error: "Invalid form data",
-			})
-			return
-		}
+		r.handleRepositoriesNewPost(w, req, claims)
+		return
+	}
 
-		githubURL := req.FormValue("github_url")
-		if githubURL == "" {
-			r.renderPage(w, "repositories_new.html", PageData{
-				Title: "Add Repository",
-				Error: "GitHub URL is required",
-			})
-			return
-		}
+	r.renderPage(w, "repositories_new.html", PageData{
+		Title: "Add Repository",
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+	})
+}
 
-		// TODO: Validate URL and create repository (ro-6)
-		// For now, just show the URL was received
+func (r *Router) handleRepositoriesNewPost(w http.ResponseWriter, req *http.Request, claims *auth.Claims) {
+	// Parse form
+	if err := req.ParseForm(); err != nil {
 		r.renderPage(w, "repositories_new.html", PageData{
 			Title: "Add Repository",
-			Error: "Repository creation not yet implemented",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Invalid form data",
 		})
 		return
 	}
 
-	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	githubURL := req.FormValue("github_url")
+
+	// Validate GitHub URL
+	if err := r.validateGitHubURL(githubURL); err != nil {
+		r.renderPage(w, "repositories_new.html", PageData{
+			Title: "Add Repository",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: err.Error(),
+		})
+		return
+	}
+
+	// Check if stores are configured
+	if r.repoStore == nil || r.secretGen == nil {
+		r.renderPage(w, "repositories_new.html", PageData{
+			Title: "Add Repository",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Repository creation not configured",
+		})
+		return
+	}
+
+	// Generate webhook secret
+	secret, err := r.secretGen.Generate()
+	if err != nil {
+		r.renderPage(w, "repositories_new.html", PageData{
+			Title: "Add Repository",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Failed to generate webhook secret",
+		})
+		return
+	}
+
+	// Create repository
+	repo, err := r.repoStore.CreateRepository(req.Context(), claims.UserID, githubURL, secret)
+	if err != nil {
+		errMsg := "Failed to create repository"
+		if err == handlers.ErrDuplicateRepository {
+			errMsg = "This repository has already been added"
+		}
+		r.renderPage(w, "repositories_new.html", PageData{
+			Title: "Add Repository",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: errMsg,
+		})
+		return
+	}
+
+	// Build webhook URL
+	webhookURL := fmt.Sprintf("%s/webhook/%s", r.webhookURL, repo.ID)
+
+	// Redirect to success page with query params
+	http.Redirect(w, req, fmt.Sprintf("/repositories/success?webhook_url=%s&webhook_secret=%s",
+		url.QueryEscape(webhookURL),
+		url.QueryEscape(secret)), http.StatusSeeOther)
+}
+
+// validateGitHubURL validates that the URL is a valid GitHub repository URL
+func (r *Router) validateGitHubURL(rawURL string) error {
+	if rawURL == "" {
+		return fmt.Errorf("GitHub URL is required")
+	}
+
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL format")
+	}
+
+	// Must be HTTPS
+	if parsed.Scheme != "https" {
+		return fmt.Errorf("URL must use HTTPS")
+	}
+
+	// Must be github.com
+	if parsed.Host != "github.com" {
+		return fmt.Errorf("URL must be a GitHub repository (github.com)")
+	}
+
+	// Path must have at least owner/repo format
+	path := strings.Trim(parsed.Path, "/")
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return fmt.Errorf("URL must be a valid GitHub repository (github.com/owner/repo)")
+	}
+
+	return nil
 }
 
 func (r *Router) renderPage(w http.ResponseWriter, page string, data PageData) {

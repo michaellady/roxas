@@ -103,7 +103,7 @@ func TestBrowser_FullAuthFlow(t *testing.T) {
 	userStore := NewMockUserStore()
 	repoStore := NewMockRepositoryStoreForWeb()
 	commitLister := NewMockCommitListerForWeb()
-	router := NewRouterWithAllStores(userStore, repoStore, commitLister, nil)
+	router := NewRouterWithAllStores(userStore, repoStore, commitLister, nil, nil, "")
 
 	ts := httptest.NewServer(router)
 	defer ts.Close()
@@ -375,7 +375,7 @@ func TestBrowser_DashboardWithData(t *testing.T) {
 	userStore := NewMockUserStore()
 	repoStore := NewMockRepositoryStoreForWeb()
 	commitLister := NewMockCommitListerForWeb()
-	router := NewRouterWithAllStores(userStore, repoStore, commitLister, nil)
+	router := NewRouterWithAllStores(userStore, repoStore, commitLister, nil, nil, "")
 
 	ts := httptest.NewServer(router)
 	defer ts.Close()
