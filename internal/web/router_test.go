@@ -1185,16 +1185,7 @@ func TestWebUI_AddRepositoryAndVerifyWebhook(t *testing.T) {
 	}
 
 	// Verify repo was created in store
-	repos, _ := repoStore.ListRepositoriesByUser(context.Background(), "")
-	// Find repo by URL since we don't know the user ID
 	var createdRepo *handlers.Repository
-	for _, r := range repos {
-		if r.GitHubURL == testGitHubURL {
-			createdRepo = r
-			break
-		}
-	}
-	// Actually, let's check all repos
 	allRepos := make([]*handlers.Repository, 0)
 	repoStore.mu.Lock()
 	for _, r := range repoStore.repos {
@@ -1307,4 +1298,223 @@ func TestWebUI_AddRepositoryAndVerifyWebhook(t *testing.T) {
 	t.Logf("Step 6 PASSED: Webhook signature computed successfully: %s...", computedSignature[:20])
 
 	t.Log("=== ALL 6 STEPS PASSED: Repository creation, webhook configuration, and signature verified ===")
+}
+
+// =============================================================================
+// Tests for /repositories/new and /repositories/success
+// =============================================================================
+
+func TestRouter_GetRepositoriesNew_WithoutAuth_RedirectsToLogin(t *testing.T) {
+	router := NewRouter()
+
+	req := httptest.NewRequest(http.MethodGet, "/repositories/new", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected status 303, got %d", rr.Code)
+	}
+
+	location := rr.Header().Get("Location")
+	if location != "/login" {
+		t.Errorf("Expected redirect to /login, got %s", location)
+	}
+}
+
+func TestRouter_GetRepositoriesNew_WithAuth_RendersForm(t *testing.T) {
+	userStore := NewMockUserStore()
+	router := NewRouterWithStores(userStore)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/repositories/new", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	if !strings.Contains(body, "Add Repository") {
+		t.Errorf("Expected 'Add Repository' in response")
+	}
+	if !strings.Contains(body, "github_url") {
+		t.Errorf("Expected github_url form field in response")
+	}
+}
+
+func TestRouter_PostRepositoriesNew_WithoutAuth_RedirectsToLogin(t *testing.T) {
+	router := NewRouter()
+
+	form := url.Values{}
+	form.Set("github_url", "https://github.com/user/repo")
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/new", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected status 303, got %d", rr.Code)
+	}
+
+	location := rr.Header().Get("Location")
+	if location != "/login" {
+		t.Errorf("Expected redirect to /login, got %s", location)
+	}
+}
+
+func TestRouter_PostRepositoriesNew_InvalidURL_ShowsError(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	secretGen := &MockSecretGeneratorForWeb{Secret: "test-secret"}
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, secretGen, "https://roxas.ai")
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	testCases := []struct {
+		name     string
+		url      string
+		expected string
+	}{
+		{"empty URL", "", "required"},
+		{"non-GitHub URL", "https://gitlab.com/user/repo", "GitHub"},
+		{"HTTP URL", "http://github.com/user/repo", "HTTPS"},
+		{"invalid format", "https://github.com/invalid", "owner/repo"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			form := url.Values{}
+			form.Set("github_url", tc.url)
+
+			req := httptest.NewRequest(http.MethodPost, "/repositories/new", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+			rr := httptest.NewRecorder()
+
+			router.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Errorf("Expected status 200, got %d", rr.Code)
+			}
+
+			body := strings.ToLower(rr.Body.String())
+			if !strings.Contains(body, strings.ToLower(tc.expected)) && !strings.Contains(body, "error") {
+				t.Errorf("Expected error message containing '%s'", tc.expected)
+			}
+		})
+	}
+}
+
+func TestRouter_PostRepositoriesNew_ValidURL_CreatesAndRedirects(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	secretGen := &MockSecretGeneratorForWeb{Secret: "generated-secret-123"}
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, secretGen, "https://roxas.ai")
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	form := url.Values{}
+	form.Set("github_url", "https://github.com/testuser/testrepo")
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/new", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should redirect to success page
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected status 303, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	location := rr.Header().Get("Location")
+	if !strings.HasPrefix(location, "/repositories/success") {
+		t.Errorf("Expected redirect to /repositories/success, got %s", location)
+	}
+
+	// Verify query params include webhook info
+	if !strings.Contains(location, "webhook_url=") {
+		t.Errorf("Expected webhook_url in redirect, got %s", location)
+	}
+	if !strings.Contains(location, "webhook_secret=") {
+		t.Errorf("Expected webhook_secret in redirect, got %s", location)
+	}
+
+	// Verify repo was created
+	repos, _ := repoStore.ListRepositoriesByUser(context.Background(), user.ID)
+	if len(repos) != 1 {
+		t.Errorf("Expected 1 repository, got %d", len(repos))
+	}
+	if repos[0].GitHubURL != "https://github.com/testuser/testrepo" {
+		t.Errorf("Expected GitHub URL to be saved")
+	}
+}
+
+func TestRouter_GetRepositoriesSuccess_WithoutAuth_RedirectsToLogin(t *testing.T) {
+	router := NewRouter()
+
+	req := httptest.NewRequest(http.MethodGet, "/repositories/success", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected status 303, got %d", rr.Code)
+	}
+
+	location := rr.Header().Get("Location")
+	if location != "/login" {
+		t.Errorf("Expected redirect to /login, got %s", location)
+	}
+}
+
+func TestRouter_GetRepositoriesSuccess_WithAuth_ShowsConfig(t *testing.T) {
+	userStore := NewMockUserStore()
+	router := NewRouterWithStores(userStore)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/repositories/success?webhook_url=https://roxas.ai/webhook/123&webhook_secret=secret456", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+
+	// Should display success message
+	if !strings.Contains(body, "success") && !strings.Contains(body, "Success") && !strings.Contains(body, "Added") {
+		t.Errorf("Expected success message in response")
+	}
+
+	// Should display webhook URL
+	if !strings.Contains(body, "https://roxas.ai/webhook/123") {
+		t.Errorf("Expected webhook URL in response")
+	}
+
+	// Should display webhook secret
+	if !strings.Contains(body, "secret456") {
+		t.Errorf("Expected webhook secret in response")
+	}
+
+	// Should have copy buttons
+	if !strings.Contains(body, "data-copy-target") {
+		t.Errorf("Expected copy button data attributes in response")
+	}
 }
