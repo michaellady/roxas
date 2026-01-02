@@ -18,6 +18,7 @@ import (
 
 	"github.com/mikelady/roxas/internal/clients"
 	"github.com/mikelady/roxas/internal/database"
+	"github.com/mikelady/roxas/internal/handlers"
 	"github.com/mikelady/roxas/internal/models"
 	"github.com/mikelady/roxas/internal/orchestrator"
 	"github.com/mikelady/roxas/internal/services"
@@ -35,6 +36,7 @@ type Config struct {
 	LinkedInAccessToken string
 	WebhookSecret       string
 	DBSecretName        string
+	WebhookBaseURL      string
 }
 
 // loadConfig loads configuration from environment variables
@@ -46,6 +48,7 @@ func loadConfig() Config {
 		LinkedInAccessToken: os.Getenv("LINKEDIN_ACCESS_TOKEN"),
 		WebhookSecret:       os.Getenv("WEBHOOK_SECRET"),
 		DBSecretName:        os.Getenv("DB_SECRET_NAME"),
+		WebhookBaseURL:      os.Getenv("WEBHOOK_BASE_URL"),
 	}
 }
 
@@ -154,7 +157,8 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 		repoStore := database.NewRepositoryStore(dbPool)
 		commitStore := database.NewCommitStore(dbPool)
 		postStore := database.NewPostStore(dbPool)
-		webRouter = web.NewRouterWithAllStores(userStore, repoStore, commitStore, postStore)
+		secretGen := handlers.NewCryptoSecretGenerator()
+		webRouter = web.NewRouterWithAllStores(userStore, repoStore, commitStore, postStore, secretGen, config.WebhookBaseURL)
 	} else {
 		// No database - use router without stores (auth will show "not configured")
 		log.Println("WARNING: Database unavailable - web authentication disabled")
