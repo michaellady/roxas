@@ -1051,6 +1051,37 @@ func TestWebUI_FullAuthenticationFlow(t *testing.T) {
 }
 
 // =============================================================================
+// MockPostLister for dashboard tests
+// =============================================================================
+
+type MockPostListerForWeb struct {
+	mu    sync.Mutex
+	posts map[string][]*DashboardPost // userID -> posts
+}
+
+func NewMockPostListerForWeb() *MockPostListerForWeb {
+	return &MockPostListerForWeb{posts: make(map[string][]*DashboardPost)}
+}
+
+func (s *MockPostListerForWeb) AddPostForUser(userID string, post *DashboardPost) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if post.ID == "" {
+		post.ID = uuid.New().String()
+	}
+	s.posts[userID] = append(s.posts[userID], post)
+}
+
+func (s *MockPostListerForWeb) ListPostsByUser(ctx context.Context, userID string) ([]*DashboardPost, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if posts, ok := s.posts[userID]; ok {
+		return posts, nil
+	}
+	return []*DashboardPost{}, nil
+}
+
+// =============================================================================
 // MockSecretGenerator for testing
 // =============================================================================
 
