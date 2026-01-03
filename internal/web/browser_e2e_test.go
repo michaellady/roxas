@@ -1040,3 +1040,250 @@ func TestBrowser_WebhookDeliveries_OtherUserRepo(t *testing.T) {
 
 	t.Log("PASSED: User cannot view another user's webhook deliveries")
 }
+
+// =============================================================================
+// Connection Disconnect with Confirmation (hq-chj1)
+// =============================================================================
+
+// TestBrowser_ConnectionDisconnectConfirmation tests that disconnecting a platform
+// shows a confirmation dialog and properly handles both confirm and cancel actions.
+func TestBrowser_ConnectionDisconnectConfirmation(t *testing.T) {
+	// Setup test server with mock stores including connection service
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Launch browser
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	testEmail := "disconnect-test@example.com"
+	testPassword := "securepassword123"
+
+	// =========================================================================
+	// Setup: Create user and add a connection
+	// =========================================================================
+	t.Log("Setup: Creating user and adding connection")
+
+	user, _ := userStore.CreateUser(context.Background(), testEmail, hashPassword(testPassword))
+	connService.AddConnection(user.ID, "twitter", "connected", "@testuser")
+
+	// =========================================================================
+	// Step 1: Login
+	// =========================================================================
+	t.Log("Step 1: Login")
+
+	page.MustNavigate(ts.URL + "/login").MustWaitLoad()
+
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	t.Log("Step 1 PASSED: User logged in")
+
+	// =========================================================================
+	// Step 2: Navigate to connection view page
+	// =========================================================================
+	t.Log("Step 2: Navigate to connection view page")
+
+	page.MustNavigate(ts.URL + "/connections/twitter").MustWaitLoad()
+	page.MustWaitStable()
+
+	// Verify we're on the connection view page
+	bodyText := page.MustElement("body").MustText()
+	if !strings.Contains(bodyText, "Twitter") {
+		t.Fatalf("Step 2 FAILED: Expected to see 'Twitter' on page, got: %s", bodyText[:min(len(bodyText), 200)])
+	}
+	if !strings.Contains(bodyText, "Disconnect") {
+		t.Fatalf("Step 2 FAILED: Expected to see 'Disconnect' button on page")
+	}
+
+	t.Log("Step 2 PASSED: Connection view page loaded with Disconnect button")
+
+	// =========================================================================
+	// Step 3: Test cancel on confirmation dialog
+	// =========================================================================
+	t.Log("Step 3: Click Disconnect and cancel the confirmation")
+
+	// Set up dialog handler to automatically dismiss (cancel) the dialog
+	wait, handle := page.MustHandleDialog()
+	go func() {
+		wait()
+		handle(false, "") // false = dismiss/cancel the dialog
+	}()
+
+	// Find and click the disconnect button
+	disconnectBtn := page.MustElement(".btn-danger")
+	disconnectBtn.MustClick()
+
+	// Wait a moment for dialog handling
+	page.MustWaitStable()
+
+	// Verify we're still on the same page (cancel should not proceed)
+	currentURL := page.MustInfo().URL
+	if !strings.Contains(currentURL, "/connections/twitter") {
+		t.Logf("Note: Page URL changed to %s, checking if connection still exists", currentURL)
+	}
+
+	// Verify connection still exists after canceling
+	conn, _ := connService.GetConnection(context.Background(), user.ID, "twitter")
+	if conn == nil {
+		t.Fatal("Step 3 FAILED: Connection was removed even though dialog was canceled")
+	}
+
+	t.Log("Step 3 PASSED: Connection still exists after canceling dialog")
+
+	// =========================================================================
+	// Step 4: Test confirm on confirmation dialog
+	// =========================================================================
+	t.Log("Step 4: Click Disconnect and confirm")
+
+	// Navigate back to connection view if needed
+	page.MustNavigate(ts.URL + "/connections/twitter").MustWaitLoad()
+	page.MustWaitStable()
+
+	// Set up dialog handler to automatically accept the dialog
+	wait2, handle2 := page.MustHandleDialog()
+	go func() {
+		wait2()
+		handle2(true, "") // true = accept/confirm the dialog
+	}()
+
+	// Find and click the disconnect button
+	disconnectBtn = page.MustElement(".btn-danger")
+	disconnectBtn.MustClick()
+
+	// Wait for the redirect after disconnect
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Verify we were redirected to connections list
+	currentURL = page.MustInfo().URL
+	if !strings.Contains(currentURL, "/connections") {
+		t.Logf("Step 4: Current URL is %s", currentURL)
+	}
+
+	// Verify connection was removed after confirming
+	conn, _ = connService.GetConnection(context.Background(), user.ID, "twitter")
+	if conn != nil {
+		t.Fatal("Step 4 FAILED: Connection still exists after confirming disconnect")
+	}
+
+	t.Log("Step 4 PASSED: Connection removed after confirming disconnect")
+}
+
+// TestBrowser_ConnectionsList tests the connections list page shows all connected platforms.
+func TestBrowser_ConnectionsList(t *testing.T) {
+	// Setup test server with mock stores including connection service
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Launch browser
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	testEmail := "list-test@example.com"
+	testPassword := "securepassword123"
+
+	// Setup: Create user and add multiple connections
+	t.Log("Setup: Creating user and adding connections")
+
+	user, _ := userStore.CreateUser(context.Background(), testEmail, hashPassword(testPassword))
+	connService.AddConnection(user.ID, "twitter", "connected", "@testuser")
+	connService.AddConnection(user.ID, "linkedin", "connected", "Test User")
+
+	// Login
+	t.Log("Login")
+	page.MustNavigate(ts.URL + "/login").MustWaitLoad()
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Navigate to connections list
+	t.Log("Navigate to connections list")
+	page.MustNavigate(ts.URL + "/connections").MustWaitLoad()
+	page.MustWaitStable()
+
+	// Verify both connections are shown
+	bodyText := page.MustElement("body").MustText()
+	// Platform names are displayed with first letter capitalized
+	if !strings.Contains(bodyText, "Twitter") {
+		t.Errorf("Expected to see 'Twitter' in connections list")
+	}
+	if !strings.Contains(bodyText, "Linkedin") {
+		t.Errorf("Expected to see 'Linkedin' in connections list")
+	}
+	if !strings.Contains(bodyText, "Connected Platforms") {
+		t.Errorf("Expected to see 'Connected Platforms' heading")
+	}
+
+	t.Log("PASSED: Connections list shows all connected platforms")
+}
+
+// TestBrowser_ConnectionNotConnected tests the not connected state.
+func TestBrowser_ConnectionNotConnected(t *testing.T) {
+	// Setup test server with mock stores including connection service
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Launch browser
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	testEmail := "notconnected-test@example.com"
+	testPassword := "securepassword123"
+
+	// Setup: Create user WITHOUT any connections
+	t.Log("Setup: Creating user without connections")
+
+	userStore.CreateUser(context.Background(), testEmail, hashPassword(testPassword))
+
+	// Login
+	t.Log("Login")
+	page.MustNavigate(ts.URL + "/login").MustWaitLoad()
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Navigate to a connection view page for a platform that's not connected
+	t.Log("Navigate to twitter connection page (not connected)")
+	page.MustNavigate(ts.URL + "/connections/twitter").MustWaitLoad()
+	page.MustWaitStable()
+
+	// Verify "Not Connected" state is shown
+	bodyText := page.MustElement("body").MustText()
+	if !strings.Contains(bodyText, "Not Connected") {
+		t.Errorf("Expected to see 'Not Connected' state on page, got: %s", bodyText[:min(len(bodyText), 200)])
+	}
+
+	t.Log("PASSED: Not connected state is shown correctly")
+}

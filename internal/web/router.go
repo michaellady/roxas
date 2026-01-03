@@ -30,7 +30,7 @@ var pageTemplates map[string]*template.Template
 
 func init() {
 	pageTemplates = make(map[string]*template.Template)
-	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "repository_delete.html", "webhook_regenerate.html", "webhook_deliveries.html"}
+	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "repository_delete.html", "webhook_regenerate.html", "webhook_deliveries.html", "connections_list.html", "connection_view.html"}
 
 	for _, page := range pages {
 		// Clone the base template and parse the page
@@ -160,6 +160,54 @@ type WebhookDeliveryStore interface {
 	ListDeliveriesByRepository(ctx context.Context, repoID string, limit int) ([]*WebhookDelivery, error)
 }
 
+// ConnectionService interface for connection operations in web UI
+type ConnectionService interface {
+	ListConnections(ctx context.Context, userID string) ([]*Connection, error)
+	GetConnection(ctx context.Context, userID, platform string) (*Connection, error)
+	Disconnect(ctx context.Context, userID, platform string) error
+	TestConnection(ctx context.Context, userID, platform string) (*ConnectionTestResult, error)
+}
+
+// Connection represents a user's connection to a social platform
+type Connection struct {
+	UserID         string
+	Platform       string
+	Status         string
+	PlatformUserID string
+	DisplayName    string
+	Scopes         []string
+	ConnectedAt    *time.Time
+	ExpiresAt      *time.Time
+	LastError      string
+}
+
+// IsHealthy returns true if the connection is active and not expired
+func (c *Connection) IsHealthy() bool {
+	if c.Status != "connected" {
+		return false
+	}
+	if c.ExpiresAt != nil && time.Now().After(*c.ExpiresAt) {
+		return false
+	}
+	return true
+}
+
+// ExpiresWithin7Days returns true if the connection expires within 7 days
+func (c *Connection) ExpiresWithin7Days() bool {
+	if c.ExpiresAt == nil {
+		return false
+	}
+	return time.Until(*c.ExpiresAt) < 7*24*time.Hour
+}
+
+// ConnectionTestResult contains the result of testing a connection
+type ConnectionTestResult struct {
+	Platform string
+	Success  bool
+	Latency  time.Duration
+	Error    string
+}
+
 // DashboardCommit represents a commit for the dashboard
 type DashboardCommit struct {
 	ID      string
@@ -187,6 +235,7 @@ type Router struct {
 	webhookURL           string
 	webhookTester        WebhookTester
 	webhookDeliveryStore WebhookDeliveryStore
+	connectionService    ConnectionService
 }
 
 // NewRouter creates a new web router with all routes configured (no user store)
@@ -255,6 +304,17 @@ func NewRouterWithWebhookDeliveries(userStore UserStore, repoStore RepositorySto
 	return r
 }
 
+// NewRouterWithConnectionService creates a new web router with connection service
+func NewRouterWithConnectionService(userStore UserStore, connectionService ConnectionService) *Router {
+	r := &Router{
+		mux:               http.NewServeMux(),
+		userStore:         userStore,
+		connectionService: connectionService,
+	}
+	r.setupRoutes()
+	return r
+}
+
 // ServeHTTP implements http.Handler
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.mux.ServeHTTP(w, req)
@@ -282,6 +342,12 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("/repositories/{id}/webhook/test", r.handleWebhookTest)
 	r.mux.HandleFunc("/repositories/{id}/webhook/regenerate", r.handleWebhookRegenerate)
 	r.mux.HandleFunc("GET /repositories/{id}/webhooks", r.handleWebhookDeliveries)
+
+	// Connection management
+	r.mux.HandleFunc("GET /connections", r.handleConnectionsList)
+	r.mux.HandleFunc("GET /connections/{platform}", r.handleConnectionView)
+	r.mux.HandleFunc("POST /connections/{platform}/disconnect", r.handleConnectionDisconnect)
+	r.mux.HandleFunc("POST /connections/{platform}/test", r.handleConnectionTest)
 }
 
 func (r *Router) handleHome(w http.ResponseWriter, req *http.Request) {
@@ -1531,4 +1597,207 @@ func (r *Router) handleWebhookDeliveries(w http.ResponseWriter, req *http.Reques
 			RepoName:   repoName,
 		},
 	})
+}
+
+// =============================================================================
+// Connection Handlers
+// =============================================================================
+
+// ConnectionsListData holds data for connections list template
+type ConnectionsListData struct {
+	Connections []*Connection
+}
+
+// ConnectionViewData holds data for connection view template
+type ConnectionViewData struct {
+	Connection   *Connection
+	Platform     string
+	PlatformName string
+	TestResult   *ConnectionTestResult
+}
+
+func (r *Router) handleConnectionsList(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	var connections []*Connection
+	if r.connectionService != nil {
+		connections, err = r.connectionService.ListConnections(req.Context(), claims.UserID)
+		if err != nil {
+			r.renderPage(w, "connections_list.html", PageData{
+				Title: "Connected Platforms",
+				User: &UserData{
+					ID:    claims.UserID,
+					Email: claims.Email,
+				},
+				Error: "Failed to load connections",
+			})
+			return
+		}
+	}
+
+	r.renderPage(w, "connections_list.html", PageData{
+		Title: "Connected Platforms",
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+		Data: &ConnectionsListData{
+			Connections: connections,
+		},
+	})
+}
+
+func (r *Router) handleConnectionView(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	platform := req.PathValue("platform")
+	if platform == "" {
+		http.Redirect(w, req, "/connections", http.StatusSeeOther)
+		return
+	}
+
+	var conn *Connection
+	if r.connectionService != nil {
+		conn, _ = r.connectionService.GetConnection(req.Context(), claims.UserID, platform)
+	}
+
+	r.renderPage(w, "connection_view.html", PageData{
+		Title: platformName(platform) + " Connection",
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+		Data: &ConnectionViewData{
+			Connection:   conn,
+			Platform:     platform,
+			PlatformName: platformName(platform),
+		},
+	})
+}
+
+func (r *Router) handleConnectionDisconnect(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	platform := req.PathValue("platform")
+	if platform == "" {
+		http.Redirect(w, req, "/connections", http.StatusSeeOther)
+		return
+	}
+
+	if r.connectionService != nil {
+		err = r.connectionService.Disconnect(req.Context(), claims.UserID, platform)
+		if err != nil {
+			// Redirect back to connection view with error
+			r.renderPage(w, "connection_view.html", PageData{
+				Title: platformName(platform) + " Connection",
+				User: &UserData{
+					ID:    claims.UserID,
+					Email: claims.Email,
+				},
+				Error: "Failed to disconnect: " + err.Error(),
+				Data: &ConnectionViewData{
+					Platform:     platform,
+					PlatformName: platformName(platform),
+				},
+			})
+			return
+		}
+	}
+
+	// Redirect to connections list after successful disconnect
+	http.Redirect(w, req, "/connections", http.StatusSeeOther)
+}
+
+func (r *Router) handleConnectionTest(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	platform := req.PathValue("platform")
+	if platform == "" {
+		http.Redirect(w, req, "/connections", http.StatusSeeOther)
+		return
+	}
+
+	var conn *Connection
+	var testResult *ConnectionTestResult
+	if r.connectionService != nil {
+		conn, _ = r.connectionService.GetConnection(req.Context(), claims.UserID, platform)
+		testResult, _ = r.connectionService.TestConnection(req.Context(), claims.UserID, platform)
+	}
+
+	r.renderPage(w, "connection_view.html", PageData{
+		Title: platformName(platform) + " Connection",
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+		Data: &ConnectionViewData{
+			Connection:   conn,
+			Platform:     platform,
+			PlatformName: platformName(platform),
+			TestResult:   testResult,
+		},
+	})
+}
+
+// platformName returns a display name for the platform
+func platformName(platform string) string {
+	switch platform {
+	case "linkedin":
+		return "LinkedIn"
+	case "twitter":
+		return "Twitter"
+	case "threads":
+		return "Threads"
+	case "bluesky":
+		return "Bluesky"
+	default:
+		if len(platform) == 0 {
+			return platform
+		}
+		return strings.ToUpper(platform[:1]) + platform[1:]
+	}
 }
