@@ -1,8 +1,14 @@
 package services
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
 	"time"
 )
 
@@ -131,10 +137,23 @@ func (p *ThreadsOAuthProvider) GetRequiredScopes() []string {
 }
 
 // BlueskyAuthProvider handles Bluesky authentication via app passwords.
-// Bluesky uses app passwords instead of OAuth, providing a different auth flow.
+// Bluesky uses AT Protocol with app passwords instead of OAuth.
+//
+// Auth Flow:
+// 1. User creates an app password at https://bsky.app/settings/app-passwords
+// 2. User enters handle + app password in the application
+// 3. Application calls createSession to get JWT tokens
+// 4. JWT tokens are stored and used for API requests
 type BlueskyAuthProvider struct {
-	// No client ID/secret needed for app passwords
+	// PDSURL is the Personal Data Server URL. Defaults to https://bsky.social
+	PDSURL string
+
+	// Client is the HTTP client to use. If nil, a default client is created.
+	Client *http.Client
 }
+
+// Default Bluesky PDS URL
+const DefaultBlueskyPDSURL = "https://bsky.social"
 
 func (p *BlueskyAuthProvider) Platform() string {
 	return PlatformBluesky
@@ -146,23 +165,196 @@ func (p *BlueskyAuthProvider) GetAuthURL(state, redirectURL string) string {
 	return "https://bsky.app/settings/app-passwords?state=" + state + "&redirect_uri=" + redirectURL
 }
 
+// ExchangeCode authenticates with Bluesky using an app password.
+// For Bluesky, the "code" parameter should be formatted as "handle:appPassword".
+// The redirectURL parameter is ignored for Bluesky.
 func (p *BlueskyAuthProvider) ExchangeCode(ctx context.Context, code, redirectURL string) (*OAuthTokens, error) {
-	// For Bluesky, "code" is actually the app password
-	// We validate it by attempting to create a session
-	// TODO: Implement actual Bluesky session creation
-	// POST to https://bsky.social/xrpc/com.atproto.server.createSession
-	return nil, ErrCodeExchangeFailed
+	// Parse credentials from the code parameter
+	handle, password, err := parseBlueskyCredentials(code)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidCredentials, err)
+	}
+
+	// Normalize the handle
+	handle = normalizeBlueskyHandle(handle)
+
+	// Get the PDS URL
+	pdsURL := p.PDSURL
+	if pdsURL == "" {
+		pdsURL = DefaultBlueskyPDSURL
+	}
+
+	// Get HTTP client
+	client := p.Client
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+
+	// Create session request
+	reqBody := blueskyCreateSessionRequest{
+		Identifier: handle,
+		Password:   password,
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	url := pdsURL + "/xrpc/com.atproto.server.createSession"
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call createSession: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, ErrInvalidCredentials
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%w: %d - %s", ErrCodeExchangeFailed, resp.StatusCode, string(body))
+	}
+
+	var sessionResp blueskySessionResponse
+	if err := json.Unmarshal(body, &sessionResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	return &OAuthTokens{
+		AccessToken:    sessionResp.AccessJwt,
+		RefreshToken:   sessionResp.RefreshJwt,
+		PlatformUserID: sessionResp.DID,
+		Scopes:         "atproto",
+		// Bluesky access tokens typically expire in 2 hours
+		ExpiresAt: oauthExpiryPtr(time.Now().Add(2 * time.Hour)),
+	}, nil
 }
 
+// RefreshTokens refreshes Bluesky session tokens.
+// Unlike traditional OAuth, Bluesky uses JWT refresh via the refreshSession endpoint.
 func (p *BlueskyAuthProvider) RefreshTokens(ctx context.Context, refreshToken string) (*OAuthTokens, error) {
-	// Bluesky app passwords don't expire, no refresh needed
-	// Return error to indicate refresh is not supported
-	return nil, ErrTokenRefreshFailed
+	// Get the PDS URL
+	pdsURL := p.PDSURL
+	if pdsURL == "" {
+		pdsURL = DefaultBlueskyPDSURL
+	}
+
+	// Get HTTP client
+	client := p.Client
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+
+	url := pdsURL + "/xrpc/com.atproto.server.refreshSession"
+	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+refreshToken)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call refreshSession: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, ErrTokenRefreshFailed
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%w: %d - %s", ErrTokenRefreshFailed, resp.StatusCode, string(body))
+	}
+
+	var sessionResp blueskySessionResponse
+	if err := json.Unmarshal(body, &sessionResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	return &OAuthTokens{
+		AccessToken:    sessionResp.AccessJwt,
+		RefreshToken:   sessionResp.RefreshJwt,
+		PlatformUserID: sessionResp.DID,
+		Scopes:         "atproto",
+		ExpiresAt:      oauthExpiryPtr(time.Now().Add(2 * time.Hour)),
+	}, nil
 }
 
 func (p *BlueskyAuthProvider) GetRequiredScopes() []string {
 	// Bluesky doesn't use scopes - app passwords have full access
 	return []string{"atproto"}
+}
+
+// blueskyCreateSessionRequest is the request body for createSession
+type blueskyCreateSessionRequest struct {
+	Identifier string `json:"identifier"`
+	Password   string `json:"password"`
+}
+
+// blueskySessionResponse is the response from createSession and refreshSession
+type blueskySessionResponse struct {
+	AccessJwt  string `json:"accessJwt"`
+	RefreshJwt string `json:"refreshJwt"`
+	Handle     string `json:"handle"`
+	DID        string `json:"did"`
+}
+
+// parseBlueskyCredentials parses "handle:password" format credentials
+func parseBlueskyCredentials(code string) (handle, password string, err error) {
+	if code == "" {
+		return "", "", fmt.Errorf("empty credentials")
+	}
+
+	idx := strings.Index(code, ":")
+	if idx == -1 {
+		return "", "", fmt.Errorf("invalid format: expected 'handle:password'")
+	}
+
+	handle = code[:idx]
+	password = code[idx+1:]
+
+	if handle == "" || password == "" {
+		return "", "", fmt.Errorf("handle and password are required")
+	}
+
+	return handle, password, nil
+}
+
+// normalizeBlueskyHandle normalizes a Bluesky handle.
+// - Strips leading @ if present
+// - Adds .bsky.social suffix if no domain present
+func normalizeBlueskyHandle(handle string) string {
+	// Strip leading @
+	handle = strings.TrimPrefix(handle, "@")
+
+	// If handle doesn't contain a dot, add .bsky.social
+	if !strings.Contains(handle, ".") {
+		handle = handle + ".bsky.social"
+	}
+
+	return handle
+}
+
+// oauthExpiryPtr returns a pointer to a time value
+func oauthExpiryPtr(t time.Time) *time.Time {
+	return &t
 }
 
 // TwitterOAuthProvider handles Twitter/X OAuth 2.0 authentication.
