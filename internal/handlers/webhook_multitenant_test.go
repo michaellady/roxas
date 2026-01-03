@@ -534,3 +534,190 @@ func TestMultiTenantWebhookReturnsJSON(t *testing.T) {
 		t.Errorf("Expected Content-Type application/json, got %s", contentType)
 	}
 }
+
+// =============================================================================
+// Security Tests: Payload Storage on Signature Failures (hq-5e52)
+// =============================================================================
+
+// MockWebhookDeliveryStore tracks all delivery recordings for testing
+type MockWebhookDeliveryStore struct {
+	mu         sync.Mutex
+	deliveries []*WebhookDelivery
+}
+
+func NewMockWebhookDeliveryStore() *MockWebhookDeliveryStore {
+	return &MockWebhookDeliveryStore{
+		deliveries: make([]*WebhookDelivery, 0),
+	}
+}
+
+func (m *MockWebhookDeliveryStore) RecordDelivery(ctx context.Context, delivery *WebhookDelivery) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deliveries = append(m.deliveries, delivery)
+	return nil
+}
+
+func (m *MockWebhookDeliveryStore) GetDelivery(ctx context.Context, deliveryID string) (*WebhookDelivery, error) {
+	return nil, nil
+}
+
+func (m *MockWebhookDeliveryStore) ListDeliveriesForRepository(ctx context.Context, repoID string, limit int) ([]*WebhookDelivery, error) {
+	return nil, nil
+}
+
+func (m *MockWebhookDeliveryStore) GetRecentDeliveries(ctx context.Context, limit int) ([]*WebhookDelivery, error) {
+	return nil, nil
+}
+
+func (m *MockWebhookDeliveryStore) DeleteOldDeliveries(ctx context.Context, olderThan time.Duration) (int64, error) {
+	return 0, nil
+}
+
+func (m *MockWebhookDeliveryStore) GetDeliveries() []*WebhookDelivery {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.deliveries
+}
+
+// TestMultiTenantWebhook_InvalidSignature_NoPayloadStored verifies that when
+// signature validation fails, the full payload is NOT stored (security fix hq-5e52)
+func TestMultiTenantWebhook_InvalidSignature_NoPayloadStored(t *testing.T) {
+	repoStore := NewMockWebhookRepositoryStore()
+	commitStore := NewMockCommitStore()
+	deliveryStore := NewMockWebhookDeliveryStore()
+
+	repo := &Repository{
+		ID:            "repo-123",
+		UserID:        "user-456",
+		GitHubURL:     "https://github.com/test/repo",
+		WebhookSecret: "correct-secret",
+		CreatedAt:     time.Now(),
+	}
+	repoStore.AddRepository(repo)
+
+	handler := NewMultiTenantWebhookHandler(repoStore, commitStore).WithDeliveryStore(deliveryStore)
+
+	// Create a large payload that an attacker might try to store
+	sensitivePayload := `{"secret_data": "this should NOT be stored when signature is invalid"}`
+	payloadBytes := []byte(sensitivePayload)
+
+	// Sign with WRONG secret
+	wrongSignature := generateGitHubSignature(payloadBytes, "wrong-secret")
+
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/github/repo-123", bytes.NewReader(payloadBytes))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Hub-Signature-256", wrongSignature)
+	req.Header.Set("X-GitHub-Event", "push")
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	// Should return 401
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("Expected status 401, got %d", rr.Code)
+	}
+
+	// SECURITY CHECK: Verify NO delivery was recorded with the payload
+	deliveries := deliveryStore.GetDeliveries()
+	for _, d := range deliveries {
+		if d.Payload != "" {
+			t.Errorf("SECURITY ISSUE: Payload was stored on invalid signature: %s", d.Payload[:min(100, len(d.Payload))])
+		}
+	}
+}
+
+// TestMultiTenantWebhook_MissingSignature_NoPayloadStored verifies that when
+// signature is missing, the full payload is NOT stored (security fix hq-5e52)
+func TestMultiTenantWebhook_MissingSignature_NoPayloadStored(t *testing.T) {
+	repoStore := NewMockWebhookRepositoryStore()
+	commitStore := NewMockCommitStore()
+	deliveryStore := NewMockWebhookDeliveryStore()
+
+	repo := &Repository{
+		ID:            "repo-123",
+		UserID:        "user-456",
+		GitHubURL:     "https://github.com/test/repo",
+		WebhookSecret: "correct-secret",
+		CreatedAt:     time.Now(),
+	}
+	repoStore.AddRepository(repo)
+
+	handler := NewMultiTenantWebhookHandler(repoStore, commitStore).WithDeliveryStore(deliveryStore)
+
+	// Create a payload without any signature
+	sensitivePayload := `{"attack_data": "attacker trying to store arbitrary data without valid signature"}`
+	payloadBytes := []byte(sensitivePayload)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/github/repo-123", bytes.NewReader(payloadBytes))
+	req.Header.Set("Content-Type", "application/json")
+	// Note: NO X-Hub-Signature-256 header
+	req.Header.Set("X-GitHub-Event", "push")
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	// Should return 401
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("Expected status 401, got %d", rr.Code)
+	}
+
+	// SECURITY CHECK: Verify NO delivery was recorded with the payload
+	deliveries := deliveryStore.GetDeliveries()
+	for _, d := range deliveries {
+		if d.Payload != "" {
+			t.Errorf("SECURITY ISSUE: Payload was stored on missing signature: %s", d.Payload[:min(100, len(d.Payload))])
+		}
+	}
+}
+
+// TestMultiTenantWebhook_ValidSignature_PayloadStored verifies that valid
+// webhooks still have their payloads stored correctly
+func TestMultiTenantWebhook_ValidSignature_PayloadStored(t *testing.T) {
+	repoStore := NewMockWebhookRepositoryStore()
+	commitStore := NewMockCommitStore()
+	deliveryStore := NewMockWebhookDeliveryStore()
+
+	repo := &Repository{
+		ID:            "repo-123",
+		UserID:        "user-456",
+		GitHubURL:     "https://github.com/test/repo",
+		WebhookSecret: "correct-secret",
+		CreatedAt:     time.Now(),
+	}
+	repoStore.AddRepository(repo)
+
+	handler := NewMultiTenantWebhookHandler(repoStore, commitStore).WithDeliveryStore(deliveryStore)
+
+	commits := []map[string]interface{}{
+		{"id": "abc123", "message": "test commit", "author": map[string]interface{}{"name": "Test"}},
+	}
+	payload := createPushPayload(commits)
+	signature := generateGitHubSignature(payload, repo.WebhookSecret)
+
+	req := createWebhookRequest(t, repo.ID, payload, signature)
+	req.Header.Set("X-GitHub-Event", "push")
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	// Should return 200
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Valid webhooks SHOULD have payload stored
+	deliveries := deliveryStore.GetDeliveries()
+	if len(deliveries) == 0 {
+		t.Error("Expected delivery to be recorded for valid webhook")
+	} else if deliveries[0].Payload == "" {
+		t.Error("Expected payload to be stored for valid webhook")
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

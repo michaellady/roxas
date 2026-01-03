@@ -117,13 +117,15 @@ func (h *MultiTenantWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 	// Validate GitHub signature using repository's webhook secret
 	signature := r.Header.Get("X-Hub-Signature-256")
 	if signature == "" {
-		h.recordDelivery(r.Context(), repoID, "", string(body), http.StatusUnauthorized, "missing signature", false)
+		// Security: Don't store payload on signature failures to prevent abuse (hq-5e52)
+		h.recordDelivery(r.Context(), repoID, "", "", http.StatusUnauthorized, "missing signature", false)
 		h.writeError(w, http.StatusUnauthorized, "missing signature")
 		return
 	}
 
 	if !h.validateSignature(body, signature, repo.WebhookSecret) {
-		h.recordDelivery(r.Context(), repoID, "", string(body), http.StatusUnauthorized, "invalid signature", false)
+		// Security: Don't store payload on signature failures to prevent abuse (hq-5e52)
+		h.recordDelivery(r.Context(), repoID, "", "", http.StatusUnauthorized, "invalid signature", false)
 		h.writeError(w, http.StatusUnauthorized, "invalid signature")
 		return
 	}
