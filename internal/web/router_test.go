@@ -2125,6 +2125,49 @@ func TestRouter_PostWebhookTest_WithoutAuth_RedirectsToLogin(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Webhook Deliveries Tests (GET /repositories/:id/webhooks)
+// =============================================================================
+
+// MockWebhookDeliveryStore implements WebhookDeliveryStore for tests
+type MockWebhookDeliveryStore struct {
+	deliveries map[string][]*WebhookDelivery
+}
+
+func NewMockWebhookDeliveryStore() *MockWebhookDeliveryStore {
+	return &MockWebhookDeliveryStore{
+		deliveries: make(map[string][]*WebhookDelivery),
+	}
+}
+
+func (s *MockWebhookDeliveryStore) ListDeliveriesByRepository(ctx context.Context, repoID string, limit int) ([]*WebhookDelivery, error) {
+	deliveries := s.deliveries[repoID]
+	if len(deliveries) > limit {
+		return deliveries[:limit], nil
+	}
+	return deliveries, nil
+}
+
+func (s *MockWebhookDeliveryStore) AddDelivery(repoID string, delivery *WebhookDelivery) {
+	s.deliveries[repoID] = append(s.deliveries[repoID], delivery)
+}
+
+func TestRouter_GetWebhookDeliveries_WithoutAuth_RedirectsToLogin(t *testing.T) {
+	router := NewRouter()
+
+	req := httptest.NewRequest(http.MethodGet, "/repositories/some-id/webhooks", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected redirect status 303, got %d", rr.Code)
+	}
+	if rr.Header().Get("Location") != "/login" {
+		t.Errorf("Expected redirect to /login, got %s", rr.Header().Get("Location"))
+	}
+}
+
 func TestRouter_PostWebhookTest_NotFound_Returns404(t *testing.T) {
 	userStore := NewMockUserStore()
 	repoStore := NewMockRepositoryStoreForWeb()
@@ -2135,6 +2178,118 @@ func TestRouter_PostWebhookTest_NotFound_Returns404(t *testing.T) {
 	token, _ := generateToken(user.ID, user.Email)
 
 	req := httptest.NewRequest(http.MethodPost, "/repositories/nonexistent-id/webhook/test", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404, got %d", rr.Code)
+	}
+}
+
+func TestRouter_GetWebhookDeliveries_WithAuth_ShowsDeliveries(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	webhookStore := NewMockWebhookDeliveryStore()
+	secretGen := &MockSecretGeneratorForWeb{Secret: "test-secret"}
+	router := NewRouterWithWebhookDeliveries(userStore, repoStore, nil, nil, secretGen, "https://example.com", webhookStore)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	repo, _ := repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/owner/myrepo", "webhook-secret")
+
+	// Add some test deliveries
+	webhookStore.AddDelivery(repo.ID, &WebhookDelivery{
+		ID:         "delivery-1",
+		EventType:  "push",
+		Payload:    `{"commits":[{"message":"test"}]}`,
+		StatusCode: 200,
+		CreatedAt:  "2026-01-02 15:04:05",
+		IsSuccess:  true,
+	})
+	webhookStore.AddDelivery(repo.ID, &WebhookDelivery{
+		ID:           "delivery-2",
+		EventType:    "push",
+		Payload:      `{"error":"test"}`,
+		StatusCode:   500,
+		ErrorMessage: stringPtr("Internal Server Error"),
+		CreatedAt:    "2026-01-02 14:00:00",
+		IsSuccess:    false,
+	})
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/repositories/"+repo.ID+"/webhooks", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	// Should show page title
+	if !strings.Contains(body, "Webhook Deliveries") {
+		t.Errorf("Expected 'Webhook Deliveries' in response")
+	}
+	// Should show repository name
+	if !strings.Contains(body, "owner/myrepo") {
+		t.Errorf("Expected repository name in response")
+	}
+	// Should show event type
+	if !strings.Contains(body, "push") {
+		t.Errorf("Expected event type 'push' in response")
+	}
+	// Should show status codes
+	if !strings.Contains(body, "200") {
+		t.Errorf("Expected status code 200 in response")
+	}
+	if !strings.Contains(body, "500") {
+		t.Errorf("Expected status code 500 in response")
+	}
+}
+
+func TestRouter_GetWebhookDeliveries_EmptyList_ShowsMessage(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	webhookStore := NewMockWebhookDeliveryStore()
+	secretGen := &MockSecretGeneratorForWeb{Secret: "test-secret"}
+	router := NewRouterWithWebhookDeliveries(userStore, repoStore, nil, nil, secretGen, "https://example.com", webhookStore)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	repo, _ := repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/owner/myrepo", "webhook-secret")
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/repositories/"+repo.ID+"/webhooks", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	// Should show empty state message
+	if !strings.Contains(body, "No webhook deliveries yet") {
+		t.Errorf("Expected empty state message in response")
+	}
+}
+
+func TestRouter_GetWebhookDeliveries_NotFound_Returns404(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	webhookStore := NewMockWebhookDeliveryStore()
+	router := NewRouterWithWebhookDeliveries(userStore, repoStore, nil, nil, nil, "", webhookStore)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/repositories/nonexistent-id/webhooks", nil)
 	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
 	rr := httptest.NewRecorder()
 
@@ -2161,6 +2316,34 @@ func TestRouter_PostWebhookTest_OtherUsersRepo_Returns404(t *testing.T) {
 	token, _ := generateToken(user2.ID, user2.Email)
 
 	req := httptest.NewRequest(http.MethodPost, "/repositories/"+repo.ID+"/webhook/test", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404 for other user's repo, got %d", rr.Code)
+	}
+}
+
+func TestRouter_GetWebhookDeliveries_OtherUsersRepo_Returns404(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	webhookStore := NewMockWebhookDeliveryStore()
+	secretGen := &MockSecretGeneratorForWeb{Secret: "test-secret"}
+	router := NewRouterWithWebhookDeliveries(userStore, repoStore, nil, nil, secretGen, "https://example.com", webhookStore)
+
+	// Create two users
+	user1, _ := userStore.CreateUser(context.Background(), "user1@example.com", hashPassword("password123"))
+	user2, _ := userStore.CreateUser(context.Background(), "user2@example.com", hashPassword("password123"))
+
+	// Create a repo owned by user2
+	repo, _ := repoStore.CreateRepository(context.Background(), user2.ID, "https://github.com/owner/private-repo", "webhook-secret")
+
+	// User1 tries to access user2's repo
+	token, _ := generateToken(user1.ID, user1.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/repositories/"+repo.ID+"/webhooks", nil)
 	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
 	rr := httptest.NewRecorder()
 
@@ -2467,4 +2650,8 @@ func TestRouter_PostWebhookRegenerate_InvalidatesOldSecret(t *testing.T) {
 	if newRepo.WebhookSecret != "completely-new-secret" {
 		t.Errorf("Expected new secret to be 'completely-new-secret', got %s", newRepo.WebhookSecret)
 	}
+}
+
+func stringPtr(s string) *string {
+	return &s
 }
