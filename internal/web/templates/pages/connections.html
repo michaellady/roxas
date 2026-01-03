@@ -1,0 +1,187 @@
+{{define "content"}}
+<div class="connections-container">
+    <h1>Connections</h1>
+
+    {{if not .Data.Connections}}
+    <div class="empty-state">
+        <h2>No connections yet</h2>
+        <p>Connect your social media accounts to start posting automatically.</p>
+        <a href="/connections/new" class="btn btn-primary">Connect Account</a>
+    </div>
+    {{else}}
+
+    <div class="connections-list">
+        {{range .Data.Connections}}
+        <div class="connection-card">
+            <div class="connection-header">
+                <span class="platform-badge platform-{{.Platform}}">{{.Platform}}</span>
+                {{if eq .Status "connected"}}
+                <span class="status-badge status-connected">Connected</span>
+                {{else if eq .Status "expired"}}
+                <span class="status-badge status-expired">Expired</span>
+                {{else}}
+                <span class="status-badge status-{{.Status}}">{{.Status}}</span>
+                {{end}}
+            </div>
+
+            {{if .DisplayName}}
+            <p class="connection-name">{{.DisplayName}}</p>
+            {{end}}
+
+            {{if .RateLimit}}
+            <div class="rate-limit-container">
+                <div class="rate-limit-header">
+                    <span class="rate-limit-label">API Rate Limit</span>
+                </div>
+                <div class="rate-limit-bar {{if le .RateLimit.Remaining 10}}rate-limit-low{{else if le .RateLimit.Remaining 20}}rate-limit-warning{{end}}">
+                    <div class="rate-limit-fill" style="width: {{percent .RateLimit.Remaining .RateLimit.Limit}}%"></div>
+                </div>
+                <div class="rate-limit-info">
+                    <span class="rate-limit-count {{if le .RateLimit.Remaining 10}}rate-limit-low{{else if le .RateLimit.Remaining 20}}rate-limit-warning{{end}}">
+                        {{.RateLimit.Remaining}} / {{.RateLimit.Limit}} remaining
+                    </span>
+                    <span class="rate-limit-reset">
+                        Reset: {{.RateLimit.ResetAt.Format "3:04 PM"}}
+                    </span>
+                </div>
+            </div>
+            {{end}}
+
+            <div class="connection-actions">
+                <a href="/connections/{{.Platform}}/test" class="btn btn-secondary btn-sm">Test</a>
+                <a href="/connections/{{.Platform}}/disconnect" class="btn btn-danger btn-sm">Disconnect</a>
+            </div>
+        </div>
+        {{end}}
+    </div>
+
+    <div class="connections-footer">
+        <a href="/connections/new" class="btn btn-primary">Connect Another Account</a>
+    </div>
+
+    {{end}}
+</div>
+
+<style>
+.connections-container {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.connections-list {
+    display: grid;
+    gap: 20px;
+}
+
+.connection-card {
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 20px;
+}
+
+.connection-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.connection-name {
+    color: #666;
+    margin: 5px 0;
+}
+
+.rate-limit-container {
+    margin: 15px 0;
+    padding: 10px;
+    background: #f8f9fa;
+    border-radius: 4px;
+}
+
+.rate-limit-header {
+    margin-bottom: 8px;
+}
+
+.rate-limit-label {
+    font-size: 12px;
+    color: #666;
+    text-transform: uppercase;
+}
+
+.rate-limit-bar {
+    height: 8px;
+    background: #e0e0e0;
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.rate-limit-fill {
+    height: 100%;
+    background: #4caf50;
+    transition: width 0.3s ease;
+}
+
+.rate-limit-warning .rate-limit-fill {
+    background: #ff9800;
+}
+
+.rate-limit-low .rate-limit-fill {
+    background: #f44336;
+}
+
+.rate-limit-info {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 8px;
+    font-size: 13px;
+}
+
+.rate-limit-count {
+    font-weight: 500;
+}
+
+.rate-limit-count.rate-limit-warning {
+    color: #ff9800;
+}
+
+.rate-limit-count.rate-limit-low {
+    color: #f44336;
+}
+
+.rate-limit-reset {
+    color: #666;
+}
+
+.connection-actions {
+    margin-top: 15px;
+    display: flex;
+    gap: 10px;
+}
+
+.btn-sm {
+    padding: 6px 12px;
+    font-size: 13px;
+}
+
+.connections-footer {
+    margin-top: 30px;
+    text-align: center;
+}
+
+.empty-state {
+    text-align: center;
+    padding: 60px 20px;
+}
+
+.empty-state h2 {
+    margin-bottom: 10px;
+}
+
+.empty-state p {
+    color: #666;
+    margin-bottom: 20px;
+}
+</style>
+{{end}}
