@@ -30,7 +30,7 @@ var pageTemplates map[string]*template.Template
 
 func init() {
 	pageTemplates = make(map[string]*template.Template)
-	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "webhook_regenerate.html", "webhook_deliveries.html"}
+	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "repository_delete.html", "webhook_regenerate.html", "webhook_deliveries.html"}
 
 	for _, page := range pages {
 		// Clone the base template and parse the page
@@ -76,6 +76,7 @@ type RepositoryStore interface {
 	GetRepositoryByID(ctx context.Context, repoID string) (*handlers.Repository, error)
 	UpdateRepository(ctx context.Context, repoID, name string, isActive bool) (*handlers.Repository, error)
 	UpdateWebhookSecret(ctx context.Context, repoID, newSecret string) error
+	DeleteRepository(ctx context.Context, repoID string) error
 }
 
 // SecretGenerator generates webhook secrets
@@ -276,6 +277,8 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("/repositories/{id}", r.handleRepositoryView)
 	r.mux.HandleFunc("GET /repositories/{id}/edit", r.handleRepositoryEdit)
 	r.mux.HandleFunc("POST /repositories/{id}/edit", r.handleRepositoryEditPost)
+	r.mux.HandleFunc("GET /repositories/{id}/delete", r.handleRepositoryDelete)
+	r.mux.HandleFunc("POST /repositories/{id}/delete", r.handleRepositoryDeletePost)
 	r.mux.HandleFunc("/repositories/{id}/webhook/test", r.handleWebhookTest)
 	r.mux.HandleFunc("/repositories/{id}/webhook/regenerate", r.handleWebhookRegenerate)
 	r.mux.HandleFunc("GET /repositories/{id}/webhooks", r.handleWebhookDeliveries)
@@ -806,6 +809,12 @@ type RepositoryEditData struct {
 	Repository *handlers.Repository
 }
 
+// RepositoryDeleteData holds data for the repository delete confirmation page
+type RepositoryDeleteData struct {
+	Repository *handlers.Repository
+	RepoName   string
+}
+
 func (r *Router) handleRepositoryView(w http.ResponseWriter, req *http.Request) {
 	// Check for auth cookie
 	cookie, err := req.Cookie(auth.CookieName)
@@ -1041,6 +1050,135 @@ func (r *Router) handleRepositoryEditPost(w http.ResponseWriter, req *http.Reque
 			},
 			Error: "Failed to update repository",
 			Data:  &RepositoryEditData{Repository: repo},
+		})
+		return
+	}
+
+	// Redirect to repositories list
+	http.Redirect(w, req, "/repositories", http.StatusSeeOther)
+}
+
+func (r *Router) handleRepositoryDelete(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get repository ID from path
+	repoID := req.PathValue("id")
+	if repoID == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Check if repo store is available
+	if r.repoStore == nil {
+		http.Error(w, "Repository store not configured", http.StatusInternalServerError)
+		return
+	}
+
+	// Fetch repository
+	repo, err := r.repoStore.GetRepositoryByID(req.Context(), repoID)
+	if err != nil {
+		http.Error(w, "Failed to load repository", http.StatusInternalServerError)
+		return
+	}
+	if repo == nil {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Verify ownership
+	if repo.UserID != claims.UserID {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Extract repository name from GitHub URL
+	repoName := extractRepoName(repo.GitHubURL)
+
+	r.renderPage(w, "repository_delete.html", PageData{
+		Title: "Delete Repository",
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+		Data: &RepositoryDeleteData{
+			Repository: repo,
+			RepoName:   repoName,
+		},
+	})
+}
+
+func (r *Router) handleRepositoryDeletePost(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get repository ID from path
+	repoID := req.PathValue("id")
+	if repoID == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Check if repo store is available
+	if r.repoStore == nil {
+		http.Error(w, "Repository store not configured", http.StatusInternalServerError)
+		return
+	}
+
+	// Fetch repository to verify ownership
+	repo, err := r.repoStore.GetRepositoryByID(req.Context(), repoID)
+	if err != nil {
+		http.Error(w, "Failed to load repository", http.StatusInternalServerError)
+		return
+	}
+	if repo == nil {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Verify ownership
+	if repo.UserID != claims.UserID {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Delete the repository
+	err = r.repoStore.DeleteRepository(req.Context(), repoID)
+	if err != nil {
+		repoName := extractRepoName(repo.GitHubURL)
+		r.renderPage(w, "repository_delete.html", PageData{
+			Title: "Delete Repository",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Failed to delete repository",
+			Data: &RepositoryDeleteData{
+				Repository: repo,
+				RepoName:   repoName,
+			},
 		})
 		return
 	}

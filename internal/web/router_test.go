@@ -778,6 +778,16 @@ func (s *MockRepositoryStoreForWeb) UpdateWebhookSecret(ctx context.Context, rep
 	return nil
 }
 
+func (s *MockRepositoryStoreForWeb) DeleteRepository(ctx context.Context, repoID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.repos[repoID]; ok {
+		delete(s.repos, repoID)
+		return nil
+	}
+	return nil
+}
+
 // MockCommit for web tests (alias for DashboardCommit)
 type MockCommit = DashboardCommit
 
@@ -2654,4 +2664,206 @@ func TestRouter_PostWebhookRegenerate_InvalidatesOldSecret(t *testing.T) {
 
 func stringPtr(s string) *string {
 	return &s
+}
+
+// =============================================================================
+// Repository Delete Tests (GET/POST /repositories/:id/delete)
+// =============================================================================
+
+func TestRouter_GetRepositoryDelete_WithoutAuth_RedirectsToLogin(t *testing.T) {
+	router := NewRouter()
+
+	req := httptest.NewRequest(http.MethodGet, "/repositories/some-id/delete", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected redirect status 303, got %d", rr.Code)
+	}
+	if rr.Header().Get("Location") != "/login" {
+		t.Errorf("Expected redirect to /login, got %s", rr.Header().Get("Location"))
+	}
+}
+
+func TestRouter_GetRepositoryDelete_WithAuth_RendersConfirmation(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, nil, "")
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	repo, _ := repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/owner/repo", "secret")
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/repositories/"+repo.ID+"/delete", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	body := rr.Body.String()
+	// Should show confirmation page with repo name
+	if !strings.Contains(body, "owner/repo") {
+		t.Errorf("Expected body to contain repo name 'owner/repo', got: %s", body[:min(len(body), 500)])
+	}
+	// Should have delete button
+	if !strings.Contains(body, "Delete Repository") {
+		t.Errorf("Expected body to contain 'Delete Repository' button")
+	}
+	// Should have cancel link
+	if !strings.Contains(body, "Cancel") {
+		t.Errorf("Expected body to contain 'Cancel' link")
+	}
+}
+
+func TestRouter_GetRepositoryDelete_NotFound_Returns404(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, nil, "")
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/repositories/nonexistent-id/delete", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404 for non-existent repo, got %d", rr.Code)
+	}
+}
+
+func TestRouter_GetRepositoryDelete_OtherUsersRepo_Returns404(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, nil, "")
+
+	// Create two users
+	user1, _ := userStore.CreateUser(context.Background(), "user1@example.com", hashPassword("password123"))
+	user2, _ := userStore.CreateUser(context.Background(), "user2@example.com", hashPassword("password123"))
+
+	// Create repo for user1
+	repo, _ := repoStore.CreateRepository(context.Background(), user1.ID, "https://github.com/owner/repo", "secret")
+
+	// Try to access as user2
+	token, _ := generateToken(user2.ID, user2.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/repositories/"+repo.ID+"/delete", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404 for other user's repo, got %d", rr.Code)
+	}
+}
+
+func TestRouter_PostRepositoryDelete_WithoutAuth_RedirectsToLogin(t *testing.T) {
+	router := NewRouter()
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/some-id/delete", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected redirect status 303, got %d", rr.Code)
+	}
+	if rr.Header().Get("Location") != "/login" {
+		t.Errorf("Expected redirect to /login, got %s", rr.Header().Get("Location"))
+	}
+}
+
+func TestRouter_PostRepositoryDelete_WithAuth_DeletesAndRedirects(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, nil, "")
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	repo, _ := repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/owner/repo", "secret")
+	token, _ := generateToken(user.ID, user.Email)
+
+	// Verify repo exists before delete
+	existingRepo, _ := repoStore.GetRepositoryByID(context.Background(), repo.ID)
+	if existingRepo == nil {
+		t.Fatal("Expected repository to exist before delete")
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/"+repo.ID+"/delete", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should redirect to repositories list
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected redirect status 303, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get("Location") != "/repositories" {
+		t.Errorf("Expected redirect to /repositories, got %s", rr.Header().Get("Location"))
+	}
+
+	// Verify repo is deleted
+	deletedRepo, _ := repoStore.GetRepositoryByID(context.Background(), repo.ID)
+	if deletedRepo != nil {
+		t.Errorf("Expected repository to be deleted, but it still exists")
+	}
+}
+
+func TestRouter_PostRepositoryDelete_NotFound_Returns404(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, nil, "")
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/nonexistent-id/delete", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404 for non-existent repo, got %d", rr.Code)
+	}
+}
+
+func TestRouter_PostRepositoryDelete_OtherUsersRepo_Returns404(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, nil, "")
+
+	// Create two users
+	user1, _ := userStore.CreateUser(context.Background(), "user1@example.com", hashPassword("password123"))
+	user2, _ := userStore.CreateUser(context.Background(), "user2@example.com", hashPassword("password123"))
+
+	// Create repo for user1
+	repo, _ := repoStore.CreateRepository(context.Background(), user1.ID, "https://github.com/owner/repo", "secret")
+
+	// Try to delete as user2
+	token, _ := generateToken(user2.ID, user2.Email)
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/"+repo.ID+"/delete", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404 for other user's repo, got %d", rr.Code)
+	}
+
+	// Verify repo was NOT deleted
+	existingRepo, _ := repoStore.GetRepositoryByID(context.Background(), repo.ID)
+	if existingRepo == nil {
+		t.Errorf("Repository should NOT have been deleted by other user")
+	}
 }

@@ -71,7 +71,7 @@
             <div class="action-buttons">
                 <a href="/repositories/{{.Data.Repository.ID}}/webhooks" class="btn btn-primary">View Webhook Deliveries</a>
                 <a href="/repositories/{{.Data.Repository.ID}}/edit" class="btn btn-secondary">Edit Settings</a>
-                <button type="button" class="btn btn-danger" onclick="confirmDelete()">Delete Repository</button>
+                <a href="/repositories/{{.Data.Repository.ID}}/delete" class="btn btn-danger">Delete Repository</a>
             </div>
         </section>
     </div>
@@ -82,13 +82,6 @@
 <script>
 function confirmRegenerate() {
     return confirm('Are you sure you want to regenerate the webhook secret? The old secret will be invalidated and you will need to update your GitHub webhook settings.');
-}
-
-function confirmDelete() {
-    if (confirm('Are you sure you want to delete this repository? This action cannot be undone.')) {
-        // DELETE endpoint will be implemented in a future task
-        alert('Delete functionality coming soon');
-    }
 }
 
 async function testWebhook() {
