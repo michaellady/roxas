@@ -26,7 +26,7 @@ var pageTemplates map[string]*template.Template
 
 func init() {
 	pageTemplates = make(map[string]*template.Template)
-	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html"}
+	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html"}
 
 	for _, page := range pages {
 		// Clone the base template and parse the page
@@ -70,6 +70,7 @@ type RepositoryStore interface {
 	ListRepositoriesByUser(ctx context.Context, userID string) ([]*handlers.Repository, error)
 	CreateRepository(ctx context.Context, userID, githubURL, webhookSecret string) (*handlers.Repository, error)
 	GetRepositoryByID(ctx context.Context, repoID string) (*handlers.Repository, error)
+	UpdateRepository(ctx context.Context, repoID, name string, isActive bool) (*handlers.Repository, error)
 }
 
 // SecretGenerator generates webhook secrets
@@ -168,6 +169,8 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("/repositories/new", r.handleRepositoriesNew)
 	r.mux.HandleFunc("/repositories/success", r.handleRepositoriesSuccess)
 	r.mux.HandleFunc("/repositories/{id}", r.handleRepositoryView)
+	r.mux.HandleFunc("GET /repositories/{id}/edit", r.handleRepositoryEdit)
+	r.mux.HandleFunc("POST /repositories/{id}/edit", r.handleRepositoryEditPost)
 }
 
 func (r *Router) handleHome(w http.ResponseWriter, req *http.Request) {
@@ -690,6 +693,11 @@ func (r *Router) handleRepositoriesSuccess(w http.ResponseWriter, req *http.Requ
 	})
 }
 
+// RepositoryEditData holds data for the repository edit page
+type RepositoryEditData struct {
+	Repository *handlers.Repository
+}
+
 func (r *Router) handleRepositoryView(w http.ResponseWriter, req *http.Request) {
 	// Check for auth cookie
 	cookie, err := req.Cookie(auth.CookieName)
@@ -779,6 +787,158 @@ func extractRepoName(githubURL string) string {
 	}
 	path := strings.Trim(parsed.Path, "/")
 	return path
+}
+
+func (r *Router) handleRepositoryEdit(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get repository ID from path
+	repoID := req.PathValue("id")
+	if repoID == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Check if repo store is available
+	if r.repoStore == nil {
+		http.Error(w, "Repository store not configured", http.StatusInternalServerError)
+		return
+	}
+
+	// Fetch repository
+	repo, err := r.repoStore.GetRepositoryByID(req.Context(), repoID)
+	if err != nil {
+		http.Error(w, "Failed to load repository", http.StatusInternalServerError)
+		return
+	}
+	if repo == nil {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Verify ownership
+	if repo.UserID != claims.UserID {
+		http.NotFound(w, req)
+		return
+	}
+
+	r.renderPage(w, "repository_edit.html", PageData{
+		Title: "Edit Repository",
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+		Data: &RepositoryEditData{
+			Repository: repo,
+		},
+	})
+}
+
+func (r *Router) handleRepositoryEditPost(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get repository ID from path
+	repoID := req.PathValue("id")
+	if repoID == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Check if repo store is available
+	if r.repoStore == nil {
+		http.Error(w, "Repository store not configured", http.StatusInternalServerError)
+		return
+	}
+
+	// Fetch repository to verify ownership
+	repo, err := r.repoStore.GetRepositoryByID(req.Context(), repoID)
+	if err != nil {
+		http.Error(w, "Failed to load repository", http.StatusInternalServerError)
+		return
+	}
+	if repo == nil {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Verify ownership
+	if repo.UserID != claims.UserID {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Parse form
+	if err := req.ParseForm(); err != nil {
+		r.renderPage(w, "repository_edit.html", PageData{
+			Title: "Edit Repository",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Invalid form data",
+			Data:  &RepositoryEditData{Repository: repo},
+		})
+		return
+	}
+
+	name := req.FormValue("name")
+	isActive := req.FormValue("is_active") == "true"
+
+	// Validate name
+	if name == "" {
+		r.renderPage(w, "repository_edit.html", PageData{
+			Title: "Edit Repository",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Repository name is required",
+			Data:  &RepositoryEditData{Repository: repo},
+		})
+		return
+	}
+
+	// Update repository
+	_, err = r.repoStore.UpdateRepository(req.Context(), repoID, name, isActive)
+	if err != nil {
+		r.renderPage(w, "repository_edit.html", PageData{
+			Title: "Edit Repository",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Failed to update repository",
+			Data:  &RepositoryEditData{Repository: repo},
+		})
+		return
+	}
+
+	// Redirect to repositories list
+	http.Redirect(w, req, "/repositories", http.StatusSeeOther)
 }
 
 func (r *Router) renderPage(w http.ResponseWriter, page string, data PageData) {
