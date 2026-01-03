@@ -1478,6 +1478,7 @@ func TestBrowser_TestWebhookButton_Failure(t *testing.T) {
 	t.Log("PASSED: Error message displayed correctly for failed webhook")
 }
 
+
 // TestBrowser_DeleteRepositoryFlow tests the complete delete repository workflow:
 // add repo → view repo → click delete → confirmation page → cancel → back to repo
 // then: click delete again → confirm delete → redirected to repositories list → repo gone
