@@ -1,0 +1,260 @@
+{{define "content"}}
+<div class="connection-container">
+    <div class="page-header">
+        <div class="header-back">
+            <a href="/connections" class="btn btn-small">&larr; Back to Connections</a>
+        </div>
+        <h1>{{.Data.PlatformName}}</h1>
+    </div>
+
+    {{if .Error}}
+    <div class="alert alert-error">{{.Error}}</div>
+    {{end}}
+
+    {{if .Data.Connection}}
+    <div class="card">
+        <section class="connection-details">
+            <h2>Connection Status</h2>
+
+            <div class="detail-field">
+                <label>Status</label>
+                <div class="detail-value">
+                    {{if eq .Data.Connection.Status "connected"}}
+                    <span class="status-badge status-success">Connected</span>
+                    {{else if eq .Data.Connection.Status "expired"}}
+                    <span class="status-badge status-warning">Token Expired</span>
+                    {{else if eq .Data.Connection.Status "error"}}
+                    <span class="status-badge status-error">Error</span>
+                    {{else}}
+                    <span class="status-badge status-inactive">Disconnected</span>
+                    {{end}}
+                </div>
+            </div>
+
+            {{if .Data.Connection.DisplayName}}
+            <div class="detail-field">
+                <label>Connected Account</label>
+                <div class="detail-value">{{.Data.Connection.DisplayName}}</div>
+            </div>
+            {{end}}
+
+            {{if .Data.Connection.PlatformUserID}}
+            <div class="detail-field">
+                <label>Platform User ID</label>
+                <div class="detail-value"><code>{{.Data.Connection.PlatformUserID}}</code></div>
+            </div>
+            {{end}}
+
+            {{if .Data.Connection.ConnectedAt}}
+            <div class="detail-field">
+                <label>Connected Since</label>
+                <div class="detail-value">{{.Data.Connection.ConnectedAt.Format "January 02, 2006 at 3:04 PM"}}</div>
+            </div>
+            {{end}}
+
+            {{if .Data.Connection.ExpiresAt}}
+            <div class="detail-field">
+                <label>Token Expires</label>
+                <div class="detail-value {{if .Data.Connection.ExpiresWithin7Days}}text-warning{{end}}">
+                    {{.Data.Connection.ExpiresAt.Format "January 02, 2006 at 3:04 PM"}}
+                    {{if .Data.Connection.ExpiresWithin7Days}}
+                    <span class="warning-text">(Expires soon - consider reconnecting)</span>
+                    {{end}}
+                </div>
+            </div>
+            {{end}}
+
+            {{if .Data.Connection.Scopes}}
+            <div class="detail-field">
+                <label>Permissions</label>
+                <div class="detail-value">
+                    <ul class="scope-list">
+                        {{range .Data.Connection.Scopes}}
+                        <li>{{.}}</li>
+                        {{end}}
+                    </ul>
+                </div>
+            </div>
+            {{end}}
+
+            {{if .Data.Connection.LastError}}
+            <div class="detail-field error-field">
+                <label>Last Error</label>
+                <div class="detail-value text-error">{{.Data.Connection.LastError}}</div>
+            </div>
+            {{end}}
+        </section>
+
+        {{if .Data.RateLimits}}
+        <section class="rate-limits">
+            <h2>Rate Limits</h2>
+            <div class="rate-limit-bar">
+                <div class="rate-limit-used" style="width: {{.Data.RateLimits.UsedPercent}}%"></div>
+            </div>
+            <div class="rate-limit-info">
+                <span>{{.Data.RateLimits.Remaining}} / {{.Data.RateLimits.Limit}} remaining</span>
+                <span>Resets {{.Data.RateLimits.ResetAt.Format "3:04 PM"}}</span>
+            </div>
+        </section>
+        {{end}}
+
+        <section class="connection-test">
+            <h2>Test Connection</h2>
+            <p>Verify that your connection is working properly.</p>
+            <div class="action-buttons">
+                <form action="/connections/{{.Data.Platform}}/test" method="POST" class="inline-form">
+                    <button type="submit" class="btn btn-primary" id="test-connection-btn">Test Connection</button>
+                </form>
+                {{if .Data.TestResult}}
+                <span id="test-result" class="{{if .Data.TestResult.Success}}status-success{{else}}status-error{{end}}">
+                    {{if .Data.TestResult.Success}}
+                    Connection healthy ({{.Data.TestResult.Latency}}ms)
+                    {{else}}
+                    Failed: {{.Data.TestResult.Error}}
+                    {{end}}
+                </span>
+                {{end}}
+            </div>
+        </section>
+
+        <section class="connection-actions">
+            <h2>Actions</h2>
+            <div class="action-buttons">
+                {{if eq .Data.Connection.Status "expired"}}
+                <form action="/connections/{{.Data.Platform}}/connect" method="POST" class="inline-form">
+                    <button type="submit" class="btn btn-primary">Reconnect</button>
+                </form>
+                {{end}}
+                <form action="/connections/{{.Data.Platform}}/disconnect" method="POST" class="inline-form" onsubmit="return confirmDisconnect()">
+                    <button type="submit" class="btn btn-danger">Disconnect</button>
+                </form>
+            </div>
+        </section>
+    </div>
+    {{else}}
+    <div class="card">
+        <div class="not-connected-state">
+            <h2>Not Connected</h2>
+            <p>You haven't connected your {{.Data.PlatformName}} account yet.</p>
+            <form action="/connections/{{.Data.Platform}}/connect" method="POST">
+                <button type="submit" class="btn btn-primary">Connect {{.Data.PlatformName}}</button>
+            </form>
+        </div>
+    </div>
+    {{end}}
+</div>
+
+<script>
+function confirmDisconnect() {
+    return confirm('Are you sure you want to disconnect this platform? You will need to reconnect to post again.');
+}
+</script>
+
+<style>
+.connection-container {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.page-header h1 {
+    margin: 10px 0;
+    text-transform: capitalize;
+}
+
+.detail-field {
+    margin-bottom: 15px;
+}
+
+.detail-field label {
+    display: block;
+    font-weight: 600;
+    color: #555;
+    margin-bottom: 5px;
+}
+
+.detail-value {
+    color: #333;
+}
+
+.scope-list {
+    margin: 0;
+    padding-left: 20px;
+}
+
+.scope-list li {
+    margin-bottom: 3px;
+}
+
+.error-field {
+    background: #fff5f5;
+    padding: 10px;
+    border-radius: 4px;
+}
+
+.text-warning {
+    color: #856404;
+}
+
+.text-error {
+    color: #721c24;
+}
+
+.warning-text {
+    font-size: 0.9em;
+    color: #856404;
+}
+
+.rate-limits {
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px solid #eee;
+}
+
+.rate-limit-bar {
+    height: 20px;
+    background: #e0e0e0;
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 10px;
+}
+
+.rate-limit-used {
+    height: 100%;
+    background: #28a745;
+    transition: width 0.3s;
+}
+
+.rate-limit-info {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.9em;
+    color: #666;
+}
+
+.connection-test,
+.connection-actions {
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px solid #eee;
+}
+
+.inline-form {
+    display: inline;
+}
+
+.not-connected-state {
+    text-align: center;
+    padding: 40px;
+}
+
+.not-connected-state h2 {
+    margin: 0 0 10px;
+}
+
+.not-connected-state p {
+    color: #666;
+    margin-bottom: 20px;
+}
+</style>
+{{end}}

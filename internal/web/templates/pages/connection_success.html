@@ -1,0 +1,161 @@
+{{define "content"}}
+<div class="success-container">
+    <div class="card">
+        {{if .Error}}
+        <div class="alert alert-error">{{.Error}}</div>
+        {{else}}
+        <div class="success-header">
+            <div class="success-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                    <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                </svg>
+            </div>
+            <h1>Successfully Connected!</h1>
+            <p class="lead">Your <strong>{{.Data.PlatformName}}</strong> account has been connected to Roxas.</p>
+        </div>
+
+        <section class="connection-info">
+            <h2>Connection Details</h2>
+
+            {{if .Data.Connection.DisplayName}}
+            <div class="info-field">
+                <label>Connected Account</label>
+                <div class="info-value">{{.Data.Connection.DisplayName}}</div>
+            </div>
+            {{end}}
+
+            {{if .Data.Connection.Scopes}}
+            <div class="info-field">
+                <label>Granted Permissions</label>
+                <div class="info-value">
+                    <ul class="scope-list">
+                        {{range .Data.Connection.Scopes}}
+                        <li>{{.}}</li>
+                        {{end}}
+                    </ul>
+                </div>
+            </div>
+            {{end}}
+
+            {{if .Data.Connection.ExpiresAt}}
+            <div class="info-field">
+                <label>Token Valid Until</label>
+                <div class="info-value">{{.Data.Connection.ExpiresAt.Format "January 02, 2006"}}</div>
+            </div>
+            {{end}}
+        </section>
+
+        <section class="next-steps">
+            <h2>What's Next?</h2>
+            <ul class="steps-list">
+                <li>You can now create and schedule posts for {{.Data.PlatformName}}</li>
+                <li>Test your connection from the <a href="/connections/{{.Data.Platform}}">connection settings</a></li>
+                <li>Add more platforms to expand your reach</li>
+            </ul>
+        </section>
+
+        <div class="action-buttons">
+            <a href="/connections/{{.Data.Platform}}" class="btn btn-secondary">View Connection Details</a>
+            <a href="/connections" class="btn btn-primary">Back to Connections</a>
+        </div>
+        {{end}}
+    </div>
+</div>
+
+<style>
+.success-container {
+    max-width: 600px;
+    margin: 40px auto;
+    padding: 20px;
+}
+
+.success-header {
+    text-align: center;
+    margin-bottom: 30px;
+}
+
+.success-icon {
+    color: #28a745;
+    margin-bottom: 20px;
+}
+
+.success-header h1 {
+    margin: 0 0 10px;
+    color: #28a745;
+}
+
+.lead {
+    font-size: 1.1em;
+    color: #666;
+    margin: 0;
+}
+
+.connection-info {
+    margin-bottom: 30px;
+}
+
+.connection-info h2 {
+    font-size: 1.2em;
+    margin-bottom: 15px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #eee;
+}
+
+.info-field {
+    margin-bottom: 15px;
+}
+
+.info-field label {
+    display: block;
+    font-weight: 600;
+    color: #555;
+    margin-bottom: 5px;
+}
+
+.info-value {
+    color: #333;
+}
+
+.scope-list {
+    margin: 0;
+    padding-left: 20px;
+}
+
+.scope-list li {
+    margin-bottom: 3px;
+}
+
+.next-steps {
+    background: #f8f9fa;
+    padding: 20px;
+    border-radius: 8px;
+    margin-bottom: 30px;
+}
+
+.next-steps h2 {
+    font-size: 1.1em;
+    margin: 0 0 15px;
+}
+
+.steps-list {
+    margin: 0;
+    padding-left: 20px;
+}
+
+.steps-list li {
+    margin-bottom: 8px;
+    color: #555;
+}
+
+.steps-list a {
+    color: #007bff;
+}
+
+.action-buttons {
+    display: flex;
+    gap: 15px;
+    justify-content: center;
+}
+</style>
+{{end}}

@@ -30,7 +30,7 @@ var pageTemplates map[string]*template.Template
 
 func init() {
 	pageTemplates = make(map[string]*template.Template)
-	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "webhook_regenerate.html", "webhook_deliveries.html"}
+	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "webhook_regenerate.html", "webhook_deliveries.html", "connections_list.html", "connections_new.html", "connection_view.html", "connection_success.html"}
 
 	for _, page := range pages {
 		// Clone the base template and parse the page
@@ -159,6 +159,78 @@ type WebhookDeliveryStore interface {
 	ListDeliveriesByRepository(ctx context.Context, repoID string, limit int) ([]*WebhookDelivery, error)
 }
 
+// ConnectionService interface for managing social media connections
+type ConnectionService interface {
+	ListConnections(ctx context.Context, userID string) ([]*Connection, error)
+	GetConnection(ctx context.Context, userID, platform string) (*Connection, error)
+	InitiateOAuth(ctx context.Context, userID, platform string) (*OAuthInfo, error)
+	HandleOAuthCallback(ctx context.Context, userID, platform, code, state string) (*OAuthResult, error)
+	Disconnect(ctx context.Context, userID, platform string) error
+	TestConnection(ctx context.Context, userID, platform string) (*ConnectionTestResult, error)
+}
+
+// Connection represents a user's connection to a social platform (for web display)
+type Connection struct {
+	UserID         string
+	Platform       string
+	Status         string
+	PlatformUserID string
+	DisplayName    string
+	Scopes         []string
+	ConnectedAt    *time.Time
+	ExpiresAt      *time.Time
+	LastError      string
+}
+
+// IsHealthy returns true if the connection is active and not expired
+func (c *Connection) IsHealthy() bool {
+	if c.Status != "connected" {
+		return false
+	}
+	if c.ExpiresAt != nil && time.Now().After(*c.ExpiresAt) {
+		return false
+	}
+	return true
+}
+
+// ExpiresWithin7Days returns true if token expires within 7 days
+func (c *Connection) ExpiresWithin7Days() bool {
+	if c.ExpiresAt == nil {
+		return false
+	}
+	return time.Now().Add(7 * 24 * time.Hour).After(*c.ExpiresAt)
+}
+
+// OAuthInfo contains OAuth authorization info
+type OAuthInfo struct {
+	AuthURL   string
+	State     string
+	ExpiresAt time.Time
+}
+
+// OAuthResult contains OAuth callback result
+type OAuthResult struct {
+	Connection      *Connection
+	IsNewConnection bool
+}
+
+// ConnectionTestResult contains test results
+type ConnectionTestResult struct {
+	Platform string
+	Success  bool
+	Latency  time.Duration
+	Error    string
+}
+
+// PlatformInfo contains platform display information
+type PlatformInfo struct {
+	ID          string
+	Name        string
+	Description string
+	Permissions []string
+	Enabled     bool
+}
+
 // DashboardCommit represents a commit for the dashboard
 type DashboardCommit struct {
 	ID      string
@@ -186,6 +258,7 @@ type Router struct {
 	webhookURL           string
 	webhookTester        WebhookTester
 	webhookDeliveryStore WebhookDeliveryStore
+	connectionService    ConnectionService
 }
 
 // NewRouter creates a new web router with all routes configured (no user store)
@@ -279,6 +352,15 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("/repositories/{id}/webhook/test", r.handleWebhookTest)
 	r.mux.HandleFunc("/repositories/{id}/webhook/regenerate", r.handleWebhookRegenerate)
 	r.mux.HandleFunc("GET /repositories/{id}/webhooks", r.handleWebhookDeliveries)
+
+	// Connection management routes
+	r.mux.HandleFunc("GET /connections", r.handleConnectionsList)
+	r.mux.HandleFunc("GET /connections/new", r.handleConnectionsNew)
+	r.mux.HandleFunc("GET /connections/{platform}", r.handleConnectionView)
+	r.mux.HandleFunc("POST /connections/{platform}/connect", r.handleConnectionConnect)
+	r.mux.HandleFunc("GET /oauth/{platform}/callback", r.handleOAuthCallback)
+	r.mux.HandleFunc("POST /connections/{platform}/test", r.handleConnectionTest)
+	r.mux.HandleFunc("POST /connections/{platform}/disconnect", r.handleConnectionDisconnect)
 }
 
 func (r *Router) handleHome(w http.ResponseWriter, req *http.Request) {
@@ -1393,4 +1475,459 @@ func (r *Router) handleWebhookDeliveries(w http.ResponseWriter, req *http.Reques
 			RepoName:   repoName,
 		},
 	})
+}
+
+// =============================================================================
+// Connection Management Handlers
+// =============================================================================
+
+// ConnectionsListData holds data for the connections list page
+type ConnectionsListData struct {
+	Connections []*Connection
+}
+
+// ConnectionsNewData holds data for the new connection page
+type ConnectionsNewData struct {
+	Platforms []PlatformInfo
+}
+
+// ConnectionViewData holds data for the connection view page
+type ConnectionViewData struct {
+	Platform     string
+	PlatformName string
+	Connection   *Connection
+	TestResult   *ConnectionTestResult
+	RateLimits   *RateLimitDisplay
+}
+
+// RateLimitDisplay holds rate limit info for display
+type RateLimitDisplay struct {
+	Limit       int
+	Remaining   int
+	UsedPercent int
+	ResetAt     time.Time
+}
+
+// ConnectionSuccessData holds data for the connection success page
+type ConnectionSuccessData struct {
+	Platform     string
+	PlatformName string
+	Connection   *Connection
+}
+
+// getSupportedPlatforms returns the list of supported platforms
+func getSupportedPlatforms() []PlatformInfo {
+	return []PlatformInfo{
+		{
+			ID:          "linkedin",
+			Name:        "LinkedIn",
+			Description: "Share professional updates and articles with your network.",
+			Permissions: []string{"Read your profile", "Post on your behalf"},
+			Enabled:     true,
+		},
+		{
+			ID:          "twitter",
+			Name:        "Twitter/X",
+			Description: "Share tweets and engage with your followers.",
+			Permissions: []string{"Read your profile", "Post tweets"},
+			Enabled:     true,
+		},
+		{
+			ID:          "threads",
+			Name:        "Threads",
+			Description: "Share text posts and join conversations.",
+			Permissions: []string{"Read your profile", "Post threads"},
+			Enabled:     false,
+		},
+		{
+			ID:          "bluesky",
+			Name:        "Bluesky",
+			Description: "Share posts on the decentralized social network.",
+			Permissions: []string{"Read your profile", "Post on your behalf"},
+			Enabled:     false,
+		},
+	}
+}
+
+// platformName returns a display name for a platform
+func platformName(platform string) string {
+	switch platform {
+	case "linkedin":
+		return "LinkedIn"
+	case "twitter":
+		return "Twitter/X"
+	case "threads":
+		return "Threads"
+	case "bluesky":
+		return "Bluesky"
+	case "instagram":
+		return "Instagram"
+	case "tiktok":
+		return "TikTok"
+	default:
+		// Capitalize first letter
+		if len(platform) == 0 {
+			return platform
+		}
+		return strings.ToUpper(platform[:1]) + platform[1:]
+	}
+}
+
+func (r *Router) handleConnectionsList(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get connections from service
+	var connections []*Connection
+	if r.connectionService != nil {
+		connections, err = r.connectionService.ListConnections(req.Context(), claims.UserID)
+		if err != nil {
+			r.renderPage(w, "connections_list.html", PageData{
+				Title: "Connected Platforms",
+				User: &UserData{
+					ID:    claims.UserID,
+					Email: claims.Email,
+				},
+				Error: "Failed to load connections",
+			})
+			return
+		}
+	}
+
+	r.renderPage(w, "connections_list.html", PageData{
+		Title: "Connected Platforms",
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+		Data: &ConnectionsListData{
+			Connections: connections,
+		},
+	})
+}
+
+func (r *Router) handleConnectionsNew(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	r.renderPage(w, "connections_new.html", PageData{
+		Title: "Connect a Platform",
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+		Data: &ConnectionsNewData{
+			Platforms: getSupportedPlatforms(),
+		},
+	})
+}
+
+func (r *Router) handleConnectionView(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	platform := req.PathValue("platform")
+	if platform == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	var connection *Connection
+	if r.connectionService != nil {
+		connection, err = r.connectionService.GetConnection(req.Context(), claims.UserID, platform)
+		if err != nil {
+			// Connection not found is okay - we'll show the "not connected" state
+			connection = nil
+		}
+	}
+
+	r.renderPage(w, "connection_view.html", PageData{
+		Title: platformName(platform),
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+		Data: &ConnectionViewData{
+			Platform:     platform,
+			PlatformName: platformName(platform),
+			Connection:   connection,
+		},
+	})
+}
+
+func (r *Router) handleConnectionConnect(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	platform := req.PathValue("platform")
+	if platform == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	if r.connectionService == nil {
+		r.renderPage(w, "connections_new.html", PageData{
+			Title: "Connect a Platform",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error:    "Connection service not configured",
+			Data: &ConnectionsNewData{
+				Platforms: getSupportedPlatforms(),
+			},
+		})
+		return
+	}
+
+	// Initiate OAuth flow
+	oauthInfo, err := r.connectionService.InitiateOAuth(req.Context(), claims.UserID, platform)
+	if err != nil {
+		r.renderPage(w, "connections_new.html", PageData{
+			Title: "Connect a Platform",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Failed to initiate connection: " + err.Error(),
+			Data: &ConnectionsNewData{
+				Platforms: getSupportedPlatforms(),
+			},
+		})
+		return
+	}
+
+	// Redirect to OAuth provider
+	http.Redirect(w, req, oauthInfo.AuthURL, http.StatusSeeOther)
+}
+
+func (r *Router) handleOAuthCallback(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	platform := req.PathValue("platform")
+	if platform == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Get OAuth parameters from query
+	code := req.URL.Query().Get("code")
+	state := req.URL.Query().Get("state")
+
+	if code == "" {
+		// OAuth was denied or failed
+		errorMsg := req.URL.Query().Get("error")
+		if errorMsg == "" {
+			errorMsg = "Authorization was denied"
+		}
+		r.renderPage(w, "connections_new.html", PageData{
+			Title: "Connect a Platform",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: errorMsg,
+			Data: &ConnectionsNewData{
+				Platforms: getSupportedPlatforms(),
+			},
+		})
+		return
+	}
+
+	if r.connectionService == nil {
+		r.renderPage(w, "connections_new.html", PageData{
+			Title: "Connect a Platform",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Connection service not configured",
+			Data: &ConnectionsNewData{
+				Platforms: getSupportedPlatforms(),
+			},
+		})
+		return
+	}
+
+	// Exchange code for tokens
+	result, err := r.connectionService.HandleOAuthCallback(req.Context(), claims.UserID, platform, code, state)
+	if err != nil {
+		r.renderPage(w, "connections_new.html", PageData{
+			Title: "Connect a Platform",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Failed to complete connection: " + err.Error(),
+			Data: &ConnectionsNewData{
+				Platforms: getSupportedPlatforms(),
+			},
+		})
+		return
+	}
+
+	// Redirect to success page
+	r.renderPage(w, "connection_success.html", PageData{
+		Title: platformName(platform) + " Connected",
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+		Data: &ConnectionSuccessData{
+			Platform:     platform,
+			PlatformName: platformName(platform),
+			Connection:   result.Connection,
+		},
+	})
+}
+
+func (r *Router) handleConnectionTest(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	platform := req.PathValue("platform")
+	if platform == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	var testResult *ConnectionTestResult
+	var connection *Connection
+
+	if r.connectionService != nil {
+		connection, _ = r.connectionService.GetConnection(req.Context(), claims.UserID, platform)
+		testResult, err = r.connectionService.TestConnection(req.Context(), claims.UserID, platform)
+		if err != nil {
+			testResult = &ConnectionTestResult{
+				Platform: platform,
+				Success:  false,
+				Error:    err.Error(),
+			}
+		}
+	}
+
+	r.renderPage(w, "connection_view.html", PageData{
+		Title: platformName(platform),
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+		Data: &ConnectionViewData{
+			Platform:     platform,
+			PlatformName: platformName(platform),
+			Connection:   connection,
+			TestResult:   testResult,
+		},
+	})
+}
+
+func (r *Router) handleConnectionDisconnect(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	platform := req.PathValue("platform")
+	if platform == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	if r.connectionService != nil {
+		err = r.connectionService.Disconnect(req.Context(), claims.UserID, platform)
+		if err != nil {
+			r.renderPage(w, "connection_view.html", PageData{
+				Title: platformName(platform),
+				User: &UserData{
+					ID:    claims.UserID,
+					Email: claims.Email,
+				},
+				Error: "Failed to disconnect: " + err.Error(),
+				Data: &ConnectionViewData{
+					Platform:     platform,
+					PlatformName: platformName(platform),
+				},
+			})
+			return
+		}
+	}
+
+	// Redirect to connections list
+	http.Redirect(w, req, "/connections", http.StatusSeeOther)
 }

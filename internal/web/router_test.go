@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -2654,4 +2655,463 @@ func TestRouter_PostWebhookRegenerate_InvalidatesOldSecret(t *testing.T) {
 
 func stringPtr(s string) *string {
 	return &s
+}
+
+// =============================================================================
+// Connection Management Tests
+// =============================================================================
+
+// MockConnectionService implements ConnectionService for testing
+type MockConnectionService struct {
+	connections map[string]map[string]*Connection // userID -> platform -> Connection
+	oauthStates map[string]*OAuthInfo
+	testResults map[string]*ConnectionTestResult
+}
+
+func NewMockConnectionService() *MockConnectionService {
+	return &MockConnectionService{
+		connections: make(map[string]map[string]*Connection),
+		oauthStates: make(map[string]*OAuthInfo),
+		testResults: make(map[string]*ConnectionTestResult),
+	}
+}
+
+func (m *MockConnectionService) AddConnection(c *Connection) {
+	if m.connections[c.UserID] == nil {
+		m.connections[c.UserID] = make(map[string]*Connection)
+	}
+	m.connections[c.UserID][c.Platform] = c
+}
+
+func (m *MockConnectionService) ListConnections(ctx context.Context, userID string) ([]*Connection, error) {
+	userConns := m.connections[userID]
+	if userConns == nil {
+		return []*Connection{}, nil
+	}
+	result := make([]*Connection, 0, len(userConns))
+	for _, conn := range userConns {
+		result = append(result, conn)
+	}
+	return result, nil
+}
+
+func (m *MockConnectionService) GetConnection(ctx context.Context, userID, platform string) (*Connection, error) {
+	userConns := m.connections[userID]
+	if userConns == nil {
+		return nil, fmt.Errorf("connection not found")
+	}
+	conn, ok := userConns[platform]
+	if !ok {
+		return nil, fmt.Errorf("connection not found")
+	}
+	return conn, nil
+}
+
+func (m *MockConnectionService) InitiateOAuth(ctx context.Context, userID, platform string) (*OAuthInfo, error) {
+	state := "test-state-" + userID + "-" + platform
+	info := &OAuthInfo{
+		AuthURL:   "https://oauth.example.com/authorize?platform=" + platform + "&state=" + state,
+		State:     state,
+		ExpiresAt: time.Now().Add(10 * time.Minute),
+	}
+	m.oauthStates[state] = info
+	return info, nil
+}
+
+func (m *MockConnectionService) HandleOAuthCallback(ctx context.Context, userID, platform, code, state string) (*OAuthResult, error) {
+	if code == "" || code == "invalid" {
+		return nil, fmt.Errorf("invalid code")
+	}
+	now := time.Now()
+	conn := &Connection{
+		UserID:      userID,
+		Platform:    platform,
+		Status:      "connected",
+		DisplayName: "Test User",
+		ConnectedAt: &now,
+	}
+	m.AddConnection(conn)
+	return &OAuthResult{
+		Connection:      conn,
+		IsNewConnection: true,
+	}, nil
+}
+
+func (m *MockConnectionService) Disconnect(ctx context.Context, userID, platform string) error {
+	userConns := m.connections[userID]
+	if userConns == nil {
+		return fmt.Errorf("connection not found")
+	}
+	if _, ok := userConns[platform]; !ok {
+		return fmt.Errorf("connection not found")
+	}
+	delete(userConns, platform)
+	return nil
+}
+
+func (m *MockConnectionService) TestConnection(ctx context.Context, userID, platform string) (*ConnectionTestResult, error) {
+	if result, ok := m.testResults[platform]; ok {
+		return result, nil
+	}
+	return &ConnectionTestResult{
+		Platform: platform,
+		Success:  true,
+		Latency:  50 * time.Millisecond,
+	}, nil
+}
+
+// NewRouterWithConnectionService creates a router with connection service for testing
+func NewRouterWithConnectionService(userStore UserStore, connService ConnectionService) *Router {
+	r := &Router{
+		mux:               http.NewServeMux(),
+		userStore:         userStore,
+		connectionService: connService,
+	}
+	r.setupRoutes()
+	return r
+}
+
+// Connections List Tests
+
+func TestRouter_GetConnectionsList_WithoutAuth_RedirectsToLogin(t *testing.T) {
+	router := NewRouter()
+
+	req := httptest.NewRequest(http.MethodGet, "/connections", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected status 303, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Header().Get("Location"), "/login") {
+		t.Errorf("Expected redirect to /login")
+	}
+}
+
+func TestRouter_GetConnectionsList_EmptyState(t *testing.T) {
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/connections", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	if !strings.Contains(body, "No Connected Platforms") {
+		t.Errorf("Expected empty state message in response")
+	}
+	if !strings.Contains(body, "Connect Your First Platform") {
+		t.Errorf("Expected 'Connect Your First Platform' button")
+	}
+}
+
+func TestRouter_GetConnectionsList_WithConnections(t *testing.T) {
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	// Add a connection
+	now := time.Now()
+	connService.AddConnection(&Connection{
+		UserID:      user.ID,
+		Platform:    "linkedin",
+		Status:      "connected",
+		DisplayName: "John Doe",
+		ConnectedAt: &now,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/connections", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	if !strings.Contains(body, "linkedin") {
+		t.Errorf("Expected 'linkedin' platform in response")
+	}
+	if !strings.Contains(body, "Connected") {
+		t.Errorf("Expected 'Connected' status badge")
+	}
+}
+
+// Connections New Tests
+
+func TestRouter_GetConnectionsNew_WithoutAuth_RedirectsToLogin(t *testing.T) {
+	router := NewRouter()
+
+	req := httptest.NewRequest(http.MethodGet, "/connections/new", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected status 303, got %d", rr.Code)
+	}
+}
+
+func TestRouter_GetConnectionsNew_ShowsPlatforms(t *testing.T) {
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/connections/new", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	if !strings.Contains(body, "LinkedIn") {
+		t.Errorf("Expected 'LinkedIn' platform in response")
+	}
+	if !strings.Contains(body, "Twitter") {
+		t.Errorf("Expected 'Twitter' platform in response")
+	}
+	if !strings.Contains(body, "Connect a Platform") {
+		t.Errorf("Expected 'Connect a Platform' heading")
+	}
+}
+
+// Connection View Tests
+
+func TestRouter_GetConnectionView_WithoutAuth_RedirectsToLogin(t *testing.T) {
+	router := NewRouter()
+
+	req := httptest.NewRequest(http.MethodGet, "/connections/linkedin", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected status 303, got %d", rr.Code)
+	}
+}
+
+func TestRouter_GetConnectionView_NotConnected(t *testing.T) {
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/connections/linkedin", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	if !strings.Contains(body, "Not Connected") {
+		t.Errorf("Expected 'Not Connected' message in response")
+	}
+}
+
+func TestRouter_GetConnectionView_Connected(t *testing.T) {
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	now := time.Now()
+	connService.AddConnection(&Connection{
+		UserID:      user.ID,
+		Platform:    "linkedin",
+		Status:      "connected",
+		DisplayName: "John Doe",
+		ConnectedAt: &now,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/connections/linkedin", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	if !strings.Contains(body, "Connection Status") {
+		t.Errorf("Expected 'Connection Status' section")
+	}
+	if !strings.Contains(body, "John Doe") {
+		t.Errorf("Expected 'John Doe' display name")
+	}
+}
+
+// Connection Connect Tests
+
+func TestRouter_PostConnectionConnect_WithoutAuth_RedirectsToLogin(t *testing.T) {
+	router := NewRouter()
+
+	req := httptest.NewRequest(http.MethodPost, "/connections/linkedin/connect", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected status 303, got %d", rr.Code)
+	}
+}
+
+func TestRouter_PostConnectionConnect_RedirectsToOAuth(t *testing.T) {
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodPost, "/connections/linkedin/connect", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("Expected status 303 (redirect to OAuth), got %d", rr.Code)
+	}
+
+	location := rr.Header().Get("Location")
+	if !strings.Contains(location, "oauth.example.com") {
+		t.Errorf("Expected redirect to OAuth provider, got: %s", location)
+	}
+}
+
+// Connection Disconnect Tests
+
+func TestRouter_PostConnectionDisconnect_WithoutAuth_RedirectsToLogin(t *testing.T) {
+	router := NewRouter()
+
+	req := httptest.NewRequest(http.MethodPost, "/connections/linkedin/disconnect", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected status 303, got %d", rr.Code)
+	}
+}
+
+func TestRouter_PostConnectionDisconnect_RemovesConnection(t *testing.T) {
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	// Add a connection first
+	now := time.Now()
+	connService.AddConnection(&Connection{
+		UserID:      user.ID,
+		Platform:    "linkedin",
+		Status:      "connected",
+		ConnectedAt: &now,
+	})
+
+	// Verify it exists
+	conns, _ := connService.ListConnections(context.Background(), user.ID)
+	if len(conns) != 1 {
+		t.Fatalf("Expected 1 connection before disconnect, got %d", len(conns))
+	}
+
+	// Disconnect
+	req := httptest.NewRequest(http.MethodPost, "/connections/linkedin/disconnect", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("Expected status 303 (redirect), got %d", rr.Code)
+	}
+
+	// Verify it's removed
+	conns, _ = connService.ListConnections(context.Background(), user.ID)
+	if len(conns) != 0 {
+		t.Errorf("Expected 0 connections after disconnect, got %d", len(conns))
+	}
+}
+
+// Connection Test Tests
+
+func TestRouter_PostConnectionTest_WithoutAuth_RedirectsToLogin(t *testing.T) {
+	router := NewRouter()
+
+	req := httptest.NewRequest(http.MethodPost, "/connections/linkedin/test", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected status 303, got %d", rr.Code)
+	}
+}
+
+func TestRouter_PostConnectionTest_ShowsTestResult(t *testing.T) {
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	// Add a connection
+	now := time.Now()
+	connService.AddConnection(&Connection{
+		UserID:      user.ID,
+		Platform:    "linkedin",
+		Status:      "connected",
+		ConnectedAt: &now,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/connections/linkedin/test", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	if !strings.Contains(body, "healthy") && !strings.Contains(body, "success") {
+		t.Errorf("Expected test result in response")
+	}
 }

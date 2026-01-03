@@ -1,0 +1,196 @@
+{{define "content"}}
+<div class="connections-container">
+    <div class="page-header">
+        <h1>Connected Platforms</h1>
+        <a href="/connections/new" class="btn btn-primary">Connect New Platform</a>
+    </div>
+
+    {{if .Error}}
+    <div class="alert alert-error">{{.Error}}</div>
+    {{end}}
+
+    {{if .Data.Connections}}
+    <div class="connections-grid">
+        {{range .Data.Connections}}
+        <div class="connection-card {{if .IsHealthy}}connection-healthy{{else}}connection-unhealthy{{end}}">
+            <div class="connection-header">
+                <span class="platform-icon platform-{{.Platform}}"></span>
+                <h3 class="platform-name">{{.Platform}}</h3>
+            </div>
+            <div class="connection-status">
+                {{if eq .Status "connected"}}
+                <span class="status-badge status-success">Connected</span>
+                {{else if eq .Status "expired"}}
+                <span class="status-badge status-warning">Token Expired</span>
+                {{else if eq .Status "error"}}
+                <span class="status-badge status-error">Error</span>
+                {{else}}
+                <span class="status-badge status-inactive">Disconnected</span>
+                {{end}}
+            </div>
+            {{if .DisplayName}}
+            <div class="connection-user">
+                <span class="label">Account:</span>
+                <span class="value">{{.DisplayName}}</span>
+            </div>
+            {{end}}
+            {{if .ExpiresAt}}
+            <div class="connection-expiry {{if .ExpiresWithin7Days}}expiry-warning{{end}}">
+                <span class="label">Expires:</span>
+                <span class="value">{{.ExpiresAt.Format "Jan 02, 2006"}}</span>
+                {{if .ExpiresWithin7Days}}
+                <span class="warning-text">Expires soon!</span>
+                {{end}}
+            </div>
+            {{end}}
+            <div class="connection-actions">
+                <a href="/connections/{{.Platform}}" class="btn btn-small btn-secondary">View Details</a>
+                <form action="/connections/{{.Platform}}/test" method="POST" class="inline-form">
+                    <button type="submit" class="btn btn-small">Test</button>
+                </form>
+            </div>
+        </div>
+        {{end}}
+    </div>
+    {{else}}
+    <div class="empty-state">
+        <div class="empty-state-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+            </svg>
+        </div>
+        <h2>No Connected Platforms</h2>
+        <p>Connect your first social media platform to start posting.</p>
+        <a href="/connections/new" class="btn btn-primary">Connect Your First Platform</a>
+    </div>
+    {{end}}
+</div>
+
+<style>
+.connections-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 30px;
+}
+
+.page-header h1 {
+    margin: 0;
+}
+
+.connections-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 20px;
+}
+
+.connection-card {
+    background: white;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 20px;
+    transition: box-shadow 0.2s;
+}
+
+.connection-card:hover {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.connection-healthy {
+    border-left: 4px solid #28a745;
+}
+
+.connection-unhealthy {
+    border-left: 4px solid #dc3545;
+}
+
+.connection-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 15px;
+}
+
+.connection-header h3 {
+    margin: 0;
+}
+
+.platform-name {
+    text-transform: capitalize;
+}
+
+.platform-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    background: #f0f0f0;
+}
+
+.connection-status {
+    margin-bottom: 10px;
+}
+
+.connection-user,
+.connection-expiry {
+    font-size: 0.9em;
+    margin-bottom: 8px;
+}
+
+.connection-user .label,
+.connection-expiry .label {
+    color: #666;
+    margin-right: 8px;
+}
+
+.expiry-warning .value {
+    color: #dc3545;
+}
+
+.warning-text {
+    color: #dc3545;
+    font-size: 0.85em;
+    margin-left: 8px;
+}
+
+.connection-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 15px;
+    padding-top: 15px;
+    border-top: 1px solid #eee;
+}
+
+.inline-form {
+    display: inline;
+}
+
+.empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    background: #f8f9fa;
+    border-radius: 8px;
+}
+
+.empty-state-icon {
+    color: #6c757d;
+    margin-bottom: 20px;
+}
+
+.empty-state h2 {
+    margin: 0 0 10px;
+    color: #333;
+}
+
+.empty-state p {
+    color: #666;
+    margin-bottom: 20px;
+}
+</style>
+{{end}}

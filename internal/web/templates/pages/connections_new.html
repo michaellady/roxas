@@ -1,0 +1,141 @@
+{{define "content"}}
+<div class="connect-container">
+    <div class="page-header">
+        <div class="header-back">
+            <a href="/connections" class="btn btn-small">&larr; Back to Connections</a>
+        </div>
+        <h1>Connect a Platform</h1>
+        <p class="subtitle">Choose a social media platform to connect with your Roxas account.</p>
+    </div>
+
+    {{if .Error}}
+    <div class="alert alert-error">{{.Error}}</div>
+    {{end}}
+
+    <div class="platforms-grid">
+        {{range .Data.Platforms}}
+        <div class="platform-card">
+            <div class="platform-header">
+                <span class="platform-icon platform-{{.ID}}"></span>
+                <h3>{{.Name}}</h3>
+            </div>
+            <p class="platform-description">{{.Description}}</p>
+            <div class="platform-permissions">
+                <span class="label">Required permissions:</span>
+                <ul>
+                    {{range .Permissions}}
+                    <li>{{.}}</li>
+                    {{end}}
+                </ul>
+            </div>
+            {{if .Enabled}}
+            <form action="/connections/{{.ID}}/connect" method="POST">
+                <button type="submit" class="btn btn-primary btn-block">Connect {{.Name}}</button>
+            </form>
+            {{else}}
+            <button class="btn btn-disabled btn-block" disabled>Coming Soon</button>
+            {{end}}
+        </div>
+        {{end}}
+    </div>
+</div>
+
+<style>
+.connect-container {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.page-header {
+    margin-bottom: 30px;
+}
+
+.page-header h1 {
+    margin: 10px 0 5px;
+}
+
+.subtitle {
+    color: #666;
+    margin: 0;
+}
+
+.platforms-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 20px;
+}
+
+.platform-card {
+    background: white;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+}
+
+.platform-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.platform-header h3 {
+    margin: 0;
+}
+
+.platform-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 8px;
+    background: #f0f0f0;
+}
+
+.platform-linkedin { background: #0077b5; }
+.platform-twitter { background: #1da1f2; }
+.platform-instagram { background: linear-gradient(45deg, #f09433, #e6683c, #dc2743, #cc2366, #bc1888); }
+.platform-threads { background: #000; }
+.platform-bluesky { background: #0085ff; }
+.platform-tiktok { background: #000; }
+
+.platform-description {
+    color: #666;
+    font-size: 0.95em;
+    margin-bottom: 15px;
+    flex-grow: 1;
+}
+
+.platform-permissions {
+    margin-bottom: 15px;
+    font-size: 0.9em;
+}
+
+.platform-permissions .label {
+    color: #666;
+    display: block;
+    margin-bottom: 5px;
+}
+
+.platform-permissions ul {
+    margin: 0;
+    padding-left: 20px;
+    color: #555;
+}
+
+.platform-permissions li {
+    margin-bottom: 3px;
+}
+
+.btn-block {
+    width: 100%;
+}
+
+.btn-disabled {
+    background: #e0e0e0;
+    color: #999;
+    cursor: not-allowed;
+}
+</style>
+{{end}}
