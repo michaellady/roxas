@@ -8,37 +8,6 @@ import (
 	"time"
 )
 
-// =============================================================================
-// OAuthProvider Interface and Types (TB-CONN)
-// =============================================================================
-
-// OAuthTokens contains tokens returned from OAuth exchange
-type OAuthTokens struct {
-	AccessToken    string
-	RefreshToken   string
-	ExpiresAt      *time.Time
-	PlatformUserID string
-	Scopes         string
-}
-
-// OAuthProvider defines platform-specific OAuth operations
-type OAuthProvider interface {
-	// Platform returns the platform identifier
-	Platform() string
-
-	// GetAuthURL generates an OAuth authorization URL
-	GetAuthURL(state, redirectURL string) string
-
-	// ExchangeCode exchanges an authorization code for tokens
-	ExchangeCode(ctx context.Context, code, redirectURL string) (*OAuthTokens, error)
-
-	// RefreshTokens refreshes expired tokens
-	RefreshTokens(ctx context.Context, refreshToken string) (*OAuthTokens, error)
-
-	// GetRequiredScopes returns the OAuth scopes needed for posting
-	GetRequiredScopes() []string
-}
-
 // SocialClientFactory creates SocialClient instances for platforms
 type SocialClientFactory interface {
 	CreateClient(ctx context.Context, platform string, creds *PlatformCredentials) (SocialClient, error)

@@ -888,16 +888,16 @@ func (m *MockCredentialStore) UpdateTokens(ctx context.Context, userID, platform
 	return ErrCredentialsNotFound
 }
 
-// MockOAuthProvider implements OAuthProvider for testing
-type MockOAuthProvider struct {
+// ConnTestMockOAuthProvider implements OAuthProvider for testing connection service
+type ConnTestMockOAuthProvider struct {
 	platform      string
 	scopes        []string
 	exchangeError error
 	tokens        *OAuthTokens
 }
 
-func NewMockOAuthProvider(platform string) *MockOAuthProvider {
-	return &MockOAuthProvider{
+func NewConnTestMockOAuthProvider(platform string) *ConnTestMockOAuthProvider {
+	return &ConnTestMockOAuthProvider{
 		platform: platform,
 		scopes:   getPlatformScopes(platform),
 		tokens: &OAuthTokens{
@@ -909,23 +909,23 @@ func NewMockOAuthProvider(platform string) *MockOAuthProvider {
 	}
 }
 
-func (m *MockOAuthProvider) SetExchangeError(err error) {
+func (m *ConnTestMockOAuthProvider) SetExchangeError(err error) {
 	m.exchangeError = err
 }
 
-func (m *MockOAuthProvider) SetTokens(tokens *OAuthTokens) {
+func (m *ConnTestMockOAuthProvider) SetTokens(tokens *OAuthTokens) {
 	m.tokens = tokens
 }
 
-func (m *MockOAuthProvider) Platform() string {
+func (m *ConnTestMockOAuthProvider) Platform() string {
 	return m.platform
 }
 
-func (m *MockOAuthProvider) GetAuthURL(state, redirectURL string) string {
+func (m *ConnTestMockOAuthProvider) GetAuthURL(state, redirectURL string) string {
 	return "https://oauth.example.com/authorize?platform=" + m.platform + "&state=" + state + "&redirect_uri=" + redirectURL
 }
 
-func (m *MockOAuthProvider) ExchangeCode(ctx context.Context, code, redirectURL string) (*OAuthTokens, error) {
+func (m *ConnTestMockOAuthProvider) ExchangeCode(ctx context.Context, code, redirectURL string) (*OAuthTokens, error) {
 	if m.exchangeError != nil {
 		return nil, m.exchangeError
 	}
@@ -935,14 +935,14 @@ func (m *MockOAuthProvider) ExchangeCode(ctx context.Context, code, redirectURL 
 	return m.tokens, nil
 }
 
-func (m *MockOAuthProvider) RefreshTokens(ctx context.Context, refreshToken string) (*OAuthTokens, error) {
+func (m *ConnTestMockOAuthProvider) RefreshTokens(ctx context.Context, refreshToken string) (*OAuthTokens, error) {
 	if refreshToken == "" {
 		return nil, errors.New("no refresh token")
 	}
 	return m.tokens, nil
 }
 
-func (m *MockOAuthProvider) GetRequiredScopes() []string {
+func (m *ConnTestMockOAuthProvider) GetRequiredScopes() []string {
 	return m.scopes
 }
 
@@ -1042,7 +1042,7 @@ func TestConnectionServiceImpl_GetConnection(t *testing.T) {
 // Test ConnectionServiceImpl.InitiateOAuth
 func TestConnectionServiceImpl_InitiateOAuth(t *testing.T) {
 	credStore := NewMockCredentialStore()
-	provider := NewMockOAuthProvider(PlatformLinkedIn)
+	provider := NewConnTestMockOAuthProvider(PlatformLinkedIn)
 	svc := NewConnectionService(ConnectionServiceConfig{
 		CredentialStore: credStore,
 		OAuthProviders:  map[string]OAuthProvider{PlatformLinkedIn: provider},
@@ -1086,7 +1086,7 @@ func TestConnectionServiceImpl_InitiateOAuth(t *testing.T) {
 // Test ConnectionServiceImpl.HandleOAuthCallback
 func TestConnectionServiceImpl_HandleOAuthCallback(t *testing.T) {
 	credStore := NewMockCredentialStore()
-	provider := NewMockOAuthProvider(PlatformLinkedIn)
+	provider := NewConnTestMockOAuthProvider(PlatformLinkedIn)
 	expiry := time.Now().Add(time.Hour)
 	provider.SetTokens(&OAuthTokens{
 		AccessToken:    "new-access-token",
@@ -1138,7 +1138,7 @@ func TestConnectionServiceImpl_HandleOAuthCallback(t *testing.T) {
 // Test ConnectionServiceImpl.HandleOAuthCallback with invalid state
 func TestConnectionServiceImpl_HandleOAuthCallback_InvalidState(t *testing.T) {
 	credStore := NewMockCredentialStore()
-	provider := NewMockOAuthProvider(PlatformLinkedIn)
+	provider := NewConnTestMockOAuthProvider(PlatformLinkedIn)
 	svc := NewConnectionService(ConnectionServiceConfig{
 		CredentialStore: credStore,
 		OAuthProviders:  map[string]OAuthProvider{PlatformLinkedIn: provider},
@@ -1156,7 +1156,7 @@ func TestConnectionServiceImpl_HandleOAuthCallback_InvalidState(t *testing.T) {
 // Test ConnectionServiceImpl.HandleOAuthCallback with expired state
 func TestConnectionServiceImpl_HandleOAuthCallback_ExpiredState(t *testing.T) {
 	credStore := NewMockCredentialStore()
-	provider := NewMockOAuthProvider(PlatformLinkedIn)
+	provider := NewConnTestMockOAuthProvider(PlatformLinkedIn)
 	svc := NewConnectionService(ConnectionServiceConfig{
 		CredentialStore: credStore,
 		OAuthProviders:  map[string]OAuthProvider{PlatformLinkedIn: provider},
