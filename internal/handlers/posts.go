@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -10,6 +11,9 @@ import (
 	"github.com/mikelady/roxas/internal/auth"
 	"github.com/mikelady/roxas/internal/services"
 )
+
+// ErrDuplicatePost is returned when a post with the same commit_id, platform, and version exists
+var ErrDuplicatePost = errors.New("post already exists for this commit and platform")
 
 // =============================================================================
 // Posts Handler Implementation (TB19)
