@@ -30,7 +30,7 @@ var pageTemplates map[string]*template.Template
 
 func init() {
 	pageTemplates = make(map[string]*template.Template)
-	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "webhook_regenerate.html"}
+	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "webhook_regenerate.html", "webhook_deliveries.html"}
 
 	for _, page := range pages {
 		// Clone the base template and parse the page
@@ -141,6 +141,24 @@ func (t *HTTPWebhookTester) TestWebhook(ctx context.Context, webhookURL, secret 
 	return resp.StatusCode, nil
 }
 
+// WebhookDelivery represents a webhook delivery event for display
+type WebhookDelivery struct {
+	ID           string
+	RepositoryID string
+	EventType    string
+	Payload      string
+	StatusCode   int
+	ErrorMessage *string
+	ProcessedAt  *string
+	CreatedAt    string
+	IsSuccess    bool
+}
+
+// WebhookDeliveryStore interface for webhook delivery operations
+type WebhookDeliveryStore interface {
+	ListDeliveriesByRepository(ctx context.Context, repoID string, limit int) ([]*WebhookDelivery, error)
+}
+
 // DashboardCommit represents a commit for the dashboard
 type DashboardCommit struct {
 	ID      string
@@ -159,14 +177,15 @@ type DashboardPost struct {
 
 // Router is the main HTTP router for the web UI
 type Router struct {
-	mux           *http.ServeMux
-	userStore     UserStore
-	repoStore     RepositoryStore
-	commitLister  CommitLister
-	postLister    PostLister
-	secretGen     SecretGenerator
-	webhookURL    string
-	webhookTester WebhookTester
+	mux                  *http.ServeMux
+	userStore            UserStore
+	repoStore            RepositoryStore
+	commitLister         CommitLister
+	postLister           PostLister
+	secretGen            SecretGenerator
+	webhookURL           string
+	webhookTester        WebhookTester
+	webhookDeliveryStore WebhookDeliveryStore
 }
 
 // NewRouter creates a new web router with all routes configured (no user store)
@@ -219,6 +238,22 @@ func NewRouterWithWebhookTester(userStore UserStore, repoStore RepositoryStore, 
 	return r
 }
 
+// NewRouterWithWebhookDeliveries creates a new web router with webhook delivery store
+func NewRouterWithWebhookDeliveries(userStore UserStore, repoStore RepositoryStore, commitLister CommitLister, postLister PostLister, secretGen SecretGenerator, webhookURL string, webhookDeliveryStore WebhookDeliveryStore) *Router {
+	r := &Router{
+		mux:                  http.NewServeMux(),
+		userStore:            userStore,
+		repoStore:            repoStore,
+		commitLister:         commitLister,
+		postLister:           postLister,
+		secretGen:            secretGen,
+		webhookURL:           webhookURL,
+		webhookDeliveryStore: webhookDeliveryStore,
+	}
+	r.setupRoutes()
+	return r
+}
+
 // ServeHTTP implements http.Handler
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.mux.ServeHTTP(w, req)
@@ -243,6 +278,7 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("POST /repositories/{id}/edit", r.handleRepositoryEditPost)
 	r.mux.HandleFunc("/repositories/{id}/webhook/test", r.handleWebhookTest)
 	r.mux.HandleFunc("/repositories/{id}/webhook/regenerate", r.handleWebhookRegenerate)
+	r.mux.HandleFunc("GET /repositories/{id}/webhooks", r.handleWebhookDeliveries)
 }
 
 func (r *Router) handleHome(w http.ResponseWriter, req *http.Request) {
@@ -1255,4 +1291,106 @@ func (r *Router) renderPage(w http.ResponseWriter, page string, data PageData) {
 		http.Error(w, "Template error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+}
+
+// WebhookDeliveriesData holds data for the webhook deliveries page
+type WebhookDeliveriesData struct {
+	Repository *handlers.Repository
+	Deliveries []*WebhookDelivery
+	RepoName   string
+}
+
+func (r *Router) handleWebhookDeliveries(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get repository ID from path
+	repoID := req.PathValue("id")
+	if repoID == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Check if stores are configured
+	if r.repoStore == nil {
+		r.renderPage(w, "webhook_deliveries.html", PageData{
+			Title: "Webhook Deliveries",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Repository store not configured",
+		})
+		return
+	}
+
+	// Get repository
+	repo, err := r.repoStore.GetRepositoryByID(req.Context(), repoID)
+	if err != nil {
+		r.renderPage(w, "webhook_deliveries.html", PageData{
+			Title: "Webhook Deliveries",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Failed to load repository",
+		})
+		return
+	}
+
+	// Repository not found
+	if repo == nil {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Verify the repository belongs to the current user
+	if repo.UserID != claims.UserID {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Extract repository name
+	repoName := extractRepoName(repo.GitHubURL)
+
+	// Get webhook deliveries
+	var deliveries []*WebhookDelivery
+	if r.webhookDeliveryStore != nil {
+		deliveries, err = r.webhookDeliveryStore.ListDeliveriesByRepository(req.Context(), repoID, 50)
+		if err != nil {
+			r.renderPage(w, "webhook_deliveries.html", PageData{
+				Title: repoName + " - Webhook Deliveries",
+				User: &UserData{
+					ID:    claims.UserID,
+					Email: claims.Email,
+				},
+				Error: "Failed to load webhook deliveries",
+			})
+			return
+		}
+	}
+
+	r.renderPage(w, "webhook_deliveries.html", PageData{
+		Title: repoName + " - Webhook Deliveries",
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+		Data: &WebhookDeliveriesData{
+			Repository: repo,
+			Deliveries: deliveries,
+			RepoName:   repoName,
+		},
+	})
 }

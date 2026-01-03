@@ -69,6 +69,7 @@
         <section class="repo-actions">
             <h2>Actions</h2>
             <div class="action-buttons">
+                <a href="/repositories/{{.Data.Repository.ID}}/webhooks" class="btn btn-primary">View Webhook Deliveries</a>
                 <a href="/repositories/{{.Data.Repository.ID}}/edit" class="btn btn-secondary">Edit Settings</a>
                 <button type="button" class="btn btn-danger" onclick="confirmDelete()">Delete Repository</button>
             </div>

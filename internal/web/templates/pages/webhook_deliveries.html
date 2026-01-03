@@ -1,0 +1,189 @@
+{{define "content"}}
+<div class="webhook-deliveries-container">
+    <div class="page-header">
+        <div class="header-back">
+            <a href="/repositories/{{.Data.Repository.ID}}" class="btn btn-small">&larr; Back to Repository</a>
+        </div>
+        <h1>Webhook Deliveries</h1>
+        <p class="subtitle">{{.Data.RepoName}}</p>
+    </div>
+
+    {{if .Error}}
+    <div class="alert alert-error">{{.Error}}</div>
+    {{end}}
+
+    {{if .Data}}
+    <div class="card">
+        {{if .Data.Deliveries}}
+        <table class="deliveries-table">
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Event</th>
+                    <th>Status</th>
+                    <th>Payload Preview</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .Data.Deliveries}}
+                <tr class="{{if .IsSuccess}}delivery-success{{else}}delivery-failed{{end}}">
+                    <td class="delivery-time">{{.CreatedAt}}</td>
+                    <td class="delivery-event">{{.EventType}}</td>
+                    <td class="delivery-status">
+                        {{if .IsSuccess}}
+                        <span class="status-badge status-success">{{.StatusCode}}</span>
+                        {{else}}
+                        <span class="status-badge status-failed">{{.StatusCode}}</span>
+                        {{end}}
+                    </td>
+                    <td class="delivery-payload">
+                        <code class="payload-preview">{{.Payload}}</code>
+                    </td>
+                    <td class="delivery-actions">
+                        {{if not .IsSuccess}}
+                        <form method="POST" action="/repositories/{{$.Data.Repository.ID}}/webhooks/{{.ID}}/retry" class="inline-form">
+                            <button type="submit" class="btn btn-small btn-retry">Retry</button>
+                        </form>
+                        {{end}}
+                    </td>
+                </tr>
+                {{if .ErrorMessage}}
+                <tr class="error-row">
+                    <td colspan="5" class="error-message">
+                        <strong>Error:</strong> {{.ErrorMessage}}
+                    </td>
+                </tr>
+                {{end}}
+                {{end}}
+            </tbody>
+        </table>
+        {{else}}
+        <div class="empty-state">
+            <p>No webhook deliveries yet.</p>
+            <p class="hint">Webhook deliveries will appear here after pushing commits to your repository.</p>
+        </div>
+        {{end}}
+    </div>
+    {{end}}
+</div>
+
+<style>
+.webhook-deliveries-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.page-header {
+    margin-bottom: 20px;
+}
+
+.page-header h1 {
+    margin: 10px 0 5px;
+}
+
+.subtitle {
+    color: #666;
+    margin: 0;
+}
+
+.deliveries-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.deliveries-table th,
+.deliveries-table td {
+    padding: 12px;
+    text-align: left;
+    border-bottom: 1px solid #eee;
+}
+
+.deliveries-table th {
+    background-color: #f5f5f5;
+    font-weight: 600;
+}
+
+.delivery-time {
+    white-space: nowrap;
+    font-family: monospace;
+    font-size: 0.9em;
+}
+
+.delivery-event {
+    font-weight: 500;
+}
+
+.status-badge {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.85em;
+    font-weight: 500;
+}
+
+.status-success {
+    background-color: #d4edda;
+    color: #155724;
+}
+
+.status-failed {
+    background-color: #f8d7da;
+    color: #721c24;
+}
+
+.payload-preview {
+    display: block;
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    background-color: #f8f9fa;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.85em;
+}
+
+.delivery-success {
+    background-color: #f8fff8;
+}
+
+.delivery-failed {
+    background-color: #fff8f8;
+}
+
+.error-row td {
+    background-color: #fff0f0;
+    color: #721c24;
+    font-size: 0.9em;
+    padding: 8px 12px;
+}
+
+.inline-form {
+    display: inline;
+}
+
+.btn-retry {
+    background-color: #ffc107;
+    color: #000;
+    border: none;
+    cursor: pointer;
+}
+
+.btn-retry:hover {
+    background-color: #e0a800;
+}
+
+.empty-state {
+    text-align: center;
+    padding: 40px;
+    color: #666;
+}
+
+.empty-state .hint {
+    font-size: 0.9em;
+    color: #999;
+}
+</style>
+{{end}}
