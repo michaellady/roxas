@@ -794,3 +794,546 @@ func TestConnectionService_HandleOAuthCallback_UpdatesExistingConnection(t *test
 		t.Errorf("Connection status = %q, want %q", result.Connection.Status, ConnectionStatusConnected)
 	}
 }
+
+// =============================================================================
+// ConnectionServiceImpl Tests
+// =============================================================================
+
+// MockCredentialStore implements CredentialStore for testing
+type MockCredentialStore struct {
+	credentials map[string]map[string]*PlatformCredentials // userID -> platform -> creds
+	saveError   error
+	deleteError error
+}
+
+func NewMockCredentialStore() *MockCredentialStore {
+	return &MockCredentialStore{
+		credentials: make(map[string]map[string]*PlatformCredentials),
+	}
+}
+
+func (m *MockCredentialStore) SetSaveError(err error) {
+	m.saveError = err
+}
+
+func (m *MockCredentialStore) SetDeleteError(err error) {
+	m.deleteError = err
+}
+
+func (m *MockCredentialStore) GetCredentials(ctx context.Context, userID, platform string) (*PlatformCredentials, error) {
+	if userCreds, ok := m.credentials[userID]; ok {
+		if cred, ok := userCreds[platform]; ok {
+			return cred, nil
+		}
+	}
+	return nil, ErrCredentialsNotFound
+}
+
+func (m *MockCredentialStore) SaveCredentials(ctx context.Context, creds *PlatformCredentials) error {
+	if m.saveError != nil {
+		return m.saveError
+	}
+	if m.credentials[creds.UserID] == nil {
+		m.credentials[creds.UserID] = make(map[string]*PlatformCredentials)
+	}
+	m.credentials[creds.UserID][creds.Platform] = creds
+	return nil
+}
+
+func (m *MockCredentialStore) DeleteCredentials(ctx context.Context, userID, platform string) error {
+	if m.deleteError != nil {
+		return m.deleteError
+	}
+	if userCreds, ok := m.credentials[userID]; ok {
+		delete(userCreds, platform)
+	}
+	return nil
+}
+
+func (m *MockCredentialStore) GetCredentialsForUser(ctx context.Context, userID string) ([]*PlatformCredentials, error) {
+	userCreds := m.credentials[userID]
+	if userCreds == nil {
+		return []*PlatformCredentials{}, nil
+	}
+	result := make([]*PlatformCredentials, 0, len(userCreds))
+	for _, cred := range userCreds {
+		result = append(result, cred)
+	}
+	return result, nil
+}
+
+func (m *MockCredentialStore) GetExpiringCredentials(ctx context.Context, within time.Duration) ([]*PlatformCredentials, error) {
+	var result []*PlatformCredentials
+	threshold := time.Now().Add(within)
+	for _, userCreds := range m.credentials {
+		for _, cred := range userCreds {
+			if cred.TokenExpiresAt != nil && cred.TokenExpiresAt.Before(threshold) {
+				result = append(result, cred)
+			}
+		}
+	}
+	return result, nil
+}
+
+func (m *MockCredentialStore) UpdateTokens(ctx context.Context, userID, platform, accessToken, refreshToken string, expiresAt *time.Time) error {
+	if userCreds, ok := m.credentials[userID]; ok {
+		if cred, ok := userCreds[platform]; ok {
+			cred.AccessToken = accessToken
+			cred.RefreshToken = refreshToken
+			cred.TokenExpiresAt = expiresAt
+			cred.UpdatedAt = time.Now()
+			return nil
+		}
+	}
+	return ErrCredentialsNotFound
+}
+
+// ConnTestMockOAuthProvider implements OAuthProvider for testing connection service
+type ConnTestMockOAuthProvider struct {
+	platform      string
+	scopes        []string
+	exchangeError error
+	tokens        *OAuthTokens
+}
+
+func NewConnTestMockOAuthProvider(platform string) *ConnTestMockOAuthProvider {
+	return &ConnTestMockOAuthProvider{
+		platform: platform,
+		scopes:   getPlatformScopes(platform),
+		tokens: &OAuthTokens{
+			AccessToken:    "mock-access-token",
+			RefreshToken:   "mock-refresh-token",
+			PlatformUserID: "mock-platform-user",
+			Scopes:         "scope1,scope2",
+		},
+	}
+}
+
+func (m *ConnTestMockOAuthProvider) SetExchangeError(err error) {
+	m.exchangeError = err
+}
+
+func (m *ConnTestMockOAuthProvider) SetTokens(tokens *OAuthTokens) {
+	m.tokens = tokens
+}
+
+func (m *ConnTestMockOAuthProvider) Platform() string {
+	return m.platform
+}
+
+func (m *ConnTestMockOAuthProvider) GetAuthURL(state, redirectURL string) string {
+	return "https://oauth.example.com/authorize?platform=" + m.platform + "&state=" + state + "&redirect_uri=" + redirectURL
+}
+
+func (m *ConnTestMockOAuthProvider) ExchangeCode(ctx context.Context, code, redirectURL string) (*OAuthTokens, error) {
+	if m.exchangeError != nil {
+		return nil, m.exchangeError
+	}
+	if code == "" || code == "invalid" {
+		return nil, errors.New("invalid code")
+	}
+	return m.tokens, nil
+}
+
+func (m *ConnTestMockOAuthProvider) RefreshTokens(ctx context.Context, refreshToken string) (*OAuthTokens, error) {
+	if refreshToken == "" {
+		return nil, errors.New("no refresh token")
+	}
+	return m.tokens, nil
+}
+
+func (m *ConnTestMockOAuthProvider) GetRequiredScopes() []string {
+	return m.scopes
+}
+
+// Test ConnectionServiceImpl.ListConnections
+func TestConnectionServiceImpl_ListConnections(t *testing.T) {
+	credStore := NewMockCredentialStore()
+	svc := NewConnectionService(ConnectionServiceConfig{
+		CredentialStore: credStore,
+	})
+
+	ctx := context.Background()
+	userID := "user-123"
+
+	// Test empty list
+	conns, err := svc.ListConnections(ctx, userID)
+	if err != nil {
+		t.Fatalf("ListConnections() error = %v", err)
+	}
+	if len(conns) != 0 {
+		t.Errorf("ListConnections() = %d, want 0", len(conns))
+	}
+
+	// Add credentials
+	now := time.Now()
+	future := now.Add(time.Hour)
+	credStore.SaveCredentials(ctx, &PlatformCredentials{
+		UserID:         userID,
+		Platform:       PlatformLinkedIn,
+		AccessToken:    "token1",
+		TokenExpiresAt: &future,
+	})
+	credStore.SaveCredentials(ctx, &PlatformCredentials{
+		UserID:         userID,
+		Platform:       PlatformTwitter,
+		AccessToken:    "token2",
+		TokenExpiresAt: &future,
+	})
+
+	// Test with credentials
+	conns, err = svc.ListConnections(ctx, userID)
+	if err != nil {
+		t.Fatalf("ListConnections() error = %v", err)
+	}
+	if len(conns) != 2 {
+		t.Errorf("ListConnections() = %d, want 2", len(conns))
+	}
+}
+
+// Test ConnectionServiceImpl.GetConnection
+func TestConnectionServiceImpl_GetConnection(t *testing.T) {
+	credStore := NewMockCredentialStore()
+	svc := NewConnectionService(ConnectionServiceConfig{
+		CredentialStore: credStore,
+	})
+
+	ctx := context.Background()
+	userID := "user-123"
+
+	// Test not found
+	_, err := svc.GetConnection(ctx, userID, PlatformLinkedIn)
+	if !errors.Is(err, ErrConnectionNotFound) {
+		t.Errorf("GetConnection() error = %v, want %v", err, ErrConnectionNotFound)
+	}
+
+	// Test invalid platform
+	_, err = svc.GetConnection(ctx, userID, "invalid")
+	if !errors.Is(err, ErrInvalidPlatform) {
+		t.Errorf("GetConnection() error = %v, want %v", err, ErrInvalidPlatform)
+	}
+
+	// Add credentials and test success
+	now := time.Now()
+	future := now.Add(time.Hour)
+	credStore.SaveCredentials(ctx, &PlatformCredentials{
+		UserID:         userID,
+		Platform:       PlatformLinkedIn,
+		AccessToken:    "token1",
+		TokenExpiresAt: &future,
+		PlatformUserID: "linkedin-user-123",
+	})
+
+	conn, err := svc.GetConnection(ctx, userID, PlatformLinkedIn)
+	if err != nil {
+		t.Fatalf("GetConnection() error = %v", err)
+	}
+	if conn.Platform != PlatformLinkedIn {
+		t.Errorf("Platform = %q, want %q", conn.Platform, PlatformLinkedIn)
+	}
+	if conn.Status != ConnectionStatusConnected {
+		t.Errorf("Status = %q, want %q", conn.Status, ConnectionStatusConnected)
+	}
+	if conn.PlatformUserID != "linkedin-user-123" {
+		t.Errorf("PlatformUserID = %q, want %q", conn.PlatformUserID, "linkedin-user-123")
+	}
+}
+
+// Test ConnectionServiceImpl.InitiateOAuth
+func TestConnectionServiceImpl_InitiateOAuth(t *testing.T) {
+	credStore := NewMockCredentialStore()
+	provider := NewConnTestMockOAuthProvider(PlatformLinkedIn)
+	svc := NewConnectionService(ConnectionServiceConfig{
+		CredentialStore: credStore,
+		OAuthProviders:  map[string]OAuthProvider{PlatformLinkedIn: provider},
+		RedirectURI:     "https://app.example.com/callback",
+	})
+
+	ctx := context.Background()
+	userID := "user-123"
+
+	// Test successful initiation
+	info, err := svc.InitiateOAuth(ctx, userID, PlatformLinkedIn)
+	if err != nil {
+		t.Fatalf("InitiateOAuth() error = %v", err)
+	}
+	if info.AuthURL == "" {
+		t.Error("AuthURL is empty")
+	}
+	if info.State == "" {
+		t.Error("State is empty")
+	}
+	if len(info.State) != 64 { // 32 bytes hex encoded
+		t.Errorf("State length = %d, want 64", len(info.State))
+	}
+	if info.RedirectURI != "https://app.example.com/callback" {
+		t.Errorf("RedirectURI = %q, want %q", info.RedirectURI, "https://app.example.com/callback")
+	}
+
+	// Test platform with no provider (disabled)
+	_, err = svc.InitiateOAuth(ctx, userID, PlatformTwitter)
+	if !errors.Is(err, ErrPlatformDisabled) {
+		t.Errorf("InitiateOAuth() error = %v, want %v", err, ErrPlatformDisabled)
+	}
+
+	// Test invalid platform
+	_, err = svc.InitiateOAuth(ctx, userID, "invalid")
+	if !errors.Is(err, ErrInvalidPlatform) {
+		t.Errorf("InitiateOAuth() error = %v, want %v", err, ErrInvalidPlatform)
+	}
+}
+
+// Test ConnectionServiceImpl.HandleOAuthCallback
+func TestConnectionServiceImpl_HandleOAuthCallback(t *testing.T) {
+	credStore := NewMockCredentialStore()
+	provider := NewConnTestMockOAuthProvider(PlatformLinkedIn)
+	expiry := time.Now().Add(time.Hour)
+	provider.SetTokens(&OAuthTokens{
+		AccessToken:    "new-access-token",
+		RefreshToken:   "new-refresh-token",
+		ExpiresAt:      &expiry,
+		PlatformUserID: "linkedin-user-456",
+		Scopes:         "r_liteprofile,w_member_social",
+	})
+	svc := NewConnectionService(ConnectionServiceConfig{
+		CredentialStore: credStore,
+		OAuthProviders:  map[string]OAuthProvider{PlatformLinkedIn: provider},
+		RedirectURI:     "https://app.example.com/callback",
+	})
+
+	ctx := context.Background()
+	userID := "user-123"
+
+	// First initiate OAuth
+	info, err := svc.InitiateOAuth(ctx, userID, PlatformLinkedIn)
+	if err != nil {
+		t.Fatalf("InitiateOAuth() error = %v", err)
+	}
+
+	// Test successful callback
+	result, err := svc.HandleOAuthCallback(ctx, userID, PlatformLinkedIn, "valid-code", info.State)
+	if err != nil {
+		t.Fatalf("HandleOAuthCallback() error = %v", err)
+	}
+	if !result.IsNewConnection {
+		t.Error("Expected IsNewConnection = true")
+	}
+	if result.Connection.Status != ConnectionStatusConnected {
+		t.Errorf("Status = %q, want %q", result.Connection.Status, ConnectionStatusConnected)
+	}
+	if result.Connection.PlatformUserID != "linkedin-user-456" {
+		t.Errorf("PlatformUserID = %q, want %q", result.Connection.PlatformUserID, "linkedin-user-456")
+	}
+
+	// Verify credentials were stored
+	creds, err := credStore.GetCredentials(ctx, userID, PlatformLinkedIn)
+	if err != nil {
+		t.Fatalf("GetCredentials() error = %v", err)
+	}
+	if creds.AccessToken != "new-access-token" {
+		t.Errorf("AccessToken = %q, want %q", creds.AccessToken, "new-access-token")
+	}
+}
+
+// Test ConnectionServiceImpl.HandleOAuthCallback with invalid state
+func TestConnectionServiceImpl_HandleOAuthCallback_InvalidState(t *testing.T) {
+	credStore := NewMockCredentialStore()
+	provider := NewConnTestMockOAuthProvider(PlatformLinkedIn)
+	svc := NewConnectionService(ConnectionServiceConfig{
+		CredentialStore: credStore,
+		OAuthProviders:  map[string]OAuthProvider{PlatformLinkedIn: provider},
+	})
+
+	ctx := context.Background()
+
+	// Test with invalid state
+	_, err := svc.HandleOAuthCallback(ctx, "user-123", PlatformLinkedIn, "code", "invalid-state")
+	if !errors.Is(err, ErrOAuthStateInvalid) {
+		t.Errorf("HandleOAuthCallback() error = %v, want %v", err, ErrOAuthStateInvalid)
+	}
+}
+
+// Test ConnectionServiceImpl.HandleOAuthCallback with expired state
+func TestConnectionServiceImpl_HandleOAuthCallback_ExpiredState(t *testing.T) {
+	credStore := NewMockCredentialStore()
+	provider := NewConnTestMockOAuthProvider(PlatformLinkedIn)
+	svc := NewConnectionService(ConnectionServiceConfig{
+		CredentialStore: credStore,
+		OAuthProviders:  map[string]OAuthProvider{PlatformLinkedIn: provider},
+		StateTTL:        1 * time.Millisecond, // Very short TTL
+	})
+
+	ctx := context.Background()
+	userID := "user-123"
+
+	// Initiate OAuth
+	info, err := svc.InitiateOAuth(ctx, userID, PlatformLinkedIn)
+	if err != nil {
+		t.Fatalf("InitiateOAuth() error = %v", err)
+	}
+
+	// Wait for state to expire
+	time.Sleep(10 * time.Millisecond)
+
+	// Try callback with expired state
+	_, err = svc.HandleOAuthCallback(ctx, userID, PlatformLinkedIn, "code", info.State)
+	if !errors.Is(err, ErrOAuthStateInvalid) {
+		t.Errorf("HandleOAuthCallback() error = %v, want %v", err, ErrOAuthStateInvalid)
+	}
+}
+
+// Test ConnectionServiceImpl.Disconnect
+func TestConnectionServiceImpl_Disconnect(t *testing.T) {
+	credStore := NewMockCredentialStore()
+	svc := NewConnectionService(ConnectionServiceConfig{
+		CredentialStore: credStore,
+	})
+
+	ctx := context.Background()
+	userID := "user-123"
+
+	// Test disconnect when not connected
+	err := svc.Disconnect(ctx, userID, PlatformLinkedIn)
+	if !errors.Is(err, ErrConnectionNotFound) {
+		t.Errorf("Disconnect() error = %v, want %v", err, ErrConnectionNotFound)
+	}
+
+	// Add credentials
+	credStore.SaveCredentials(ctx, &PlatformCredentials{
+		UserID:      userID,
+		Platform:    PlatformLinkedIn,
+		AccessToken: "token",
+	})
+
+	// Test successful disconnect
+	err = svc.Disconnect(ctx, userID, PlatformLinkedIn)
+	if err != nil {
+		t.Fatalf("Disconnect() error = %v", err)
+	}
+
+	// Verify credentials were deleted
+	_, err = credStore.GetCredentials(ctx, userID, PlatformLinkedIn)
+	if !errors.Is(err, ErrCredentialsNotFound) {
+		t.Errorf("GetCredentials() error = %v, want %v", err, ErrCredentialsNotFound)
+	}
+}
+
+// Test ConnectionServiceImpl.TestConnection without client factory
+func TestConnectionServiceImpl_TestConnection_NoClientFactory(t *testing.T) {
+	credStore := NewMockCredentialStore()
+	svc := NewConnectionService(ConnectionServiceConfig{
+		CredentialStore: credStore,
+	})
+
+	ctx := context.Background()
+	userID := "user-123"
+
+	// Test with no connection
+	_, err := svc.TestConnection(ctx, userID, PlatformLinkedIn)
+	if !errors.Is(err, ErrConnectionNotFound) {
+		t.Errorf("TestConnection() error = %v, want %v", err, ErrConnectionNotFound)
+	}
+
+	// Add valid credentials
+	future := time.Now().Add(time.Hour)
+	credStore.SaveCredentials(ctx, &PlatformCredentials{
+		UserID:         userID,
+		Platform:       PlatformLinkedIn,
+		AccessToken:    "token",
+		TokenExpiresAt: &future,
+	})
+
+	// Test should succeed (just checks expiry without client factory)
+	result, err := svc.TestConnection(ctx, userID, PlatformLinkedIn)
+	if err != nil {
+		t.Fatalf("TestConnection() error = %v", err)
+	}
+	if !result.Success {
+		t.Error("Expected Success = true")
+	}
+
+	// Add expired credentials
+	past := time.Now().Add(-time.Hour)
+	credStore.SaveCredentials(ctx, &PlatformCredentials{
+		UserID:         userID,
+		Platform:       PlatformTwitter,
+		AccessToken:    "expired-token",
+		TokenExpiresAt: &past,
+	})
+
+	// Test should fail for expired token
+	result, err = svc.TestConnection(ctx, userID, PlatformTwitter)
+	if err != nil {
+		t.Fatalf("TestConnection() error = %v", err)
+	}
+	if result.Success {
+		t.Error("Expected Success = false for expired token")
+	}
+	if result.Error == "" {
+		t.Error("Expected Error message for expired token")
+	}
+}
+
+// Test ConnectionServiceImpl.GetRateLimits without client factory
+func TestConnectionServiceImpl_GetRateLimits_NoClientFactory(t *testing.T) {
+	credStore := NewMockCredentialStore()
+	svc := NewConnectionService(ConnectionServiceConfig{
+		CredentialStore: credStore,
+	})
+
+	ctx := context.Background()
+	userID := "user-123"
+
+	// Test with no connection
+	_, err := svc.GetRateLimits(ctx, userID, PlatformLinkedIn)
+	if !errors.Is(err, ErrConnectionNotFound) {
+		t.Errorf("GetRateLimits() error = %v, want %v", err, ErrConnectionNotFound)
+	}
+
+	// Add credentials
+	credStore.SaveCredentials(ctx, &PlatformCredentials{
+		UserID:      userID,
+		Platform:    PlatformLinkedIn,
+		AccessToken: "token",
+	})
+
+	// Test should return default limits
+	limits, err := svc.GetRateLimits(ctx, userID, PlatformLinkedIn)
+	if err != nil {
+		t.Fatalf("GetRateLimits() error = %v", err)
+	}
+	if limits.Limit != 100 {
+		t.Errorf("Limit = %d, want 100", limits.Limit)
+	}
+	if limits.Remaining != 100 {
+		t.Errorf("Remaining = %d, want 100", limits.Remaining)
+	}
+}
+
+// Test expired credentials return ConnectionStatusExpired
+func TestConnectionServiceImpl_ExpiredCredentials(t *testing.T) {
+	credStore := NewMockCredentialStore()
+	svc := NewConnectionService(ConnectionServiceConfig{
+		CredentialStore: credStore,
+	})
+
+	ctx := context.Background()
+	userID := "user-123"
+
+	// Add expired credentials
+	past := time.Now().Add(-time.Hour)
+	credStore.SaveCredentials(ctx, &PlatformCredentials{
+		UserID:         userID,
+		Platform:       PlatformLinkedIn,
+		AccessToken:    "expired-token",
+		TokenExpiresAt: &past,
+	})
+
+	conn, err := svc.GetConnection(ctx, userID, PlatformLinkedIn)
+	if err != nil {
+		t.Fatalf("GetConnection() error = %v", err)
+	}
+	if conn.Status != ConnectionStatusExpired {
+		t.Errorf("Status = %q, want %q", conn.Status, ConnectionStatusExpired)
+	}
+}
