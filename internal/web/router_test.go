@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -2163,6 +2164,24 @@ func (s *MockWebhookDeliveryStore) AddDelivery(repoID string, delivery *WebhookD
 	s.deliveries[repoID] = append(s.deliveries[repoID], delivery)
 }
 
+func (s *MockWebhookDeliveryStore) CreateDelivery(ctx context.Context, repoID, eventType string, payload []byte, statusCode int, errorMessage *string) (*WebhookDelivery, error) {
+	delivery := &WebhookDelivery{
+		ID:           fmt.Sprintf("delivery-%d", len(s.deliveries[repoID])+1),
+		RepositoryID: repoID,
+		EventType:    eventType,
+		Payload:      string(payload),
+		StatusCode:   statusCode,
+		ErrorMessage: errorMessage,
+		IsSuccess:    statusCode >= 200 && statusCode < 300,
+	}
+	s.deliveries[repoID] = append(s.deliveries[repoID], delivery)
+	return delivery, nil
+}
+
+func (s *MockWebhookDeliveryStore) GetDeliveryCount(repoID string) int {
+	return len(s.deliveries[repoID])
+}
+
 func TestRouter_GetWebhookDeliveries_WithoutAuth_RedirectsToLogin(t *testing.T) {
 	router := NewRouter()
 
@@ -2475,6 +2494,94 @@ func TestRouter_GetWebhookTest_MethodNotAllowed(t *testing.T) {
 
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Errorf("Expected status 405, got %d", rr.Code)
+	}
+}
+
+func TestRouter_PostWebhookTest_RecordsDelivery(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	webhookTester := NewMockWebhookTester()
+	webhookDeliveryStore := NewMockWebhookDeliveryStore()
+	router := NewRouterWithWebhookTesterAndDeliveries(userStore, repoStore, nil, nil, nil, "https://example.com", webhookTester, webhookDeliveryStore)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	repo, _ := repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/owner/myrepo", "webhook-secret")
+
+	// Verify no deliveries exist initially
+	if webhookDeliveryStore.GetDeliveryCount(repo.ID) != 0 {
+		t.Error("Expected no deliveries initially")
+	}
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/"+repo.ID+"/webhook/test", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	// Verify delivery was recorded
+	if webhookDeliveryStore.GetDeliveryCount(repo.ID) != 1 {
+		t.Errorf("Expected 1 delivery to be recorded, got %d", webhookDeliveryStore.GetDeliveryCount(repo.ID))
+	}
+
+	// Verify delivery details
+	deliveries, _ := webhookDeliveryStore.ListDeliveriesByRepository(context.Background(), repo.ID, 10)
+	if len(deliveries) != 1 {
+		t.Fatal("Expected 1 delivery")
+	}
+	if deliveries[0].EventType != "ping" {
+		t.Errorf("Expected event type 'ping', got %s", deliveries[0].EventType)
+	}
+	if !deliveries[0].IsSuccess {
+		t.Error("Expected delivery to be marked as success")
+	}
+}
+
+func TestRouter_PostWebhookTest_RecordsFailedDelivery(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	webhookTester := NewMockWebhookTester()
+	webhookTester.SetStatusCode(500)
+	webhookDeliveryStore := NewMockWebhookDeliveryStore()
+	router := NewRouterWithWebhookTesterAndDeliveries(userStore, repoStore, nil, nil, nil, "https://example.com", webhookTester, webhookDeliveryStore)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	repo, _ := repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/owner/myrepo", "webhook-secret")
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/"+repo.ID+"/webhook/test", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	// Verify failed delivery was recorded
+	if webhookDeliveryStore.GetDeliveryCount(repo.ID) != 1 {
+		t.Errorf("Expected 1 delivery to be recorded, got %d", webhookDeliveryStore.GetDeliveryCount(repo.ID))
+	}
+
+	deliveries, _ := webhookDeliveryStore.ListDeliveriesByRepository(context.Background(), repo.ID, 10)
+	if len(deliveries) != 1 {
+		t.Fatal("Expected 1 delivery")
+	}
+	if deliveries[0].StatusCode != 500 {
+		t.Errorf("Expected status code 500, got %d", deliveries[0].StatusCode)
+	}
+	if deliveries[0].IsSuccess {
+		t.Error("Expected delivery to be marked as failure")
+	}
+	if deliveries[0].ErrorMessage == nil {
+		t.Error("Expected error message to be set")
 	}
 }
 
