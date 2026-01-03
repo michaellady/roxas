@@ -767,6 +767,17 @@ func (s *MockRepositoryStoreForWeb) UpdateRepository(ctx context.Context, repoID
 	}
 	return nil, nil
 }
+
+func (s *MockRepositoryStoreForWeb) UpdateWebhookSecret(ctx context.Context, repoID, newSecret string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if repo, ok := s.repos[repoID]; ok {
+		repo.WebhookSecret = newSecret
+		return nil
+	}
+	return nil
+}
+
 // MockCommit for web tests (alias for DashboardCommit)
 type MockCommit = DashboardCommit
 
@@ -2270,5 +2281,190 @@ func TestRouter_GetWebhookTest_MethodNotAllowed(t *testing.T) {
 
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Errorf("Expected status 405, got %d", rr.Code)
+	}
+}
+
+// =============================================================================
+// Webhook Regenerate Tests
+// =============================================================================
+
+func TestRouter_PostWebhookRegenerate_WithoutAuth_RedirectsToLogin(t *testing.T) {
+	router := NewRouter()
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/some-id/webhook/regenerate", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected redirect status 303, got %d", rr.Code)
+	}
+	if rr.Header().Get("Location") != "/login" {
+		t.Errorf("Expected redirect to /login, got %s", rr.Header().Get("Location"))
+	}
+}
+
+func TestRouter_GetWebhookRegenerate_MethodNotAllowed(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	secretGen := &MockSecretGeneratorForWeb{Secret: "new-secret"}
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, secretGen, "https://example.com")
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	repo, _ := repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/owner/repo", "old-secret")
+	token, _ := generateToken(user.ID, user.Email)
+
+	// GET should not be allowed
+	req := httptest.NewRequest(http.MethodGet, "/repositories/"+repo.ID+"/webhook/regenerate", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("Expected status 405 Method Not Allowed, got %d", rr.Code)
+	}
+}
+
+func TestRouter_PostWebhookRegenerate_Success_ShowsNewSecret(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	secretGen := &MockSecretGeneratorForWeb{Secret: "brand-new-secret-456"}
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, secretGen, "https://roxas.ai")
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	repo, _ := repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/owner/myrepo", "old-secret-123")
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/"+repo.ID+"/webhook/regenerate", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+
+	// Should show success message
+	if !strings.Contains(body, "Regenerated") {
+		t.Errorf("Expected 'Regenerated' in response")
+	}
+
+	// Should show the new secret
+	if !strings.Contains(body, "brand-new-secret-456") {
+		t.Errorf("Expected new secret in response")
+	}
+
+	// Should show webhook URL
+	if !strings.Contains(body, "https://roxas.ai/webhook/"+repo.ID) {
+		t.Errorf("Expected webhook URL in response")
+	}
+
+	// Should show repository name
+	if !strings.Contains(body, "owner/myrepo") {
+		t.Errorf("Expected repository name in response")
+	}
+
+	// Should have copy button
+	if !strings.Contains(body, "data-copy-target") {
+		t.Errorf("Expected copy button in response")
+	}
+
+	// Verify the secret was updated in the store
+	updatedRepo, _ := repoStore.GetRepositoryByID(context.Background(), repo.ID)
+	if updatedRepo.WebhookSecret != "brand-new-secret-456" {
+		t.Errorf("Expected secret to be updated in store, got %s", updatedRepo.WebhookSecret)
+	}
+}
+
+func TestRouter_PostWebhookRegenerate_NotFound_Returns404(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	secretGen := &MockSecretGeneratorForWeb{Secret: "new-secret"}
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, secretGen, "https://example.com")
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/nonexistent-id/webhook/regenerate", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404, got %d", rr.Code)
+	}
+}
+
+func TestRouter_PostWebhookRegenerate_OtherUsersRepo_Returns404(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	secretGen := &MockSecretGeneratorForWeb{Secret: "new-secret"}
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, secretGen, "https://example.com")
+
+	user1, _ := userStore.CreateUser(context.Background(), "user1@example.com", hashPassword("password123"))
+	user2, _ := userStore.CreateUser(context.Background(), "user2@example.com", hashPassword("password123"))
+
+	// Create repo for user1
+	repo, _ := repoStore.CreateRepository(context.Background(), user1.ID, "https://github.com/user1/privaterepo", "secret")
+
+	// Try to regenerate as user2
+	token, _ := generateToken(user2.ID, user2.Email)
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/"+repo.ID+"/webhook/regenerate", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404 for other user's repo, got %d", rr.Code)
+	}
+
+	// Verify the secret was NOT changed
+	unchangedRepo, _ := repoStore.GetRepositoryByID(context.Background(), repo.ID)
+	if unchangedRepo.WebhookSecret != "secret" {
+		t.Errorf("Expected secret to remain unchanged, got %s", unchangedRepo.WebhookSecret)
+	}
+}
+
+func TestRouter_PostWebhookRegenerate_InvalidatesOldSecret(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	secretGen := &MockSecretGeneratorForWeb{Secret: "completely-new-secret"}
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, secretGen, "https://example.com")
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	repo, _ := repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/owner/repo", "old-secret")
+	token, _ := generateToken(user.ID, user.Email)
+
+	// Verify old secret is in place
+	oldRepo, _ := repoStore.GetRepositoryByID(context.Background(), repo.ID)
+	if oldRepo.WebhookSecret != "old-secret" {
+		t.Fatalf("Expected old secret to be 'old-secret', got %s", oldRepo.WebhookSecret)
+	}
+
+	// Regenerate
+	req := httptest.NewRequest(http.MethodPost, "/repositories/"+repo.ID+"/webhook/regenerate", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rr.Code)
+	}
+
+	// Verify old secret is invalidated (replaced with new one)
+	newRepo, _ := repoStore.GetRepositoryByID(context.Background(), repo.ID)
+	if newRepo.WebhookSecret == "old-secret" {
+		t.Errorf("Expected old secret to be invalidated")
+	}
+	if newRepo.WebhookSecret != "completely-new-secret" {
+		t.Errorf("Expected new secret to be 'completely-new-secret', got %s", newRepo.WebhookSecret)
 	}
 }

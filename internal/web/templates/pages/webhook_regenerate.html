@@ -1,0 +1,56 @@
+{{define "content"}}
+<div class="success-container">
+    <div class="card">
+        {{if .Error}}
+        <div class="alert alert-error">{{.Error}}</div>
+        {{else}}
+        <div class="success-header">
+            <h1>Webhook Secret Regenerated</h1>
+            <p class="lead">Your webhook secret for <strong>{{.Data.RepoName}}</strong> has been regenerated. Update your GitHub webhook settings with the new secret below.</p>
+        </div>
+
+        <div class="alert alert-warning">
+            <strong>Important:</strong> Your old webhook secret has been invalidated. GitHub will no longer be able to send webhooks until you update the secret in your repository settings.
+        </div>
+
+        <section class="webhook-config">
+            <h2>New Webhook Configuration</h2>
+
+            <div class="config-field">
+                <label for="webhook-url">Payload URL</label>
+                <div class="input-group">
+                    <input type="text" id="webhook-url" value="{{.Data.WebhookURL}}" readonly class="config-input">
+                    <button type="button" class="btn-copy" data-copy-target="webhook-url">Copy</button>
+                </div>
+            </div>
+
+            <div class="config-field">
+                <label for="webhook-secret">New Secret</label>
+                <div class="input-group">
+                    <input type="text" id="webhook-secret" value="{{.Data.WebhookSecret}}" readonly class="config-input secret-value">
+                    <button type="button" class="btn-copy" data-copy-target="webhook-secret">Copy</button>
+                </div>
+                <p class="warning-text">This secret is shown only once. Copy it now and store it securely.</p>
+            </div>
+        </section>
+
+        <section class="setup-instructions">
+            <h2>Update Instructions</h2>
+            <ol class="instruction-list">
+                <li>Go to your repository on GitHub</li>
+                <li>Navigate to <strong>Settings</strong> &rarr; <strong>Webhooks</strong></li>
+                <li>Click on your existing Roxas webhook</li>
+                <li>Update the <strong>Secret</strong> field with the new secret above</li>
+                <li>Click <strong>Update webhook</strong></li>
+            </ol>
+        </section>
+
+        <div class="action-buttons">
+            <a href="/repositories/{{.Data.Repository.ID}}" class="btn btn-secondary">Back to Repository</a>
+            <a href="/dashboard" class="btn btn-primary">Go to Dashboard</a>
+        </div>
+        {{end}}
+    </div>
+</div>
+<script src="/static/js/clipboard.js"></script>
+{{end}}
