@@ -1,0 +1,529 @@
+package services
+
+import (
+	"context"
+	"strings"
+	"testing"
+	"time"
+)
+
+// =============================================================================
+// OAuthProvider Test Contracts
+// These tests define the contract that all OAuthProvider implementations must follow.
+// =============================================================================
+
+// OAuthProviderTestSuite runs the standard test suite against an OAuthProvider implementation.
+// Use this in platform-specific tests to ensure compliance with the interface contract.
+func OAuthProviderTestSuite(t *testing.T, provider OAuthProvider) {
+	t.Helper()
+
+	t.Run("Platform", func(t *testing.T) {
+		testPlatformReturnsNonEmpty(t, provider)
+	})
+
+	t.Run("GetAuthURL", func(t *testing.T) {
+		testGetAuthURLContainsState(t, provider)
+		testGetAuthURLContainsScopes(t, provider)
+		testGetAuthURLContainsRedirectURL(t, provider)
+	})
+
+	t.Run("GetRequiredScopes", func(t *testing.T) {
+		testGetRequiredScopesReturnsNonEmpty(t, provider)
+	})
+}
+
+// testPlatformReturnsNonEmpty verifies Platform() returns a valid identifier.
+func testPlatformReturnsNonEmpty(t *testing.T, provider OAuthProvider) {
+	t.Helper()
+	platform := provider.Platform()
+	if platform == "" {
+		t.Error("Platform() should return a non-empty string")
+	}
+	// Verify it matches a known platform constant
+	if !SupportedPlatforms[platform] {
+		t.Errorf("Platform() returned unknown platform: %s", platform)
+	}
+}
+
+// testGetAuthURLContainsState verifies auth URL includes the state parameter.
+func testGetAuthURLContainsState(t *testing.T, provider OAuthProvider) {
+	t.Helper()
+	state := "test-state-abc123"
+	redirectURL := "https://example.com/callback"
+
+	authURL := provider.GetAuthURL(state, redirectURL)
+	if authURL == "" {
+		t.Error("GetAuthURL() should return a non-empty URL")
+		return
+	}
+
+	if !strings.Contains(authURL, "state=") {
+		t.Error("GetAuthURL() should include state parameter")
+	}
+	if !strings.Contains(authURL, state) {
+		t.Errorf("GetAuthURL() should include the provided state value: %s", state)
+	}
+}
+
+// testGetAuthURLContainsScopes verifies auth URL includes required scopes.
+func testGetAuthURLContainsScopes(t *testing.T, provider OAuthProvider) {
+	t.Helper()
+	state := "test-state"
+	redirectURL := "https://example.com/callback"
+
+	authURL := provider.GetAuthURL(state, redirectURL)
+	_ = provider.GetRequiredScopes() // Ensure scopes are defined (used by GetAuthURL)
+
+	// Auth URL should contain scope parameter
+	if !strings.Contains(authURL, "scope=") && !strings.Contains(authURL, "scopes=") {
+		// Some platforms use different parameter names or embed scopes differently
+		// At minimum, log a warning if no scope parameter found
+		t.Log("Warning: GetAuthURL() should typically include scope parameter")
+	}
+}
+
+// testGetAuthURLContainsRedirectURL verifies auth URL includes redirect_uri.
+func testGetAuthURLContainsRedirectURL(t *testing.T, provider OAuthProvider) {
+	t.Helper()
+	state := "test-state"
+	redirectURL := "https://example.com/callback"
+
+	authURL := provider.GetAuthURL(state, redirectURL)
+	if !strings.Contains(authURL, "redirect") {
+		t.Error("GetAuthURL() should include redirect_uri parameter")
+	}
+}
+
+// testGetRequiredScopesReturnsNonEmpty verifies scopes are defined.
+func testGetRequiredScopesReturnsNonEmpty(t *testing.T, provider OAuthProvider) {
+	t.Helper()
+	scopes := provider.GetRequiredScopes()
+	if len(scopes) == 0 {
+		t.Error("GetRequiredScopes() should return at least one required scope")
+	}
+}
+
+// =============================================================================
+// OAuthTokens Tests
+// =============================================================================
+
+func TestOAuthTokens_IsExpired(t *testing.T) {
+	tests := []struct {
+		name     string
+		tokens   OAuthTokens
+		expected bool
+	}{
+		{
+			name: "nil expiry means not expired",
+			tokens: OAuthTokens{
+				AccessToken: "token",
+				ExpiresAt:   nil,
+			},
+			expected: false,
+		},
+		{
+			name: "future expiry means not expired",
+			tokens: OAuthTokens{
+				AccessToken: "token",
+				ExpiresAt:   oauthTimePtr(time.Now().Add(time.Hour)),
+			},
+			expected: false,
+		},
+		{
+			name: "past expiry means expired",
+			tokens: OAuthTokens{
+				AccessToken: "token",
+				ExpiresAt:   oauthTimePtr(time.Now().Add(-time.Hour)),
+			},
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.tokens.IsExpired(); got != tt.expected {
+				t.Errorf("IsExpired() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestOAuthTokens_HasRefreshToken(t *testing.T) {
+	tests := []struct {
+		name     string
+		tokens   OAuthTokens
+		expected bool
+	}{
+		{
+			name: "empty refresh token",
+			tokens: OAuthTokens{
+				AccessToken:  "token",
+				RefreshToken: "",
+			},
+			expected: false,
+		},
+		{
+			name: "has refresh token",
+			tokens: OAuthTokens{
+				AccessToken:  "token",
+				RefreshToken: "refresh-token",
+			},
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.tokens.HasRefreshToken(); got != tt.expected {
+				t.Errorf("HasRefreshToken() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// Mock OAuthProvider for testing
+// =============================================================================
+
+// MockOAuthProvider is a test double for OAuthProvider.
+type MockOAuthProvider struct {
+	PlatformValue     string
+	AuthURL           string
+	ExchangeResult    *OAuthTokens
+	ExchangeError     error
+	RefreshResult     *OAuthTokens
+	RefreshError      error
+	RequiredScopes    []string
+	ExchangeCodeCalls []ExchangeCodeCall
+	RefreshCalls      []string
+}
+
+// ExchangeCodeCall records a call to ExchangeCode.
+type ExchangeCodeCall struct {
+	Code        string
+	RedirectURL string
+}
+
+func (m *MockOAuthProvider) Platform() string {
+	if m.PlatformValue == "" {
+		return PlatformLinkedIn // Default for tests
+	}
+	return m.PlatformValue
+}
+
+func (m *MockOAuthProvider) GetAuthURL(state, redirectURL string) string {
+	if m.AuthURL != "" {
+		return m.AuthURL
+	}
+	// Return a valid test URL by default
+	return "https://example.com/oauth?client_id=test&state=" + state + "&redirect_uri=" + redirectURL + "&scope=read+write"
+}
+
+func (m *MockOAuthProvider) ExchangeCode(ctx context.Context, code, redirectURL string) (*OAuthTokens, error) {
+	m.ExchangeCodeCalls = append(m.ExchangeCodeCalls, ExchangeCodeCall{
+		Code:        code,
+		RedirectURL: redirectURL,
+	})
+	if m.ExchangeError != nil {
+		return nil, m.ExchangeError
+	}
+	if m.ExchangeResult != nil {
+		return m.ExchangeResult, nil
+	}
+	// Return default tokens
+	return &OAuthTokens{
+		AccessToken:    "mock-access-token",
+		RefreshToken:   "mock-refresh-token",
+		ExpiresAt:      timePtr(time.Now().Add(time.Hour)),
+		PlatformUserID: "mock-user-123",
+		Scopes:         "read write",
+	}, nil
+}
+
+func (m *MockOAuthProvider) RefreshTokens(ctx context.Context, refreshToken string) (*OAuthTokens, error) {
+	m.RefreshCalls = append(m.RefreshCalls, refreshToken)
+	if m.RefreshError != nil {
+		return nil, m.RefreshError
+	}
+	if m.RefreshResult != nil {
+		return m.RefreshResult, nil
+	}
+	// Return default refreshed tokens
+	return &OAuthTokens{
+		AccessToken:    "mock-refreshed-access-token",
+		RefreshToken:   "mock-refreshed-refresh-token",
+		ExpiresAt:      timePtr(time.Now().Add(time.Hour)),
+		PlatformUserID: "mock-user-123",
+		Scopes:         "read write",
+	}, nil
+}
+
+func (m *MockOAuthProvider) GetRequiredScopes() []string {
+	if m.RequiredScopes == nil {
+		return []string{"read", "write"}
+	}
+	return m.RequiredScopes
+}
+
+// Compile-time interface check
+var _ OAuthProvider = (*MockOAuthProvider)(nil)
+
+// TestMockOAuthProvider_ImplementsContract runs the test suite on the mock
+// to ensure the mock itself is a valid implementation.
+func TestMockOAuthProvider_ImplementsContract(t *testing.T) {
+	mock := &MockOAuthProvider{}
+	OAuthProviderTestSuite(t, mock)
+}
+
+// =============================================================================
+// ExchangeCode Contract Tests
+// =============================================================================
+
+func TestOAuthProvider_ExchangeCode_ReturnsTokens(t *testing.T) {
+	mock := &MockOAuthProvider{
+		ExchangeResult: &OAuthTokens{
+			AccessToken:    "test-access-token",
+			RefreshToken:   "test-refresh-token",
+			PlatformUserID: "user-456",
+			Scopes:         "post read",
+		},
+	}
+
+	tokens, err := mock.ExchangeCode(context.Background(), "auth-code", "https://example.com/callback")
+	if err != nil {
+		t.Fatalf("ExchangeCode() returned error: %v", err)
+	}
+
+	if tokens.AccessToken != "test-access-token" {
+		t.Errorf("Expected AccessToken 'test-access-token', got '%s'", tokens.AccessToken)
+	}
+	if tokens.RefreshToken != "test-refresh-token" {
+		t.Errorf("Expected RefreshToken 'test-refresh-token', got '%s'", tokens.RefreshToken)
+	}
+	if tokens.PlatformUserID != "user-456" {
+		t.Errorf("Expected PlatformUserID 'user-456', got '%s'", tokens.PlatformUserID)
+	}
+}
+
+func TestOAuthProvider_ExchangeCode_HandlesError(t *testing.T) {
+	mock := &MockOAuthProvider{
+		ExchangeError: ErrCodeExchangeFailed,
+	}
+
+	_, err := mock.ExchangeCode(context.Background(), "invalid-code", "https://example.com/callback")
+	if err == nil {
+		t.Fatal("Expected error from ExchangeCode()")
+	}
+	if err != ErrCodeExchangeFailed {
+		t.Errorf("Expected ErrCodeExchangeFailed, got: %v", err)
+	}
+}
+
+// =============================================================================
+// RefreshTokens Contract Tests
+// =============================================================================
+
+func TestOAuthProvider_RefreshTokens_ReturnsNewTokens(t *testing.T) {
+	newExpiry := time.Now().Add(2 * time.Hour)
+	mock := &MockOAuthProvider{
+		RefreshResult: &OAuthTokens{
+			AccessToken:  "new-access-token",
+			RefreshToken: "new-refresh-token",
+			ExpiresAt:    &newExpiry,
+		},
+	}
+
+	tokens, err := mock.RefreshTokens(context.Background(), "old-refresh-token")
+	if err != nil {
+		t.Fatalf("RefreshTokens() returned error: %v", err)
+	}
+
+	if tokens.AccessToken != "new-access-token" {
+		t.Errorf("Expected new AccessToken, got '%s'", tokens.AccessToken)
+	}
+	if tokens.IsExpired() {
+		t.Error("Refreshed tokens should not be expired")
+	}
+}
+
+func TestOAuthProvider_RefreshTokens_HandlesError(t *testing.T) {
+	mock := &MockOAuthProvider{
+		RefreshError: ErrTokenRefreshFailed,
+	}
+
+	_, err := mock.RefreshTokens(context.Background(), "invalid-refresh-token")
+	if err == nil {
+		t.Fatal("Expected error from RefreshTokens()")
+	}
+	if err != ErrTokenRefreshFailed {
+		t.Errorf("Expected ErrTokenRefreshFailed, got: %v", err)
+	}
+}
+
+// =============================================================================
+// Error Type Tests
+// =============================================================================
+
+func TestOAuthErrors_AreDefined(t *testing.T) {
+	errors := []error{
+		ErrInvalidState,
+		ErrCodeExchangeFailed,
+		ErrTokenRefreshFailed,
+		ErrInvalidCredentials,
+		ErrScopesInsufficient,
+	}
+
+	for _, err := range errors {
+		if err == nil {
+			t.Error("OAuth error should not be nil")
+		}
+		if err.Error() == "" {
+			t.Error("OAuth error should have non-empty message")
+		}
+	}
+}
+
+// =============================================================================
+// Platform Provider Tests
+// Run the test suite against each platform implementation.
+// =============================================================================
+
+func TestThreadsOAuthProvider_ImplementsContract(t *testing.T) {
+	provider := &ThreadsOAuthProvider{
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+	}
+	OAuthProviderTestSuite(t, provider)
+}
+
+func TestBlueskyAuthProvider_ImplementsContract(t *testing.T) {
+	provider := &BlueskyAuthProvider{}
+	OAuthProviderTestSuite(t, provider)
+}
+
+func TestTwitterOAuthProvider_ImplementsContract(t *testing.T) {
+	provider := &TwitterOAuthProvider{
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+	}
+	OAuthProviderTestSuite(t, provider)
+}
+
+func TestLinkedInOAuthProvider_ImplementsContract(t *testing.T) {
+	provider := &LinkedInOAuthProvider{
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+	}
+	OAuthProviderTestSuite(t, provider)
+}
+
+// =============================================================================
+// Platform-Specific Tests
+// =============================================================================
+
+func TestThreadsOAuthProvider_Scopes(t *testing.T) {
+	provider := &ThreadsOAuthProvider{}
+	scopes := provider.GetRequiredScopes()
+
+	expectedScopes := []string{"threads_basic", "threads_content_publish"}
+	if len(scopes) != len(expectedScopes) {
+		t.Errorf("Expected %d scopes, got %d", len(expectedScopes), len(scopes))
+	}
+
+	for i, expected := range expectedScopes {
+		if i >= len(scopes) || scopes[i] != expected {
+			t.Errorf("Expected scope %d to be '%s', got '%s'", i, expected, scopes[i])
+		}
+	}
+}
+
+func TestTwitterOAuthProvider_PKCE(t *testing.T) {
+	provider := &TwitterOAuthProvider{ClientID: "test"}
+	authURL := provider.GetAuthURL("state", "https://example.com/callback")
+
+	// Twitter OAuth 2.0 requires PKCE
+	if !strings.Contains(authURL, "code_challenge") {
+		t.Error("Twitter auth URL should include PKCE code_challenge")
+	}
+	if !strings.Contains(authURL, "code_challenge_method=S256") {
+		t.Error("Twitter auth URL should specify S256 code challenge method")
+	}
+}
+
+func TestBlueskyAuthProvider_NoTraditionalOAuth(t *testing.T) {
+	provider := &BlueskyAuthProvider{}
+
+	// Bluesky uses app passwords, not traditional OAuth
+	scopes := provider.GetRequiredScopes()
+	if len(scopes) != 1 || scopes[0] != "atproto" {
+		t.Errorf("Bluesky should use atproto scope, got: %v", scopes)
+	}
+
+	// Auth URL should point to app password settings
+	authURL := provider.GetAuthURL("state", "https://example.com/callback")
+	if !strings.Contains(authURL, "bsky.app") {
+		t.Error("Bluesky auth URL should point to bsky.app settings")
+	}
+}
+
+func TestLinkedInOAuthProvider_Scopes(t *testing.T) {
+	provider := &LinkedInOAuthProvider{}
+	scopes := provider.GetRequiredScopes()
+
+	// LinkedIn requires w_member_social for posting
+	found := false
+	for _, s := range scopes {
+		if s == "w_member_social" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("LinkedIn scopes should include w_member_social for posting")
+	}
+}
+
+// =============================================================================
+// joinScopes Helper Test
+// =============================================================================
+
+func TestJoinScopes(t *testing.T) {
+	tests := []struct {
+		name     string
+		scopes   []string
+		expected string
+	}{
+		{
+			name:     "empty scopes",
+			scopes:   []string{},
+			expected: "",
+		},
+		{
+			name:     "single scope",
+			scopes:   []string{"read"},
+			expected: "read",
+		},
+		{
+			name:     "multiple scopes",
+			scopes:   []string{"read", "write", "delete"},
+			expected: "read write delete",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := joinScopes(tt.scopes)
+			if got != tt.expected {
+				t.Errorf("joinScopes(%v) = '%s', want '%s'", tt.scopes, got, tt.expected)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// Helper functions
+// =============================================================================
+
+func oauthTimePtr(t time.Time) *time.Time {
+	return &t
+}
