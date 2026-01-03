@@ -1,0 +1,119 @@
+{{define "content"}}
+<div class="connection-success-container">
+    <div class="success-card">
+        <div class="success-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                <polyline points="22 4 12 14.01 9 11.01"></polyline>
+            </svg>
+        </div>
+
+        <h1>Successfully Connected!</h1>
+
+        <p class="success-message">
+            Your <strong>{{.Data.PlatformName}}</strong> account has been connected to Roxas.
+        </p>
+
+        {{if .Data.DisplayName}}
+        <div class="connected-account">
+            <span class="label">Connected as:</span>
+            <span class="value">{{.Data.DisplayName}}</span>
+        </div>
+        {{end}}
+
+        <div class="success-details">
+            <p>You can now:</p>
+            <ul>
+                <li>Create posts that will be published to {{.Data.PlatformName}}</li>
+                <li>Schedule posts for automatic publishing</li>
+                <li>Track engagement and analytics</li>
+            </ul>
+        </div>
+
+        <div class="action-buttons">
+            <a href="/connections/{{.Data.Platform}}" class="btn btn-secondary">View Connection Details</a>
+            <a href="/connections" class="btn btn-primary">Back to Connections</a>
+        </div>
+    </div>
+</div>
+
+<style>
+.connection-success-container {
+    max-width: 600px;
+    margin: 40px auto;
+    padding: 20px;
+}
+
+.success-card {
+    background: white;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 40px;
+    text-align: center;
+}
+
+.success-icon {
+    color: #28a745;
+    margin-bottom: 20px;
+}
+
+.success-card h1 {
+    margin: 0 0 15px;
+    color: #28a745;
+}
+
+.success-message {
+    font-size: 1.1em;
+    color: #333;
+    margin-bottom: 20px;
+}
+
+.connected-account {
+    display: inline-block;
+    background: #f8f9fa;
+    padding: 10px 20px;
+    border-radius: 4px;
+    margin-bottom: 25px;
+}
+
+.connected-account .label {
+    color: #666;
+    margin-right: 8px;
+}
+
+.connected-account .value {
+    font-weight: 600;
+    color: #333;
+}
+
+.success-details {
+    text-align: left;
+    background: #f8f9fa;
+    padding: 20px;
+    border-radius: 4px;
+    margin-bottom: 25px;
+}
+
+.success-details p {
+    margin: 0 0 10px;
+    font-weight: 600;
+}
+
+.success-details ul {
+    margin: 0;
+    padding-left: 20px;
+}
+
+.success-details li {
+    margin-bottom: 5px;
+    color: #555;
+}
+
+.action-buttons {
+    display: flex;
+    justify-content: center;
+    gap: 15px;
+    flex-wrap: wrap;
+}
+</style>
+{{end}}

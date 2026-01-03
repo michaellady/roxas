@@ -1,0 +1,160 @@
+{{define "content"}}
+<div class="connections-new-container">
+    <div class="page-header">
+        <div class="header-back">
+            <a href="/connections" class="btn btn-small">&larr; Back to Connections</a>
+        </div>
+        <h1>Connect a Platform</h1>
+    </div>
+
+    {{if .Error}}
+    <div class="alert alert-error">{{.Error}}</div>
+    {{end}}
+
+    <p class="page-description">Select a platform to connect your account. This will allow Roxas to post on your behalf.</p>
+
+    <div class="platforms-grid">
+        {{range .Data.Platforms}}
+        <div class="platform-card">
+            <div class="platform-header">
+                <span class="platform-icon platform-{{.ID}}"></span>
+                <h3 class="platform-name">{{.Name}}</h3>
+            </div>
+            <p class="platform-description">{{.Description}}</p>
+            <div class="platform-permissions">
+                <strong>Required Permissions:</strong>
+                <ul class="permissions-list">
+                    {{range .Scopes}}
+                    <li>{{.}}</li>
+                    {{end}}
+                </ul>
+            </div>
+            <div class="platform-actions">
+                {{if .Connected}}
+                <span class="status-badge status-success">Already Connected</span>
+                <a href="/connections/{{.ID}}" class="btn btn-small btn-secondary">View Details</a>
+                {{else}}
+                <a href="/oauth/{{.ID}}/authorize" class="btn btn-primary">Connect {{.Name}}</a>
+                {{end}}
+            </div>
+        </div>
+        {{end}}
+    </div>
+
+    {{if not .Data.Platforms}}
+    <div class="empty-state">
+        <h2>No Platforms Available</h2>
+        <p>No social media platforms are currently configured for connection.</p>
+    </div>
+    {{end}}
+</div>
+
+<style>
+.connections-new-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.page-description {
+    color: #666;
+    margin-bottom: 30px;
+}
+
+.platforms-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 20px;
+}
+
+.platform-card {
+    background: white;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 20px;
+    transition: box-shadow 0.2s;
+}
+
+.platform-card:hover {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.platform-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 15px;
+}
+
+.platform-header h3 {
+    margin: 0;
+}
+
+.platform-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 8px;
+    background: #f0f0f0;
+}
+
+.platform-icon.platform-twitter {
+    background: #1DA1F2;
+}
+
+.platform-icon.platform-linkedin {
+    background: #0A66C2;
+}
+
+.platform-icon.platform-bluesky {
+    background: #0085FF;
+}
+
+.platform-description {
+    color: #666;
+    font-size: 0.95em;
+    margin-bottom: 15px;
+}
+
+.platform-permissions {
+    font-size: 0.9em;
+    margin-bottom: 15px;
+    padding: 10px;
+    background: #f8f9fa;
+    border-radius: 4px;
+}
+
+.permissions-list {
+    margin: 5px 0 0 20px;
+    padding: 0;
+}
+
+.permissions-list li {
+    margin-bottom: 3px;
+    color: #555;
+}
+
+.platform-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-top: 15px;
+    border-top: 1px solid #eee;
+}
+
+.empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    background: #f8f9fa;
+    border-radius: 8px;
+}
+
+.empty-state h2 {
+    margin: 0 0 10px;
+    color: #333;
+}
+
+.empty-state p {
+    color: #666;
+}
+</style>
+{{end}}

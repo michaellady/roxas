@@ -30,7 +30,7 @@ var pageTemplates map[string]*template.Template
 
 func init() {
 	pageTemplates = make(map[string]*template.Template)
-	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "repository_delete.html", "webhook_regenerate.html", "webhook_deliveries.html", "connections_list.html", "connection_view.html"}
+	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "repository_delete.html", "webhook_regenerate.html", "webhook_deliveries.html", "connections_list.html", "connection_view.html", "connections_new.html", "connection_success.html"}
 
 	for _, page := range pages {
 		// Clone the base template and parse the page
@@ -345,7 +345,9 @@ func (r *Router) setupRoutes() {
 
 	// Connection management
 	r.mux.HandleFunc("GET /connections", r.handleConnectionsList)
+	r.mux.HandleFunc("GET /connections/new", r.handleConnectionsNew)
 	r.mux.HandleFunc("GET /connections/{platform}", r.handleConnectionView)
+	r.mux.HandleFunc("GET /connections/{platform}/success", r.handleConnectionSuccess)
 	r.mux.HandleFunc("POST /connections/{platform}/disconnect", r.handleConnectionDisconnect)
 	r.mux.HandleFunc("POST /connections/{platform}/test", r.handleConnectionTest)
 }
@@ -1616,6 +1618,27 @@ type ConnectionViewData struct {
 	TestResult   *ConnectionTestResult
 }
 
+// ConnectionsNewData holds data for the new connection page template
+type ConnectionsNewData struct {
+	Platforms []*PlatformInfo
+}
+
+// PlatformInfo describes a social platform for connection
+type PlatformInfo struct {
+	ID          string
+	Name        string
+	Description string
+	Scopes      []string
+	Connected   bool
+}
+
+// ConnectionSuccessData holds data for the OAuth success page
+type ConnectionSuccessData struct {
+	Platform     string
+	PlatformName string
+	DisplayName  string
+}
+
 func (r *Router) handleConnectionsList(w http.ResponseWriter, req *http.Request) {
 	// Check for auth cookie
 	cookie, err := req.Cookie(auth.CookieName)
@@ -1800,4 +1823,109 @@ func platformName(platform string) string {
 		}
 		return strings.ToUpper(platform[:1]) + platform[1:]
 	}
+}
+
+func (r *Router) handleConnectionsNew(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get existing connections to mark platforms as already connected
+	var existingConnections []*Connection
+	if r.connectionService != nil {
+		existingConnections, _ = r.connectionService.ListConnections(req.Context(), claims.UserID)
+	}
+
+	connectedPlatforms := make(map[string]bool)
+	for _, conn := range existingConnections {
+		connectedPlatforms[conn.Platform] = true
+	}
+
+	// Define available platforms
+	platforms := []*PlatformInfo{
+		{
+			ID:          "twitter",
+			Name:        "Twitter",
+			Description: "Post updates, share links, and engage with your audience on Twitter/X.",
+			Scopes:      []string{"Read tweets", "Post tweets", "Read profile"},
+			Connected:   connectedPlatforms["twitter"],
+		},
+		{
+			ID:          "linkedin",
+			Name:        "LinkedIn",
+			Description: "Share professional updates and articles with your network.",
+			Scopes:      []string{"Share content", "Read profile"},
+			Connected:   connectedPlatforms["linkedin"],
+		},
+		{
+			ID:          "bluesky",
+			Name:        "Bluesky",
+			Description: "Post to the decentralized Bluesky social network.",
+			Scopes:      []string{"Create posts", "Read profile"},
+			Connected:   connectedPlatforms["bluesky"],
+		},
+	}
+
+	r.renderPage(w, "connections_new.html", PageData{
+		Title: "Connect a Platform",
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+		Data: &ConnectionsNewData{
+			Platforms: platforms,
+		},
+	})
+}
+
+func (r *Router) handleConnectionSuccess(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	platform := req.PathValue("platform")
+	if platform == "" {
+		http.Redirect(w, req, "/connections", http.StatusSeeOther)
+		return
+	}
+
+	// Get the connection details to show the display name
+	var displayName string
+	if r.connectionService != nil {
+		conn, err := r.connectionService.GetConnection(req.Context(), claims.UserID, platform)
+		if err == nil && conn != nil {
+			displayName = conn.DisplayName
+		}
+	}
+
+	r.renderPage(w, "connection_success.html", PageData{
+		Title: "Connection Successful",
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+		Data: &ConnectionSuccessData{
+			Platform:     platform,
+			PlatformName: platformName(platform),
+			DisplayName:  displayName,
+		},
+	})
 }

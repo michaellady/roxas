@@ -3192,3 +3192,126 @@ func TestRouter_PostConnectionDisconnect_OtherUsersConnection_Fails(t *testing.T
 		t.Errorf("User1's connection should NOT have been affected by user2's disconnect attempt")
 	}
 }
+
+// =============================================================================
+// Connection New and Success Page Tests (hq-inc)
+// =============================================================================
+
+func TestRouter_GetConnectionsNew_RequiresAuth(t *testing.T) {
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	req := httptest.NewRequest(http.MethodGet, "/connections/new", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should redirect to login
+	if rr.Code != http.StatusSeeOther && rr.Code != http.StatusTemporaryRedirect {
+		t.Errorf("Expected redirect to login, got status %d", rr.Code)
+	}
+}
+
+func TestRouter_GetConnectionsNew_ShowsPlatformList(t *testing.T) {
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/connections/new", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	if !strings.Contains(body, "Connect a Platform") {
+		t.Errorf("Expected page to contain 'Connect a Platform' heading")
+	}
+	if !strings.Contains(body, "Twitter") {
+		t.Errorf("Expected page to show Twitter platform")
+	}
+	if !strings.Contains(body, "LinkedIn") {
+		t.Errorf("Expected page to show LinkedIn platform")
+	}
+}
+
+func TestRouter_GetConnectionsNew_ShowsAlreadyConnected(t *testing.T) {
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	connService.AddConnection(user.ID, "twitter", "connected", "@testuser")
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/connections/new", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	// Should show "Already Connected" for Twitter
+	if !strings.Contains(body, "Already Connected") {
+		t.Errorf("Expected page to show 'Already Connected' for Twitter")
+	}
+}
+
+func TestRouter_GetConnectionSuccess_RequiresAuth(t *testing.T) {
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	req := httptest.NewRequest(http.MethodGet, "/connections/twitter/success", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should redirect to login
+	if rr.Code != http.StatusSeeOther && rr.Code != http.StatusTemporaryRedirect {
+		t.Errorf("Expected redirect to login, got status %d", rr.Code)
+	}
+}
+
+func TestRouter_GetConnectionSuccess_ShowsSuccessPage(t *testing.T) {
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	connService.AddConnection(user.ID, "twitter", "connected", "@testuser")
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/connections/twitter/success", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	if !strings.Contains(body, "Successfully Connected") {
+		t.Errorf("Expected page to contain 'Successfully Connected'")
+	}
+	if !strings.Contains(body, "Twitter") {
+		t.Errorf("Expected page to show Twitter platform name")
+	}
+	if !strings.Contains(body, "@testuser") {
+		t.Errorf("Expected page to show connected account name")
+	}
+}
