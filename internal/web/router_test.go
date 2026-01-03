@@ -748,6 +748,15 @@ func (s *MockRepositoryStoreForWeb) ListRepositoriesByUser(ctx context.Context, 
 	return result, nil
 }
 
+func (s *MockRepositoryStoreForWeb) GetRepositoryByID(ctx context.Context, repoID string) (*handlers.Repository, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if repo, ok := s.repos[repoID]; ok {
+		return repo, nil
+	}
+	return nil, nil
+}
+
 // MockCommit for web tests (alias for DashboardCommit)
 type MockCommit = DashboardCommit
 
@@ -1692,5 +1701,117 @@ func TestRouter_GetRepositories_WithAuth_DoesNotShowOtherUsersRepos(t *testing.T
 	// Should NOT show user2's repo
 	if strings.Contains(body, "otherrepo") {
 		t.Errorf("Should not show user2's repo in response")
+	}
+}
+
+// =============================================================================
+// Repository View Tests
+// =============================================================================
+
+func TestRouter_GetRepositoryView_WithoutAuth_RedirectsToLogin(t *testing.T) {
+	router := NewRouter()
+
+	req := httptest.NewRequest(http.MethodGet, "/repositories/some-id", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected redirect status 303, got %d", rr.Code)
+	}
+	if rr.Header().Get("Location") != "/login" {
+		t.Errorf("Expected redirect to /login, got %s", rr.Header().Get("Location"))
+	}
+}
+
+func TestRouter_GetRepositoryView_WithAuth_ShowsRepoDetails(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	secretGen := &MockSecretGeneratorForWeb{Secret: "test-secret"}
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, secretGen, "https://example.com")
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	repo, _ := repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/owner/myrepo", "webhook-secret")
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/repositories/"+repo.ID, nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	// Should show repository name
+	if !strings.Contains(body, "owner/myrepo") {
+		t.Errorf("Expected repository name 'owner/myrepo' in response")
+	}
+	// Should show GitHub URL
+	if !strings.Contains(body, "https://github.com/owner/myrepo") {
+		t.Errorf("Expected GitHub URL in response")
+	}
+	// Should show webhook URL
+	if !strings.Contains(body, "https://example.com/webhook/"+repo.ID) {
+		t.Errorf("Expected webhook URL in response")
+	}
+	// Should show status
+	if !strings.Contains(body, "Active") {
+		t.Errorf("Expected status in response")
+	}
+	// Should show Edit button
+	if !strings.Contains(body, "Edit Settings") {
+		t.Errorf("Expected Edit button in response")
+	}
+	// Should show Delete button
+	if !strings.Contains(body, "Delete Repository") {
+		t.Errorf("Expected Delete button in response")
+	}
+}
+
+func TestRouter_GetRepositoryView_NotFound_Returns404(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, nil, "")
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/repositories/nonexistent-id", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404, got %d", rr.Code)
+	}
+}
+
+func TestRouter_GetRepositoryView_OtherUsersRepo_Returns404(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, nil, "")
+
+	user1, _ := userStore.CreateUser(context.Background(), "user1@example.com", hashPassword("password123"))
+	user2, _ := userStore.CreateUser(context.Background(), "user2@example.com", hashPassword("password123"))
+
+	// Create repo for user1
+	repo, _ := repoStore.CreateRepository(context.Background(), user1.ID, "https://github.com/user1/privaterepo", "secret")
+
+	// Try to access as user2
+	token, _ := generateToken(user2.ID, user2.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/repositories/"+repo.ID, nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404 for other user's repo, got %d", rr.Code)
 	}
 }

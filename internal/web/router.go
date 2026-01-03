@@ -26,7 +26,7 @@ var pageTemplates map[string]*template.Template
 
 func init() {
 	pageTemplates = make(map[string]*template.Template)
-	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "repositories_new.html", "repository_success.html", "repositories_list.html"}
+	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html"}
 
 	for _, page := range pages {
 		// Clone the base template and parse the page
@@ -69,6 +69,7 @@ type UserStore interface {
 type RepositoryStore interface {
 	ListRepositoriesByUser(ctx context.Context, userID string) ([]*handlers.Repository, error)
 	CreateRepository(ctx context.Context, userID, githubURL, webhookSecret string) (*handlers.Repository, error)
+	GetRepositoryByID(ctx context.Context, repoID string) (*handlers.Repository, error)
 }
 
 // SecretGenerator generates webhook secrets
@@ -166,6 +167,7 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("/repositories", r.handleRepositories)
 	r.mux.HandleFunc("/repositories/new", r.handleRepositoriesNew)
 	r.mux.HandleFunc("/repositories/success", r.handleRepositoriesSuccess)
+	r.mux.HandleFunc("/repositories/{id}", r.handleRepositoryView)
 }
 
 func (r *Router) handleHome(w http.ResponseWriter, req *http.Request) {
@@ -636,6 +638,13 @@ type RepositorySuccessData struct {
 	WebhookSecret string
 }
 
+// RepositoryViewData holds data for the single repository view page
+type RepositoryViewData struct {
+	Repository *handlers.Repository
+	WebhookURL string
+	RepoName   string
+}
+
 func (r *Router) handleRepositoriesSuccess(w http.ResponseWriter, req *http.Request) {
 	// Check for auth cookie
 	cookie, err := req.Cookie(auth.CookieName)
@@ -679,6 +688,97 @@ func (r *Router) handleRepositoriesSuccess(w http.ResponseWriter, req *http.Requ
 			WebhookSecret: webhookSecret,
 		},
 	})
+}
+
+func (r *Router) handleRepositoryView(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get repository ID from path
+	repoID := req.PathValue("id")
+	if repoID == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Check if store is configured
+	if r.repoStore == nil {
+		r.renderPage(w, "repository_view.html", PageData{
+			Title: "Repository",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Repository store not configured",
+		})
+		return
+	}
+
+	// Get repository
+	repo, err := r.repoStore.GetRepositoryByID(req.Context(), repoID)
+	if err != nil {
+		r.renderPage(w, "repository_view.html", PageData{
+			Title: "Repository",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Failed to load repository",
+		})
+		return
+	}
+
+	// Repository not found
+	if repo == nil {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Verify the repository belongs to the current user
+	if repo.UserID != claims.UserID {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Extract repository name from GitHub URL (owner/repo)
+	repoName := extractRepoName(repo.GitHubURL)
+
+	// Build webhook URL
+	webhookURL := fmt.Sprintf("%s/webhook/%s", r.webhookURL, repo.ID)
+
+	r.renderPage(w, "repository_view.html", PageData{
+		Title: repoName,
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+		Data: &RepositoryViewData{
+			Repository: repo,
+			WebhookURL: webhookURL,
+			RepoName:   repoName,
+		},
+	})
+}
+
+// extractRepoName extracts the owner/repo portion from a GitHub URL
+func extractRepoName(githubURL string) string {
+	parsed, err := url.Parse(githubURL)
+	if err != nil {
+		return githubURL
+	}
+	path := strings.Trim(parsed.Path, "/")
+	return path
 }
 
 func (r *Router) renderPage(w http.ResponseWriter, page string, data PageData) {

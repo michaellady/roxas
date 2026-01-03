@@ -1,0 +1,72 @@
+{{define "content"}}
+<div class="repository-container">
+    <div class="page-header">
+        <div class="header-back">
+            <a href="/repositories" class="btn btn-small">&larr; Back to Repositories</a>
+        </div>
+        <h1>{{.Data.RepoName}}</h1>
+    </div>
+
+    {{if .Error}}
+    <div class="alert alert-error">{{.Error}}</div>
+    {{end}}
+
+    {{if .Data}}
+    <div class="card">
+        <section class="repo-details">
+            <h2>Repository Details</h2>
+
+            <div class="detail-field">
+                <label>Name</label>
+                <div class="detail-value">{{.Data.RepoName}}</div>
+            </div>
+
+            <div class="detail-field">
+                <label>GitHub URL</label>
+                <div class="detail-value">
+                    <a href="{{.Data.Repository.GitHubURL}}" target="_blank" rel="noopener">{{.Data.Repository.GitHubURL}}</a>
+                </div>
+            </div>
+
+            <div class="detail-field">
+                <label>Webhook URL</label>
+                <div class="input-group">
+                    <input type="text" id="webhook-url" value="{{.Data.WebhookURL}}" readonly class="config-input">
+                    <button type="button" class="btn-copy" data-copy-target="webhook-url">Copy</button>
+                </div>
+            </div>
+
+            <div class="detail-field">
+                <label>Status</label>
+                <div class="detail-value">
+                    <span class="status-badge status-active">Active</span>
+                </div>
+            </div>
+
+            <div class="detail-field">
+                <label>Added</label>
+                <div class="detail-value">{{.Data.Repository.CreatedAt.Format "January 02, 2006 at 3:04 PM"}}</div>
+            </div>
+        </section>
+
+        <section class="repo-actions">
+            <h2>Actions</h2>
+            <div class="action-buttons">
+                <a href="/repositories/{{.Data.Repository.ID}}/edit" class="btn btn-secondary">Edit Settings</a>
+                <button type="button" class="btn btn-danger" onclick="confirmDelete()">Delete Repository</button>
+            </div>
+        </section>
+    </div>
+    {{end}}
+</div>
+
+<script src="/static/js/clipboard.js"></script>
+<script>
+function confirmDelete() {
+    if (confirm('Are you sure you want to delete this repository? This action cannot be undone.')) {
+        // DELETE endpoint will be implemented in a future task
+        alert('Delete functionality coming soon');
+    }
+}
+</script>
+{{end}}
