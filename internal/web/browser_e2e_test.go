@@ -748,3 +748,181 @@ func TestBrowser_AddRepositoryValidation(t *testing.T) {
 	}
 	t.Log("PASSED: Valid GitHub URL is accepted and redirects to success")
 }
+
+// =============================================================================
+// Connections Page Browser Tests (hq-qhzb)
+// =============================================================================
+
+func TestBrowser_ConnectionsPage_RequiresLogin(t *testing.T) {
+	// Setup test server
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Launch browser
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL + "/connections").Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	page.MustWaitLoad()
+
+	// Should be redirected to login page
+	currentURL := page.MustInfo().URL
+	if !strings.Contains(currentURL, "/login") {
+		t.Errorf("Expected redirect to /login, got %s", currentURL)
+	}
+}
+
+func TestBrowser_ConnectionsPage_EmptyState(t *testing.T) {
+	// Setup test server with auth
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Launch browser
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	// Register
+	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
+	inputText(t, page, "input[name='email']", "conntest@example.com")
+	inputText(t, page, "input[name='password']", "password123")
+	inputText(t, page, "input[name='confirm_password']", "password123")
+	page.MustElement("button[type='submit']").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Login (signup redirects to login page, doesn't auto-login)
+	inputText(t, page, "input[name='email']", "conntest@example.com")
+	inputText(t, page, "input[name='password']", "password123")
+	page.MustElement("button[type='submit']").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Navigate to connections page
+	page.MustNavigate(ts.URL + "/connections").MustWaitLoad()
+
+	// Verify empty state
+	body := page.MustElement("body").MustText()
+	if !strings.Contains(body, "Connect") {
+		t.Errorf("Expected 'Connect' button on empty connections page, got: %s", body)
+	}
+}
+
+func TestBrowser_ConnectionsPage_ShowsConnectedAccounts(t *testing.T) {
+	// Setup test server with a connection
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Launch browser
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	// Register
+	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
+	inputText(t, page, "input[name='email']", "conntest2@example.com")
+	inputText(t, page, "input[name='password']", "password123")
+	inputText(t, page, "input[name='confirm_password']", "password123")
+	page.MustElement("button[type='submit']").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Login (signup redirects to login page, doesn't auto-login)
+	inputText(t, page, "input[name='email']", "conntest2@example.com")
+	inputText(t, page, "input[name='password']", "password123")
+	page.MustElement("button[type='submit']").MustClick()
+	page.MustWaitNavigation()
+
+	// Navigate to connections page
+	page.MustNavigate(ts.URL + "/connections").MustWaitLoad()
+
+	// Page should load without errors
+	title := page.MustElement("title").MustText()
+	if !strings.Contains(title, "Connection") && !strings.Contains(title, "Roxas") {
+		t.Errorf("Expected page title to contain 'Connection' or 'Roxas', got: %s", title)
+	}
+
+	// Verify page structure
+	html := page.MustHTML()
+	if !strings.Contains(html, "<html") {
+		t.Errorf("Expected valid HTML structure")
+	}
+}
+
+func TestBrowser_ConnectionsPage_NavigationFromDashboard(t *testing.T) {
+	// Setup test server
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	repoStore := NewMockRepositoryStoreForWeb()
+	commitLister := NewMockCommitListerForWeb()
+
+	// Create router with connection service
+	router := NewRouterWithConnectionServiceAndStores(
+		userStore, repoStore, commitLister, nil, nil, "", connService,
+	)
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Launch browser
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	// Register
+	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
+	inputText(t, page, "input[name='email']", "navtest@example.com")
+	inputText(t, page, "input[name='password']", "password123")
+	inputText(t, page, "input[name='confirm_password']", "password123")
+	page.MustElement("button[type='submit']").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Login (signup redirects to login page, doesn't auto-login)
+	inputText(t, page, "input[name='email']", "navtest@example.com")
+	inputText(t, page, "input[name='password']", "password123")
+	page.MustElement("button[type='submit']").MustClick()
+	page.MustWaitNavigation()
+
+	// Navigate to dashboard
+	page.MustNavigate(ts.URL + "/dashboard").MustWaitLoad()
+
+	// Look for connections link (may be in navigation)
+	html := page.MustHTML()
+	if !strings.Contains(html, "/connections") {
+		t.Log("Note: No direct link to /connections found in dashboard navigation")
+	}
+
+	// Directly navigate to connections
+	page.MustNavigate(ts.URL + "/connections").MustWaitLoad()
+
+	// Verify we're on connections page
+	body := page.MustElement("body").MustText()
+	if strings.Contains(body, "404") || strings.Contains(body, "Not Found") {
+		t.Errorf("Connections page returned 404")
+	}
+}

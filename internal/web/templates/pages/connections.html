@@ -1,0 +1,65 @@
+{{define "content"}}
+<div class="connections-container">
+    <div class="page-header">
+        <h1>Connected Accounts</h1>
+    </div>
+
+    {{if .Error}}
+    <div class="alert alert-error">{{.Error}}</div>
+    {{end}}
+
+    {{if gt (len .Data.Connections) 0}}
+    <div class="connections-list">
+        {{range .Data.Platforms}}
+        {{if .IsConnected}}
+        <div class="connection-card connection-{{.Connection.Status}}">
+            <div class="connection-header">
+                <h3 class="platform-name">{{.Name}}</h3>
+                <span class="status-badge status-{{.Connection.Status}}">{{.Connection.Status}}</span>
+            </div>
+            <div class="connection-details">
+                <p class="display-name">{{.Connection.DisplayName}}</p>
+                <p class="platform-id">{{.ID}}</p>
+            </div>
+            <div class="connection-actions">
+                <form action="/connections/{{.ID}}/test" method="POST" class="inline-form">
+                    <button type="submit" class="btn btn-small">Test Connection</button>
+                </form>
+                <form action="/connections/{{.ID}}/disconnect" method="POST" class="inline-form" onsubmit="return confirm('Are you sure you want to disconnect this account?');">
+                    <button type="submit" class="btn btn-small btn-danger">Disconnect</button>
+                </form>
+            </div>
+        </div>
+        {{end}}
+        {{end}}
+
+        <h2>Available Platforms</h2>
+        {{range .Data.Platforms}}
+        {{if not .IsConnected}}
+        <div class="connection-card connection-available">
+            <div class="connection-header">
+                <h3 class="platform-name">{{.Name}}</h3>
+            </div>
+            <div class="connection-details">
+                <p class="platform-description">{{.Description}}</p>
+            </div>
+            <div class="connection-actions">
+                <a href="/connections/{{.ID}}/connect" class="btn btn-primary">Connect</a>
+            </div>
+        </div>
+        {{end}}
+        {{end}}
+    </div>
+    {{else}}
+    <div class="empty-state">
+        <h2>No connected accounts</h2>
+        <p>Connect your first social media account to start posting automatically.</p>
+        <div class="platform-buttons">
+            {{range .Data.Platforms}}
+            <a href="/connections/{{.ID}}/connect" class="btn btn-primary">Connect {{.Name}}</a>
+            {{end}}
+        </div>
+    </div>
+    {{end}}
+</div>
+{{end}}

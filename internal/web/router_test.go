@@ -2655,3 +2655,309 @@ func TestRouter_PostWebhookRegenerate_InvalidatesOldSecret(t *testing.T) {
 func stringPtr(s string) *string {
 	return &s
 }
+
+// =============================================================================
+// Connection List Page Tests (hq-qhzb)
+// =============================================================================
+
+// MockConnectionService implements ConnectionService for tests
+type MockConnectionService struct {
+	connections     []*mockConnection
+	testResultFunc  func(string) *mockConnectionTestResult
+	initOAuthFunc   func(string) (*mockOAuthInfo, error)
+	handleCallback  func(string, string, string) error
+	disconnectError error
+}
+
+type mockConnection struct {
+	UserID         string
+	Platform       string
+	Status         string
+	DisplayName    string
+	PlatformUserID string
+	LastTestedAt   *time.Time
+	ExpiresAt      *time.Time
+}
+
+type mockConnectionTestResult struct {
+	Success bool
+	Latency time.Duration
+	Error   string
+}
+
+type mockOAuthInfo struct {
+	AuthURL   string
+	State     string
+	ExpiresAt time.Time
+}
+
+func NewMockConnectionService() *MockConnectionService {
+	return &MockConnectionService{
+		connections: make([]*mockConnection, 0),
+	}
+}
+
+func (m *MockConnectionService) ListConnections(ctx context.Context, userID string) ([]*Connection, error) {
+	result := make([]*Connection, 0)
+	for _, c := range m.connections {
+		if c.UserID == userID {
+			result = append(result, &Connection{
+				UserID:         c.UserID,
+				Platform:       c.Platform,
+				Status:         c.Status,
+				DisplayName:    c.DisplayName,
+				PlatformUserID: c.PlatformUserID,
+				LastTestedAt:   c.LastTestedAt,
+				ExpiresAt:      c.ExpiresAt,
+			})
+		}
+	}
+	return result, nil
+}
+
+func (m *MockConnectionService) AddConnection(c *mockConnection) {
+	m.connections = append(m.connections, c)
+}
+
+// =============================================================================
+// GET /connections Tests
+// =============================================================================
+
+func TestRouter_GetConnections_RequiresAuth(t *testing.T) {
+	userStore := NewMockUserStore()
+	router := NewRouterWithConnectionService(userStore, NewMockConnectionService())
+
+	req := httptest.NewRequest(http.MethodGet, "/connections", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should redirect to login
+	if rr.Code != http.StatusSeeOther && rr.Code != http.StatusFound {
+		t.Errorf("Expected redirect to login, got status %d", rr.Code)
+	}
+
+	location := rr.Header().Get("Location")
+	if !strings.Contains(location, "/login") {
+		t.Errorf("Expected redirect to /login, got %s", location)
+	}
+}
+
+func TestRouter_GetConnections_EmptyState_ShowsEmptyMessage(t *testing.T) {
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/connections", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+
+	// Should contain empty state message
+	if !strings.Contains(body, "No connected accounts") && !strings.Contains(body, "Connect your first") {
+		t.Errorf("Expected empty state message in body")
+	}
+
+	// Should contain connect buttons for platforms
+	if !strings.Contains(body, "Connect") {
+		t.Errorf("Expected connect button(s) in body")
+	}
+}
+
+func TestRouter_GetConnections_WithConnections_ShowsStatusBadges(t *testing.T) {
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	// Add a connected platform
+	now := time.Now()
+	connService.AddConnection(&mockConnection{
+		UserID:       user.ID,
+		Platform:     "bluesky",
+		Status:       "connected",
+		DisplayName:  "@testuser.bsky.social",
+		LastTestedAt: &now,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/connections", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+
+	// Should contain the platform name
+	if !strings.Contains(body, "bluesky") && !strings.Contains(body, "Bluesky") {
+		t.Errorf("Expected Bluesky platform name in body")
+	}
+
+	// Should contain connected status
+	if !strings.Contains(body, "connected") && !strings.Contains(body, "Connected") {
+		t.Errorf("Expected 'connected' status in body")
+	}
+
+	// Should contain the display name
+	if !strings.Contains(body, "testuser.bsky.social") {
+		t.Errorf("Expected display name in body")
+	}
+}
+
+func TestRouter_GetConnections_MultipleConnections_ShowsAll(t *testing.T) {
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	// Add multiple platforms
+	now := time.Now()
+	connService.AddConnection(&mockConnection{
+		UserID:      user.ID,
+		Platform:    "bluesky",
+		Status:      "connected",
+		DisplayName: "@testuser.bsky.social",
+	})
+	connService.AddConnection(&mockConnection{
+		UserID:      user.ID,
+		Platform:    "twitter",
+		Status:      "connected",
+		DisplayName: "@testuser",
+	})
+	connService.AddConnection(&mockConnection{
+		UserID:       user.ID,
+		Platform:     "threads",
+		Status:       "expired",
+		DisplayName:  "testuser",
+		LastTestedAt: &now,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/connections", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+
+	// Should contain all platforms
+	platforms := []string{"bluesky", "twitter", "threads"}
+	for _, p := range platforms {
+		if !strings.Contains(strings.ToLower(body), p) {
+			t.Errorf("Expected %s in body", p)
+		}
+	}
+
+	// Should show expired status for threads
+	if !strings.Contains(body, "expired") && !strings.Contains(body, "Expired") {
+		t.Errorf("Expected 'expired' status for threads connection")
+	}
+}
+
+func TestRouter_GetConnections_ReturnsHTML(t *testing.T) {
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/connections", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should return HTML content type
+	contentType := rr.Header().Get("Content-Type")
+	if !strings.Contains(contentType, "text/html") {
+		t.Errorf("Expected Content-Type text/html, got %s", contentType)
+	}
+
+	// Should contain proper HTML structure
+	body := rr.Body.String()
+	if !strings.Contains(body, "<!DOCTYPE html>") {
+		t.Errorf("Expected HTML doctype")
+	}
+	if !strings.Contains(body, "<title>") {
+		t.Errorf("Expected title tag")
+	}
+}
+
+func TestRouter_GetConnections_ShowsDisconnectButton(t *testing.T) {
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	connService.AddConnection(&mockConnection{
+		UserID:   user.ID,
+		Platform: "bluesky",
+		Status:   "connected",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/connections", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	body := rr.Body.String()
+
+	// Should contain disconnect button/form for connected platforms
+	if !strings.Contains(body, "disconnect") && !strings.Contains(body, "Disconnect") {
+		t.Errorf("Expected disconnect button for connected platform")
+	}
+}
+
+func TestRouter_GetConnections_ShowsTestButton(t *testing.T) {
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	connService.AddConnection(&mockConnection{
+		UserID:   user.ID,
+		Platform: "bluesky",
+		Status:   "connected",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/connections", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	body := rr.Body.String()
+
+	// Should contain test connection button
+	if !strings.Contains(body, "test") && !strings.Contains(body, "Test") {
+		t.Errorf("Expected test connection button")
+	}
+}

@@ -30,7 +30,7 @@ var pageTemplates map[string]*template.Template
 
 func init() {
 	pageTemplates = make(map[string]*template.Template)
-	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "webhook_regenerate.html", "webhook_deliveries.html"}
+	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "webhook_regenerate.html", "webhook_deliveries.html", "connections.html"}
 
 	for _, page := range pages {
 		// Clone the base template and parse the page
@@ -159,6 +159,22 @@ type WebhookDeliveryStore interface {
 	ListDeliveriesByRepository(ctx context.Context, repoID string, limit int) ([]*WebhookDelivery, error)
 }
 
+// Connection represents a social platform connection for the connections page
+type Connection struct {
+	UserID         string
+	Platform       string
+	Status         string
+	DisplayName    string
+	PlatformUserID string
+	LastTestedAt   *time.Time
+	ExpiresAt      *time.Time
+}
+
+// ConnectionService interface for managing platform connections
+type ConnectionService interface {
+	ListConnections(ctx context.Context, userID string) ([]*Connection, error)
+}
+
 // DashboardCommit represents a commit for the dashboard
 type DashboardCommit struct {
 	ID      string
@@ -186,6 +202,7 @@ type Router struct {
 	webhookURL           string
 	webhookTester        WebhookTester
 	webhookDeliveryStore WebhookDeliveryStore
+	connectionService    ConnectionService
 }
 
 // NewRouter creates a new web router with all routes configured (no user store)
@@ -254,6 +271,33 @@ func NewRouterWithWebhookDeliveries(userStore UserStore, repoStore RepositorySto
 	return r
 }
 
+// NewRouterWithConnectionService creates a new web router with connection service
+func NewRouterWithConnectionService(userStore UserStore, connectionService ConnectionService) *Router {
+	r := &Router{
+		mux:               http.NewServeMux(),
+		userStore:         userStore,
+		connectionService: connectionService,
+	}
+	r.setupRoutes()
+	return r
+}
+
+// NewRouterWithConnectionServiceAndStores creates a new web router with all stores and connection service
+func NewRouterWithConnectionServiceAndStores(userStore UserStore, repoStore RepositoryStore, commitLister CommitLister, postLister PostLister, secretGen SecretGenerator, webhookURL string, connectionService ConnectionService) *Router {
+	r := &Router{
+		mux:               http.NewServeMux(),
+		userStore:         userStore,
+		repoStore:         repoStore,
+		commitLister:      commitLister,
+		postLister:        postLister,
+		secretGen:         secretGen,
+		webhookURL:        webhookURL,
+		connectionService: connectionService,
+	}
+	r.setupRoutes()
+	return r
+}
+
 // ServeHTTP implements http.Handler
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.mux.ServeHTTP(w, req)
@@ -279,6 +323,9 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("/repositories/{id}/webhook/test", r.handleWebhookTest)
 	r.mux.HandleFunc("/repositories/{id}/webhook/regenerate", r.handleWebhookRegenerate)
 	r.mux.HandleFunc("GET /repositories/{id}/webhooks", r.handleWebhookDeliveries)
+
+	// Connections
+	r.mux.HandleFunc("GET /connections", r.handleConnections)
 }
 
 func (r *Router) handleHome(w http.ResponseWriter, req *http.Request) {
@@ -1391,6 +1438,85 @@ func (r *Router) handleWebhookDeliveries(w http.ResponseWriter, req *http.Reques
 			Repository: repo,
 			Deliveries: deliveries,
 			RepoName:   repoName,
+		},
+	})
+}
+
+// ConnectionsPageData holds data for the connections page template
+type ConnectionsPageData struct {
+	Connections []*Connection
+	Platforms   []PlatformInfo
+}
+
+// PlatformInfo describes a supported social platform
+type PlatformInfo struct {
+	ID          string
+	Name        string
+	Description string
+	IsConnected bool
+	Connection  *Connection
+}
+
+func (r *Router) handleConnections(w http.ResponseWriter, req *http.Request) {
+	// Check authentication
+	cookie, err := req.Cookie("auth_token")
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get user's connections
+	var connections []*Connection
+	if r.connectionService != nil {
+		var err error
+		connections, err = r.connectionService.ListConnections(req.Context(), claims.UserID)
+		if err != nil {
+			r.renderPage(w, "connections.html", PageData{
+				Title: "Connected Accounts",
+				User: &UserData{
+					ID:    claims.UserID,
+					Email: claims.Email,
+				},
+				Error: "Failed to load connections",
+			})
+			return
+		}
+	}
+
+	// Build platform info with connection status
+	platforms := []PlatformInfo{
+		{ID: "bluesky", Name: "Bluesky", Description: "AT Protocol social network"},
+		{ID: "twitter", Name: "Twitter", Description: "X (formerly Twitter)"},
+		{ID: "threads", Name: "Threads", Description: "Meta Threads"},
+		{ID: "linkedin", Name: "LinkedIn", Description: "Professional network"},
+	}
+
+	// Mark connected platforms
+	for i := range platforms {
+		for _, conn := range connections {
+			if conn.Platform == platforms[i].ID {
+				platforms[i].IsConnected = true
+				platforms[i].Connection = conn
+				break
+			}
+		}
+	}
+
+	r.renderPage(w, "connections.html", PageData{
+		Title: "Connected Accounts",
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+		Data: &ConnectionsPageData{
+			Connections: connections,
+			Platforms:   platforms,
 		},
 	})
 }
