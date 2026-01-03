@@ -171,6 +171,7 @@ type WebhookDelivery struct {
 // WebhookDeliveryStore interface for webhook delivery operations
 type WebhookDeliveryStore interface {
 	ListDeliveriesByRepository(ctx context.Context, repoID string, limit int) ([]*WebhookDelivery, error)
+	CreateDelivery(ctx context.Context, repoID, eventType string, payload []byte, statusCode int, errorMessage *string) (*WebhookDelivery, error)
 }
 
 // ConnectionService interface for connection management operations
@@ -328,6 +329,23 @@ func NewRouterWithConnectionService(userStore UserStore, connectionService Conne
 		mux:               http.NewServeMux(),
 		userStore:         userStore,
 		connectionService: connectionService,
+	}
+	r.setupRoutes()
+	return r
+}
+
+// NewRouterWithWebhookTesterAndDeliveries creates a new web router with both webhook tester and delivery store
+func NewRouterWithWebhookTesterAndDeliveries(userStore UserStore, repoStore RepositoryStore, commitLister CommitLister, postLister PostLister, secretGen SecretGenerator, webhookURL string, webhookTester WebhookTester, webhookDeliveryStore WebhookDeliveryStore) *Router {
+	r := &Router{
+		mux:                  http.NewServeMux(),
+		userStore:            userStore,
+		repoStore:            repoStore,
+		commitLister:         commitLister,
+		postLister:           postLister,
+		secretGen:            secretGen,
+		webhookURL:           webhookURL,
+		webhookTester:        webhookTester,
+		webhookDeliveryStore: webhookDeliveryStore,
 	}
 	r.setupRoutes()
 	return r
@@ -1375,12 +1393,15 @@ func (r *Router) handleWebhookTest(w http.ResponseWriter, req *http.Request) {
 
 	// Test the webhook
 	var result WebhookTestResult
+	var statusCode int
+	var testErr error
+
 	if r.webhookTester != nil {
-		statusCode, err := r.webhookTester.TestWebhook(req.Context(), webhookURL, repo.WebhookSecret)
-		if err != nil {
+		statusCode, testErr = r.webhookTester.TestWebhook(req.Context(), webhookURL, repo.WebhookSecret)
+		if testErr != nil {
 			result = WebhookTestResult{
 				Success: false,
-				Error:   fmt.Sprintf("Connection failed: %v", err),
+				Error:   fmt.Sprintf("Connection failed: %v", testErr),
 			}
 		} else if statusCode >= 200 && statusCode < 300 {
 			result = WebhookTestResult{
@@ -1393,6 +1414,20 @@ func (r *Router) handleWebhookTest(w http.ResponseWriter, req *http.Request) {
 				StatusCode: statusCode,
 				Error:      fmt.Sprintf("Webhook returned status %d", statusCode),
 			}
+		}
+
+		// Record the delivery if store is configured
+		if r.webhookDeliveryStore != nil {
+			testPayload := []byte(`{"zen": "Webhook test ping", "hook_id": 0}`)
+			var errorMsg *string
+			if testErr != nil {
+				errStr := testErr.Error()
+				errorMsg = &errStr
+			} else if !result.Success {
+				errorMsg = &result.Error
+			}
+			// Ignore errors from recording - test result is what matters to user
+			_, _ = r.webhookDeliveryStore.CreateDelivery(req.Context(), repoID, "ping", testPayload, statusCode, errorMsg)
 		}
 	} else {
 		result = WebhookTestResult{
