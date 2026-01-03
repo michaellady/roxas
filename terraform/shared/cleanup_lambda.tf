@@ -13,13 +13,13 @@ resource "aws_security_group" "cleanup_lambda" {
   description = "Security group for DB cleanup Lambda function"
   vpc_id      = aws_vpc.main.id
 
-  # Outbound to RDS
+  # Outbound to RDS (use CIDR blocks, not security_groups - egress SG refs don't work for RDS)
   egress {
-    from_port       = 5432
-    to_port         = 5432
-    protocol        = "tcp"
-    security_groups = [aws_security_group.rds.id]
-    description     = "PostgreSQL to RDS"
+    from_port   = 5432
+    to_port     = 5432
+    protocol    = "tcp"
+    cidr_blocks = aws_subnet.private[*].cidr_block
+    description = "PostgreSQL to RDS"
   }
 
   # Outbound HTTPS for Secrets Manager API calls
