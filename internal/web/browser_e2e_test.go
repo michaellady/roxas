@@ -1337,16 +1337,8 @@ func TestBrowser_TestWebhookButton(t *testing.T) {
 	page.MustNavigate(ts.URL + "/repositories").MustWaitLoad()
 	page.MustWaitStable()
 
-	// Click on the repository to view it
-	repoLink := page.MustElement("a[href^='/repositories/'][href$='/view']")
-	if repoLink == nil {
-		// Try alternative selector - the repo name link
-		repoLink = page.MustElement(".repo-list a, .repository-list a, table a[href^='/repositories/']")
-	}
-	if repoLink == nil {
-		bodyText := page.MustElement("body").MustText()
-		t.Fatalf("Step 4 FAILED: Could not find repository link\nBody: %s", bodyText[:min(len(bodyText), 500)])
-	}
+	// Click on the repository to view it (link is in the Actions column as "View" button)
+	repoLink := page.MustElement("table a.btn-small[href^='/repositories/']")
 	repoLink.MustClick()
 	page.MustWaitLoad()
 	page.MustWaitStable()
@@ -1457,14 +1449,7 @@ func TestBrowser_TestWebhookButton_Failure(t *testing.T) {
 	page.MustNavigate(ts.URL + "/repositories").MustWaitLoad()
 	page.MustWaitStable()
 
-	repoLink := page.MustElement("a[href^='/repositories/'][href$='/view']")
-	if repoLink == nil {
-		repoLink = page.MustElement(".repo-list a, .repository-list a, table a[href^='/repositories/']")
-	}
-	if repoLink == nil {
-		bodyText := page.MustElement("body").MustText()
-		t.Fatalf("Could not find repository link\nBody: %s", bodyText[:min(len(bodyText), 500)])
-	}
+	repoLink := page.MustElement("table a.btn-small[href^='/repositories/']")
 	repoLink.MustClick()
 	page.MustWaitLoad()
 	page.MustWaitStable()
