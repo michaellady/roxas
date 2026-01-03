@@ -534,3 +534,218 @@ func TestMultiTenantWebhookReturnsJSON(t *testing.T) {
 		t.Errorf("Expected Content-Type application/json, got %s", contentType)
 	}
 }
+
+// =============================================================================
+// Mock Delivery Store for Webhook Delivery Recording Tests
+// =============================================================================
+
+// MockDeliveryStore is an in-memory delivery store for testing
+type MockDeliveryStore struct {
+	mu         sync.Mutex
+	deliveries []*WebhookDelivery
+}
+
+// WebhookDelivery represents a recorded webhook delivery
+type WebhookDelivery struct {
+	RepositoryID string
+	EventType    string
+	Payload      []byte
+	StatusCode   int
+	ErrorMessage string
+	Success      bool
+}
+
+// NewMockDeliveryStore creates a new mock delivery store
+func NewMockDeliveryStore() *MockDeliveryStore {
+	return &MockDeliveryStore{
+		deliveries: make([]*WebhookDelivery, 0),
+	}
+}
+
+// RecordDelivery records a webhook delivery
+func (m *MockDeliveryStore) RecordDelivery(ctx context.Context, repoID, eventType string, payload []byte, statusCode int, errorMessage string, success bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.deliveries = append(m.deliveries, &WebhookDelivery{
+		RepositoryID: repoID,
+		EventType:    eventType,
+		Payload:      payload,
+		StatusCode:   statusCode,
+		ErrorMessage: errorMessage,
+		Success:      success,
+	})
+	return nil
+}
+
+// GetDeliveries returns all recorded deliveries
+func (m *MockDeliveryStore) GetDeliveries() []*WebhookDelivery {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	result := make([]*WebhookDelivery, len(m.deliveries))
+	copy(result, m.deliveries)
+	return result
+}
+
+// =============================================================================
+// Webhook Delivery Recording Tests (TDD - RED → GREEN)
+// =============================================================================
+
+// TestMultiTenantWebhookRecordsDeliveryOnMissingSignature tests that delivery
+// is recorded with eventType even when signature is missing (auth failure)
+func TestMultiTenantWebhookRecordsDeliveryOnMissingSignature(t *testing.T) {
+	repoStore := NewMockWebhookRepositoryStore()
+	commitStore := NewMockCommitStore()
+	deliveryStore := NewMockDeliveryStore()
+
+	repo := &Repository{
+		ID:            "repo-123",
+		UserID:        "user-456",
+		GitHubURL:     "https://github.com/test/repo",
+		WebhookSecret: "test-secret",
+		CreatedAt:     time.Now(),
+	}
+	repoStore.AddRepository(repo)
+
+	handler := NewMultiTenantWebhookHandlerWithDelivery(repoStore, commitStore, deliveryStore)
+
+	commits := []map[string]interface{}{
+		{"id": "abc123", "message": "test", "author": map[string]interface{}{"name": "Test"}},
+	}
+	payload := createPushPayload(commits)
+
+	// No signature - this is an auth failure
+	req := createWebhookRequest(t, repo.ID, payload, "")
+	req.Header.Set("X-GitHub-Event", "push") // Event type IS set
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	// Should return 401
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("Expected status 401 Unauthorized, got %d", rr.Code)
+	}
+
+	// Delivery should be recorded with eventType = "push", NOT empty
+	deliveries := deliveryStore.GetDeliveries()
+	if len(deliveries) != 1 {
+		t.Fatalf("Expected 1 delivery recorded, got %d", len(deliveries))
+	}
+
+	delivery := deliveries[0]
+	if delivery.EventType != "push" {
+		t.Errorf("Expected eventType 'push', got '%s' (BUG: eventType is empty on auth failures)", delivery.EventType)
+	}
+	if delivery.StatusCode != http.StatusUnauthorized {
+		t.Errorf("Expected status code 401, got %d", delivery.StatusCode)
+	}
+	if delivery.Success {
+		t.Error("Expected success=false for auth failure")
+	}
+}
+
+// TestMultiTenantWebhookRecordsDeliveryOnInvalidSignature tests that delivery
+// is recorded with eventType even when signature is invalid (auth failure)
+func TestMultiTenantWebhookRecordsDeliveryOnInvalidSignature(t *testing.T) {
+	repoStore := NewMockWebhookRepositoryStore()
+	commitStore := NewMockCommitStore()
+	deliveryStore := NewMockDeliveryStore()
+
+	repo := &Repository{
+		ID:            "repo-123",
+		UserID:        "user-456",
+		GitHubURL:     "https://github.com/test/repo",
+		WebhookSecret: "correct-secret",
+		CreatedAt:     time.Now(),
+	}
+	repoStore.AddRepository(repo)
+
+	handler := NewMultiTenantWebhookHandlerWithDelivery(repoStore, commitStore, deliveryStore)
+
+	commits := []map[string]interface{}{
+		{"id": "abc123", "message": "test", "author": map[string]interface{}{"name": "Test"}},
+	}
+	payload := createPushPayload(commits)
+
+	// Sign with WRONG secret
+	wrongSignature := generateGitHubSignature(payload, "wrong-secret")
+
+	req := createWebhookRequest(t, repo.ID, payload, wrongSignature)
+	req.Header.Set("X-GitHub-Event", "push") // Event type IS set
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	// Should return 401
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("Expected status 401 Unauthorized, got %d", rr.Code)
+	}
+
+	// Delivery should be recorded with eventType = "push", NOT empty
+	deliveries := deliveryStore.GetDeliveries()
+	if len(deliveries) != 1 {
+		t.Fatalf("Expected 1 delivery recorded, got %d", len(deliveries))
+	}
+
+	delivery := deliveries[0]
+	if delivery.EventType != "push" {
+		t.Errorf("Expected eventType 'push', got '%s' (BUG: eventType is empty on auth failures)", delivery.EventType)
+	}
+	if delivery.StatusCode != http.StatusUnauthorized {
+		t.Errorf("Expected status code 401, got %d", delivery.StatusCode)
+	}
+}
+
+// TestMultiTenantWebhookRecordsDeliveryOnSuccess tests that delivery
+// is recorded with eventType on successful webhook processing
+func TestMultiTenantWebhookRecordsDeliveryOnSuccess(t *testing.T) {
+	repoStore := NewMockWebhookRepositoryStore()
+	commitStore := NewMockCommitStore()
+	deliveryStore := NewMockDeliveryStore()
+
+	repo := &Repository{
+		ID:            "repo-123",
+		UserID:        "user-456",
+		GitHubURL:     "https://github.com/test/repo",
+		WebhookSecret: "test-secret",
+		CreatedAt:     time.Now(),
+	}
+	repoStore.AddRepository(repo)
+
+	handler := NewMultiTenantWebhookHandlerWithDelivery(repoStore, commitStore, deliveryStore)
+
+	commits := []map[string]interface{}{
+		{"id": "abc123", "message": "test", "author": map[string]interface{}{"name": "Test"}},
+	}
+	payload := createPushPayload(commits)
+	signature := generateGitHubSignature(payload, repo.WebhookSecret)
+
+	req := createWebhookRequest(t, repo.ID, payload, signature)
+	req.Header.Set("X-GitHub-Event", "push")
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	// Should return 200
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200 OK, got %d", rr.Code)
+	}
+
+	// Delivery should be recorded
+	deliveries := deliveryStore.GetDeliveries()
+	if len(deliveries) != 1 {
+		t.Fatalf("Expected 1 delivery recorded, got %d", len(deliveries))
+	}
+
+	delivery := deliveries[0]
+	if delivery.EventType != "push" {
+		t.Errorf("Expected eventType 'push', got '%s'", delivery.EventType)
+	}
+	if delivery.StatusCode != http.StatusOK {
+		t.Errorf("Expected status code 200, got %d", delivery.StatusCode)
+	}
+	if !delivery.Success {
+		t.Error("Expected success=true for successful processing")
+	}
+}
