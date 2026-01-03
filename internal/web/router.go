@@ -26,7 +26,7 @@ var pageTemplates map[string]*template.Template
 
 func init() {
 	pageTemplates = make(map[string]*template.Template)
-	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "repositories_new.html", "repository_success.html"}
+	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "repositories_new.html", "repository_success.html", "repositories_list.html"}
 
 	for _, page := range pages {
 		// Clone the base template and parse the page
@@ -163,6 +163,7 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("/signup", r.handleSignup)
 	r.mux.HandleFunc("/dashboard", r.handleDashboard)
 	r.mux.HandleFunc("/logout", r.handleLogout)
+	r.mux.HandleFunc("/repositories", r.handleRepositories)
 	r.mux.HandleFunc("/repositories/new", r.handleRepositoriesNew)
 	r.mux.HandleFunc("/repositories/success", r.handleRepositoriesSuccess)
 }
@@ -435,6 +436,55 @@ func (r *Router) handleLogout(w http.ResponseWriter, req *http.Request) {
 
 	// Redirect to login page
 	http.Redirect(w, req, "/login", http.StatusSeeOther)
+}
+
+// RepositoriesListData holds data for the repositories list page
+type RepositoriesListData struct {
+	Repositories []*handlers.Repository
+}
+
+func (r *Router) handleRepositories(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Fetch repositories
+	listData := &RepositoriesListData{}
+
+	if r.repoStore != nil {
+		repos, err := r.repoStore.ListRepositoriesByUser(req.Context(), claims.UserID)
+		if err != nil {
+			r.renderPage(w, "repositories_list.html", PageData{
+				Title: "Repositories",
+				User: &UserData{
+					ID:    claims.UserID,
+					Email: claims.Email,
+				},
+				Error: "Failed to load repositories",
+			})
+			return
+		}
+		listData.Repositories = repos
+	}
+
+	r.renderPage(w, "repositories_list.html", PageData{
+		Title: "Repositories",
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+		Data: listData,
+	})
 }
 
 func (r *Router) handleRepositoriesNew(w http.ResponseWriter, req *http.Request) {
