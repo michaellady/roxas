@@ -1250,6 +1250,234 @@ func TestBrowser_ConnectionDisconnect_NotFound(t *testing.T) {
 	t.Log("PASSED: Non-existent connection returns 404")
 }
 
+// TestBrowser_TestWebhookButton tests clicking the Test Webhook button in repository view
+func TestBrowser_TestWebhookButton(t *testing.T) {
+	// Fixed webhook secret for deterministic testing
+	const testWebhookSecret = "test-webhook-secret-for-browser"
+	const testWebhookBaseURL = "https://api.roxas.test"
+
+	// Setup test server with mock stores
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	secretGen := &MockSecretGeneratorForWeb{Secret: testWebhookSecret}
+	webhookTester := NewMockWebhookTester()
+	router := NewRouterWithWebhookTester(userStore, repoStore, nil, nil, secretGen, testWebhookBaseURL, webhookTester)
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Launch browser
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	testEmail := "webhook-test@example.com"
+	testPassword := "securepassword123"
+	testGitHubURL := "https://github.com/webhooktest/myrepo"
+
+	// =========================================================================
+	// Step 1: Sign up
+	// =========================================================================
+	t.Log("Step 1: Sign up new user")
+
+	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
+
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	inputText(t, page, "#confirm_password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+	t.Log("Step 1 PASSED: Sign up successful")
+
+	// =========================================================================
+	// Step 2: Log in
+	// =========================================================================
+	t.Log("Step 2: Log in")
+
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+	t.Log("Step 2 PASSED: Login successful")
+
+	// =========================================================================
+	// Step 3: Add a repository
+	// =========================================================================
+	t.Log("Step 3: Add a repository")
+
+	page.MustNavigate(ts.URL + "/repositories/new").MustWaitLoad()
+
+	el := page.MustElement("#github_url")
+	el.MustSelectAllText().MustInput(testGitHubURL)
+	page.MustElement("form.auth-form").MustEval(`() => this.submit()`)
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	currentURL := page.MustInfo().URL
+	if !strings.Contains(currentURL, "/repositories/success") {
+		t.Fatalf("Step 3 FAILED: Expected /repositories/success, got: %s", currentURL)
+	}
+	t.Log("Step 3 PASSED: Repository added")
+
+	// =========================================================================
+	// Step 4: Navigate to repository view
+	// =========================================================================
+	t.Log("Step 4: Navigate to repository view")
+
+	// Go to dashboard first
+	page.MustNavigate(ts.URL + "/dashboard").MustWaitLoad()
+	page.MustWaitStable()
+
+	// Navigate to repositories list
+	page.MustNavigate(ts.URL + "/repositories").MustWaitLoad()
+	page.MustWaitStable()
+
+	// Click on the repository to view it (link is in the Actions column as "View" button)
+	repoLink := page.MustElement("table a.btn-small[href^='/repositories/']")
+	repoLink.MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	currentURL = page.MustInfo().URL
+	if !strings.Contains(currentURL, "/repositories/") {
+		t.Fatalf("Step 4 FAILED: Expected to be on repository view, got: %s", currentURL)
+	}
+	t.Log("Step 4 PASSED: On repository view page")
+
+	// =========================================================================
+	// Step 5: Click Test Webhook button
+	// =========================================================================
+	t.Log("Step 5: Click Test Webhook button")
+
+	// Find the Test Webhook button
+	testWebhookBtn := page.MustElement("#test-webhook-btn")
+	if testWebhookBtn == nil {
+		t.Fatal("Step 5 FAILED: Test Webhook button not found")
+	}
+
+	// Click the button
+	testWebhookBtn.MustClick()
+
+	// Wait for the async request to complete
+	// The button should show "Testing..." then back to "Test Webhook"
+	page.MustWaitStable()
+
+	// Give time for the fetch to complete
+	time.Sleep(500 * time.Millisecond)
+
+	// =========================================================================
+	// Step 6: Verify success message is displayed
+	// =========================================================================
+	t.Log("Step 6: Verify success message")
+
+	resultSpan := page.MustElement("#webhook-test-result")
+	if resultSpan == nil {
+		t.Fatal("Step 6 FAILED: Result span not found")
+	}
+
+	resultText := resultSpan.MustText()
+	if !strings.Contains(resultText, "Success") {
+		t.Fatalf("Step 6 FAILED: Expected 'Success' in result, got: %s", resultText)
+	}
+
+	// Verify the result has success styling
+	resultClass := resultSpan.MustProperty("className").String()
+	if !strings.Contains(resultClass, "status-success") {
+		t.Logf("Warning: Expected status-success class, got: %s", resultClass)
+	}
+
+	t.Log("Step 6 PASSED: Success message displayed")
+
+	t.Log("=== TEST WEBHOOK BUTTON BROWSER E2E TEST PASSED ===")
+}
+
+// TestBrowser_TestWebhookButton_Failure tests the webhook test button when webhook fails
+func TestBrowser_TestWebhookButton_Failure(t *testing.T) {
+	const testWebhookSecret = "test-webhook-secret-fail"
+	const testWebhookBaseURL = "https://api.roxas.test"
+
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	secretGen := &MockSecretGeneratorForWeb{Secret: testWebhookSecret}
+	webhookTester := NewMockWebhookTester()
+	webhookTester.SetShouldError(true) // Make webhook fail
+	router := NewRouterWithWebhookTester(userStore, repoStore, nil, nil, secretGen, testWebhookBaseURL, webhookTester)
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	testEmail := "webhook-fail-test@example.com"
+	testPassword := "securepassword123"
+	testGitHubURL := "https://github.com/webhookfail/myrepo"
+
+	// Sign up and login
+	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	inputText(t, page, "#confirm_password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Add a repository
+	page.MustNavigate(ts.URL + "/repositories/new").MustWaitLoad()
+	el := page.MustElement("#github_url")
+	el.MustSelectAllText().MustInput(testGitHubURL)
+	page.MustElement("form.auth-form").MustEval(`() => this.submit()`)
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Navigate to repositories list and view
+	page.MustNavigate(ts.URL + "/repositories").MustWaitLoad()
+	page.MustWaitStable()
+
+	repoLink := page.MustElement("table a.btn-small[href^='/repositories/']")
+	repoLink.MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Click Test Webhook button
+	t.Log("Clicking Test Webhook button (expecting failure)")
+	testWebhookBtn := page.MustElement("#test-webhook-btn")
+	testWebhookBtn.MustClick()
+	page.MustWaitStable()
+	time.Sleep(500 * time.Millisecond)
+
+	// Verify error message is displayed
+	resultSpan := page.MustElement("#webhook-test-result")
+	resultText := resultSpan.MustText()
+
+	if !strings.Contains(resultText, "Failed") && !strings.Contains(resultText, "Error") && !strings.Contains(resultText, "error") {
+		t.Fatalf("Expected 'Failed' or 'Error' in result, got: %s", resultText)
+	}
+
+	// Verify the result has error styling
+	resultClass := resultSpan.MustProperty("className").String()
+	if !strings.Contains(resultClass, "status-error") {
+		t.Logf("Warning: Expected status-error class, got: %s", resultClass)
+	}
+
+	t.Log("PASSED: Error message displayed correctly for failed webhook")
+}
+
 // TestBrowser_DeleteRepositoryFlow tests the complete delete repository workflow:
 // add repo → view repo → click delete → confirmation page → cancel → back to repo
 // then: click delete again → confirm delete → redirected to repositories list → repo gone
