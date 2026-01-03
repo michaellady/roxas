@@ -30,7 +30,7 @@ var pageTemplates map[string]*template.Template
 
 func init() {
 	pageTemplates = make(map[string]*template.Template)
-	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html"}
+	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "webhook_regenerate.html"}
 
 	for _, page := range pages {
 		// Clone the base template and parse the page
@@ -75,6 +75,7 @@ type RepositoryStore interface {
 	CreateRepository(ctx context.Context, userID, githubURL, webhookSecret string) (*handlers.Repository, error)
 	GetRepositoryByID(ctx context.Context, repoID string) (*handlers.Repository, error)
 	UpdateRepository(ctx context.Context, repoID, name string, isActive bool) (*handlers.Repository, error)
+	UpdateWebhookSecret(ctx context.Context, repoID, newSecret string) error
 }
 
 // SecretGenerator generates webhook secrets
@@ -241,6 +242,7 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("GET /repositories/{id}/edit", r.handleRepositoryEdit)
 	r.mux.HandleFunc("POST /repositories/{id}/edit", r.handleRepositoryEditPost)
 	r.mux.HandleFunc("/repositories/{id}/webhook/test", r.handleWebhookTest)
+	r.mux.HandleFunc("/repositories/{id}/webhook/regenerate", r.handleWebhookRegenerate)
 }
 
 func (r *Router) handleHome(w http.ResponseWriter, req *http.Request) {
@@ -1110,6 +1112,131 @@ func (r *Router) handleWebhookTest(w http.ResponseWriter, req *http.Request) {
 	} else {
 		fmt.Fprintf(w, `{"success": false, "error": %q}`, result.Error)
 	}
+}
+
+// WebhookRegenerateData holds data for the webhook regenerate success page
+type WebhookRegenerateData struct {
+	Repository    *handlers.Repository
+	WebhookURL    string
+	WebhookSecret string
+	RepoName      string
+}
+
+func (r *Router) handleWebhookRegenerate(w http.ResponseWriter, req *http.Request) {
+	// Only allow POST
+	if req.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get repository ID from path
+	repoID := req.PathValue("id")
+	if repoID == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Check if stores are configured
+	if r.repoStore == nil || r.secretGen == nil {
+		r.renderPage(w, "webhook_regenerate.html", PageData{
+			Title: "Regenerate Webhook Secret",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Webhook regeneration not configured",
+		})
+		return
+	}
+
+	// Get repository
+	repo, err := r.repoStore.GetRepositoryByID(req.Context(), repoID)
+	if err != nil {
+		r.renderPage(w, "webhook_regenerate.html", PageData{
+			Title: "Regenerate Webhook Secret",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Failed to load repository",
+		})
+		return
+	}
+
+	// Repository not found
+	if repo == nil {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Verify the repository belongs to the current user
+	if repo.UserID != claims.UserID {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Generate new webhook secret
+	newSecret, err := r.secretGen.Generate()
+	if err != nil {
+		r.renderPage(w, "webhook_regenerate.html", PageData{
+			Title: "Regenerate Webhook Secret",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Failed to generate new webhook secret",
+		})
+		return
+	}
+
+	// Update the repository with the new secret
+	err = r.repoStore.UpdateWebhookSecret(req.Context(), repoID, newSecret)
+	if err != nil {
+		r.renderPage(w, "webhook_regenerate.html", PageData{
+			Title: "Regenerate Webhook Secret",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Failed to update webhook secret",
+		})
+		return
+	}
+
+	// Extract repository name from GitHub URL
+	repoName := extractRepoName(repo.GitHubURL)
+
+	// Build webhook URL
+	webhookURL := fmt.Sprintf("%s/webhook/%s", r.webhookURL, repo.ID)
+
+	// Render success page showing the new secret (one-time display)
+	r.renderPage(w, "webhook_regenerate.html", PageData{
+		Title: "Webhook Secret Regenerated",
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+		Data: &WebhookRegenerateData{
+			Repository:    repo,
+			WebhookURL:    webhookURL,
+			WebhookSecret: newSecret,
+			RepoName:      repoName,
+		},
+	})
 }
 
 func (r *Router) renderPage(w http.ResponseWriter, page string, data PageData) {

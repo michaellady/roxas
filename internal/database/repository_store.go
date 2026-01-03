@@ -173,3 +173,20 @@ func (s *RepositoryStore) UpdateRepository(ctx context.Context, repoID, name str
 	repo.CreatedAt = createdAt
 	return &repo, nil
 }
+
+// UpdateWebhookSecret updates the webhook secret for a repository
+func (s *RepositoryStore) UpdateWebhookSecret(ctx context.Context, repoID, newSecret string) error {
+	result, err := s.pool.Exec(ctx,
+		`UPDATE repositories SET webhook_secret = $1 WHERE id = $2`,
+		newSecret, repoID,
+	)
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+
+	return nil
+}
