@@ -1,0 +1,260 @@
+# Formula: mike
+# Type: phased-workflow
+# Purpose: Mayor-orchestrated planning and development
+#
+# This workflow has 4 PHASES that return to Mayor for coordination:
+#
+#   PHASE 1: Plan + Breakdown (Planner Polecat)
+#            → Returns to Mayor with refined beads
+#
+#   PHASE 2: Review (Reviewer Polecats - can parallelize)
+#            → Returns to Mayor with comments
+#
+#   PHASE 3: Refactor (Refactorer Polecat)
+#            → Returns to Mayor with final beads
+#
+#   PHASE 4: Implement (Worker Polecats - parallelize per bead)
+#            → Each polecat implements one bead
+#
+# Mayor orchestrates between phases using separate slings.
+
+description = """Mayor-orchestrated Planning and Development.
+
+Multi-phase workflow where Mayor coordinates between phases:
+- Phase 1: Planner analyzes and breaks down beads
+- Phase 2: Reviewers comment on the plan
+- Phase 3: Refactorer incorporates feedback
+- Phase 4: Workers implement the refined beads
+
+Each phase returns to Mayor for the next dispatch."""
+
+formula = "mike"
+version = 2
+
+# =============================================================================
+# PHASE 1: PLANNING (sling to one planner polecat)
+# Use: gt sling <epic-bead> <rig> --molecule mike-plan
+# =============================================================================
+
+[[steps]]
+id = "analyze"
+title = "Analyze Scope"
+phase = 1
+role = "planner"
+description = """
+Deep analysis of the assigned epic/feature bead.
+
+**Checklist:**
+1. Read the bead description thoroughly
+2. Explore the codebase to understand current state
+3. Identify the critical path "tracer bullet" MVP
+4. List all components that need to change
+5. Note any external dependencies or blockers
+"""
+
+[[steps]]
+id = "plan-tdd"
+title = "Plan TDD Approach"
+phase = 1
+role = "planner"
+needs = ["analyze"]
+description = """
+Design the test-driven development strategy.
+
+**Checklist:**
+1. Identify what tests should exist when done
+2. Plan RED phase: which tests to write first
+3. Order tests from simplest to most complex
+4. Identify integration vs unit test boundaries
+5. Document test plan in bead comments
+"""
+
+[[steps]]
+id = "breakdown"
+title = "Break Into Beads"
+phase = 1
+role = "planner"
+needs = ["plan-tdd"]
+description = """
+Decompose into atomic, single-session beads.
+
+**Checklist:**
+1. Create child beads with `bd new "..." --parent=<epic>`
+2. Each bead should be ~1 session of work
+3. Include test requirements in each bead description
+4. Set dependencies with `bd dep add <child> <parent>`
+5. Identify which beads can run in parallel
+6. Use `bd tree <epic>` to visualize structure
+
+**On completion:** Notify Mayor that planning is done.
+Send: `gt mail send mayor/ -s "PHASE 1 COMPLETE: <epic>" -m "Beads created: ..."`
+"""
+
+# =============================================================================
+# PHASE 2: REVIEW (sling to 1-3 reviewer polecats in parallel)
+# Use: gt sling <epic-bead> <rig> --molecule mike-review
+# Mayor can sling same bead to multiple reviewers for diverse feedback
+# =============================================================================
+
+[[steps]]
+id = "review-beads"
+title = "Review Bead Structure"
+phase = 2
+role = "reviewer"
+description = """
+Critically analyze the planned beads.
+
+**Checklist:**
+1. Read all beads created in Phase 1
+2. Assess if breakdown is appropriate
+3. Check for missing edge cases or requirements
+4. Verify dependencies are correct
+5. Look for parallelization opportunities missed
+"""
+
+[[steps]]
+id = "leave-comments"
+title = "Leave Structured Comments"
+phase = 2
+role = "reviewer"
+needs = ["review-beads"]
+description = """
+Add comments to beads with structured feedback.
+
+**Format:** `bd comments add <bead-id> "[IMPACT] Comment text - @<your-name>"`
+
+**Impact Levels:**
+- [HIGH] - Critical issue, blocks implementation
+- [MEDIUM] - Should address, improves quality significantly
+- [LOW] - Nice-to-have, minor improvement
+
+**Rules:**
+- DO NOT edit bead descriptions
+- Only ADD comments
+- Sign with your polecat name
+- Be specific and actionable
+
+**On completion:** Notify Mayor.
+Send: `gt mail send mayor/ -s "PHASE 2 COMPLETE: Review by <name>" -m "Comments added to: ..."`
+"""
+
+# =============================================================================
+# PHASE 3: REFACTOR (sling to one refactorer polecat)
+# Use: gt sling <epic-bead> <rig> --molecule mike-refactor
+# =============================================================================
+
+[[steps]]
+id = "read-feedback"
+title = "Read All Feedback"
+phase = 3
+role = "refactorer"
+description = """
+Collect and analyze all reviewer comments.
+
+**Checklist:**
+1. Read comments on all beads with `bd comments list <bead-id>`
+2. Categorize by impact: HIGH → MEDIUM → LOW
+3. Identify conflicting feedback (if any)
+4. List changes needed
+"""
+
+[[steps]]
+id = "refactor-beads"
+title = "Refactor Bead Structure"
+phase = 3
+role = "refactorer"
+needs = ["read-feedback"]
+description = """
+Update beads based on feedback.
+
+**For HIGH impact comments:**
+- Must address before implementation
+- Update bead descriptions
+- Create new beads if scope was missed
+- Fix dependency errors
+
+**For MEDIUM impact comments:**
+- Address if straightforward
+- Can note as TODO in bead if complex
+
+**For LOW impact comments:**
+- Note for implementer in comments
+- Optional to address
+
+**Checklist:**
+1. Update bead titles/descriptions as needed
+2. Add/remove beads based on feedback
+3. Adjust dependencies with `bd dep add/remove`
+4. Run `bd tree <epic>` to verify structure
+5. Mark reviewed comments as addressed
+
+**On completion:** Notify Mayor with final bead list.
+Send: `gt mail send mayor/ -s "PHASE 3 COMPLETE: <epic> ready" -m "Final beads: ... Ready for implementation."`
+"""
+
+# =============================================================================
+# PHASE 4: IMPLEMENT (Mayor slings individual beads to worker polecats)
+# Use: gt sling <task-bead> <rig> --molecule mike-implement
+# Each worker gets ONE bead, can parallelize across workers
+# =============================================================================
+
+[[steps]]
+id = "implement"
+title = "Implement with TDD"
+phase = 4
+role = "worker"
+description = """
+Execute the bead using test-driven development.
+
+**TDD Cycle:**
+1. RED: Write failing test for the requirement
+2. GREEN: Write minimal code to pass
+3. REFACTOR: Clean up while keeping tests green
+
+**Checklist:**
+1. Read bead description and comments
+2. Check any blocking dependencies are done
+3. Write tests first (RED)
+4. Implement to pass tests (GREEN)
+5. Refactor for clarity
+6. Run full test suite: `go test ./...`
+7. Commit with clear message referencing bead ID
+"""
+
+[[steps]]
+id = "create-pr"
+title = "Create Pull Request"
+phase = 4
+role = "worker"
+needs = ["implement"]
+description = """
+Push branch and create PR.
+
+**Checklist:**
+1. Push branch: `git push -u origin <branch>`
+2. Create PR: `gh pr create --title "<bead-title>" --body "Closes <bead-id>"`
+3. Link PR to bead in comments
+4. Request merge from refinery:
+   `gt mail send <rig>/refinery -s "Merge request: <branch>" -m "PR ready"`
+5. Notify Mayor:
+   `gt mail send mayor/ -s "PHASE 4 COMPLETE: <bead-id>" -m "PR #X created"`
+"""
+
+# =============================================================================
+# Variables
+# =============================================================================
+
+[vars]
+[vars.issue]
+description = "Issue ID (epic for phases 1-3, task for phase 4)"
+required = true
+
+[vars.phase]
+description = "Which phase: 1=plan, 2=review, 3=refactor, 4=implement"
+required = false
+default = "1"
+
+[vars.reviewers]
+description = "Number of parallel reviewers for phase 2"
+required = false
+default = "2"
