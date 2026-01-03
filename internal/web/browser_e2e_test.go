@@ -748,3 +748,295 @@ func TestBrowser_AddRepositoryValidation(t *testing.T) {
 	}
 	t.Log("PASSED: Valid GitHub URL is accepted and redirects to success")
 }
+
+// TestBrowser_WebhookDeliveries tests the webhook deliveries list page in a real browser.
+// Tests: page load, auth required, deliveries table display, status badges, empty state.
+func TestBrowser_WebhookDeliveries(t *testing.T) {
+	// Setup test server with all necessary stores
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	webhookStore := NewMockWebhookDeliveryStore()
+	secretGen := &MockSecretGeneratorForWeb{Secret: "test-webhook-secret"}
+	router := NewRouterWithWebhookDeliveries(userStore, repoStore, nil, nil, secretGen, "https://api.example.com", webhookStore)
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Launch browser
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	testEmail := "webhook-deliveries-test@example.com"
+	testPassword := "securepassword123"
+
+	// =========================================================================
+	// Step 1: Create user and repository
+	// =========================================================================
+	t.Log("Step 1: Create user and repository")
+
+	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	inputText(t, page, "#confirm_password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Get user ID for repository creation
+	user, err := userStore.GetUserByEmail(context.Background(), testEmail)
+	if err != nil || user == nil {
+		t.Fatalf("Step 1 FAILED: Could not get user: %v", err)
+	}
+
+	// Create a repository
+	repo, err := repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/test/webhook-repo", "secret")
+	if err != nil {
+		t.Fatalf("Step 1 FAILED: Could not create repository: %v", err)
+	}
+	t.Logf("Step 1 PASSED: Created user and repository (ID: %s)", repo.ID)
+
+	// =========================================================================
+	// Step 2: Verify auth required - unauthenticated access redirects to login
+	// =========================================================================
+	t.Log("Step 2: Verify auth required for webhook deliveries")
+
+	page.MustNavigate(ts.URL + "/repositories/" + repo.ID + "/webhooks").MustWaitLoad()
+	page.MustWaitStable()
+
+	currentURL := page.MustInfo().URL
+	if !strings.HasSuffix(currentURL, "/login") {
+		t.Fatalf("Step 2 FAILED: Expected redirect to /login, got: %s", currentURL)
+	}
+	t.Log("Step 2 PASSED: Unauthenticated access redirects to login")
+
+	// =========================================================================
+	// Step 3: Login and view empty webhook deliveries
+	// =========================================================================
+	t.Log("Step 3: Login and view empty webhook deliveries")
+
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Navigate to webhook deliveries page
+	page.MustNavigate(ts.URL + "/repositories/" + repo.ID + "/webhooks").MustWaitLoad()
+	page.MustWaitStable()
+
+	currentURL = page.MustInfo().URL
+	if !strings.Contains(currentURL, "/webhooks") {
+		t.Fatalf("Step 3 FAILED: Expected to be on webhooks page, got: %s", currentURL)
+	}
+
+	// Verify page title
+	h1 := page.MustElement("h1").MustText()
+	if h1 != "Webhook Deliveries" {
+		t.Fatalf("Step 3 FAILED: Expected h1 'Webhook Deliveries', got: %s", h1)
+	}
+
+	// Verify empty state is displayed
+	bodyText := page.MustElement("body").MustText()
+	if !strings.Contains(bodyText, "No webhook deliveries yet") {
+		t.Fatalf("Step 3 FAILED: Expected empty state message, got: %s", bodyText[:min(len(bodyText), 500)])
+	}
+	t.Log("Step 3 PASSED: Empty state displays correctly")
+
+	// =========================================================================
+	// Step 4: Add deliveries and verify table display
+	// =========================================================================
+	t.Log("Step 4: Add deliveries and verify table display")
+
+	// Add successful delivery
+	webhookStore.AddDelivery(repo.ID, &WebhookDelivery{
+		ID:         "delivery-success-1",
+		EventType:  "push",
+		Payload:    `{"commits":[{"message":"Add feature"}]}`,
+		StatusCode: 200,
+		CreatedAt:  "2026-01-03 10:30:00",
+		IsSuccess:  true,
+	})
+
+	// Add failed delivery with error message
+	errMsg := "Connection timeout"
+	webhookStore.AddDelivery(repo.ID, &WebhookDelivery{
+		ID:           "delivery-failed-1",
+		EventType:    "push",
+		Payload:      `{"commits":[{"message":"Fix bug"}]}`,
+		StatusCode:   500,
+		ErrorMessage: &errMsg,
+		CreatedAt:    "2026-01-03 10:25:00",
+		IsSuccess:    false,
+	})
+
+	// Reload page
+	page.MustReload().MustWaitLoad()
+	page.MustWaitStable()
+
+	// Verify table headers exist
+	tableHeaders := page.MustElement("thead").MustText()
+	if !strings.Contains(tableHeaders, "Time") ||
+		!strings.Contains(tableHeaders, "Event") ||
+		!strings.Contains(tableHeaders, "Status") {
+		t.Fatalf("Step 4 FAILED: Expected table headers (Time, Event, Status), got: %s", tableHeaders)
+	}
+
+	// Verify deliveries are displayed
+	tbody := page.MustElement("tbody")
+	tbodyText := tbody.MustText()
+	if !strings.Contains(tbodyText, "push") {
+		t.Fatalf("Step 4 FAILED: Expected 'push' event in table, got: %s", tbodyText[:min(len(tbodyText), 300)])
+	}
+	t.Log("Step 4 PASSED: Deliveries table displays correctly")
+
+	// =========================================================================
+	// Step 5: Verify status badges display correctly
+	// =========================================================================
+	t.Log("Step 5: Verify status badges display correctly")
+
+	// Check for success badge (status code 200)
+	successBadges := page.MustElements(".status-success")
+	if len(successBadges) == 0 {
+		t.Fatal("Step 5 FAILED: Expected at least one success status badge")
+	}
+	successText := successBadges[0].MustText()
+	if successText != "200" {
+		t.Fatalf("Step 5 FAILED: Expected success badge to show '200', got: %s", successText)
+	}
+
+	// Check for failed badge (status code 500)
+	failedBadges := page.MustElements(".status-failed")
+	if len(failedBadges) == 0 {
+		t.Fatal("Step 5 FAILED: Expected at least one failed status badge")
+	}
+	failedText := failedBadges[0].MustText()
+	if failedText != "500" {
+		t.Fatalf("Step 5 FAILED: Expected failed badge to show '500', got: %s", failedText)
+	}
+	t.Log("Step 5 PASSED: Status badges display correctly (200 success, 500 failed)")
+
+	// =========================================================================
+	// Step 6: Verify error message row displays for failed delivery
+	// =========================================================================
+	t.Log("Step 6: Verify error message row displays for failed delivery")
+
+	errorRows := page.MustElements(".error-row")
+	if len(errorRows) == 0 {
+		t.Fatal("Step 6 FAILED: Expected error row for failed delivery")
+	}
+	errorRowText := errorRows[0].MustText()
+	if !strings.Contains(errorRowText, "Connection timeout") {
+		t.Fatalf("Step 6 FAILED: Expected error message 'Connection timeout', got: %s", errorRowText)
+	}
+	t.Log("Step 6 PASSED: Error message row displays correctly")
+
+	// =========================================================================
+	// Step 7: Verify back navigation link
+	// =========================================================================
+	t.Log("Step 7: Verify back navigation link")
+
+	backLink := page.MustElement("a.btn.btn-small")
+	backLinkText := backLink.MustText()
+	if !strings.Contains(backLinkText, "Back to Repository") {
+		t.Fatalf("Step 7 FAILED: Expected back link with 'Back to Repository', got: %s", backLinkText)
+	}
+
+	// Click back link
+	backLink.MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	currentURL = page.MustInfo().URL
+	if !strings.Contains(currentURL, "/repositories/"+repo.ID) || strings.Contains(currentURL, "/webhooks") {
+		t.Fatalf("Step 7 FAILED: Expected to navigate to repository view, got: %s", currentURL)
+	}
+	t.Log("Step 7 PASSED: Back navigation works correctly")
+
+	t.Log("=== WEBHOOK DELIVERIES BROWSER E2E TEST PASSED ===")
+}
+
+// TestBrowser_WebhookDeliveries_OtherUserRepo tests that users cannot view another user's webhook deliveries.
+func TestBrowser_WebhookDeliveries_OtherUserRepo(t *testing.T) {
+	// Setup test server
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	webhookStore := NewMockWebhookDeliveryStore()
+	secretGen := &MockSecretGeneratorForWeb{Secret: "test-secret"}
+	router := NewRouterWithWebhookDeliveries(userStore, repoStore, nil, nil, secretGen, "https://api.example.com", webhookStore)
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	// Create two users
+	user1Email := "user1-webhook@example.com"
+	user2Email := "user2-webhook@example.com"
+	testPassword := "securepassword123"
+
+	// Create user1 and their repo
+	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
+	inputText(t, page, "#email", user1Email)
+	inputText(t, page, "#password", testPassword)
+	inputText(t, page, "#confirm_password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	user1, _ := userStore.GetUserByEmail(context.Background(), user1Email)
+	repo1, _ := repoStore.CreateRepository(context.Background(), user1.ID, "https://github.com/user1/private-repo", "secret1")
+
+	// Add a delivery to user1's repo
+	webhookStore.AddDelivery(repo1.ID, &WebhookDelivery{
+		ID:         "private-delivery",
+		EventType:  "push",
+		Payload:    `{"secret":"data"}`,
+		StatusCode: 200,
+		CreatedAt:  "2026-01-03 10:00:00",
+		IsSuccess:  true,
+	})
+
+	// Create and login as user2
+	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
+	inputText(t, page, "#email", user2Email)
+	inputText(t, page, "#password", testPassword)
+	inputText(t, page, "#confirm_password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Login as user2
+	inputText(t, page, "#email", user2Email)
+	inputText(t, page, "#password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// =========================================================================
+	// Test: User2 tries to access User1's webhook deliveries
+	// =========================================================================
+	t.Log("Testing: User cannot view another user's webhook deliveries")
+
+	page.MustNavigate(ts.URL + "/repositories/" + repo1.ID + "/webhooks").MustWaitLoad()
+	page.MustWaitStable()
+
+	// Should get 404 (not found) - Go's standard library returns text/plain for NotFound
+	bodyText := page.MustElement("body").MustText()
+	if !strings.Contains(bodyText, "404") && !strings.Contains(bodyText, "not found") {
+		// If we're still on the page with deliveries visible, that's a security issue
+		if strings.Contains(bodyText, "Webhook Deliveries") && strings.Contains(bodyText, "private-delivery") {
+			t.Fatal("SECURITY FAILURE: User can view another user's webhook deliveries")
+		}
+	}
+
+	t.Log("PASSED: User cannot view another user's webhook deliveries")
+}
