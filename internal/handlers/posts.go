@@ -38,6 +38,7 @@ type PostStore interface {
 	CreatePost(ctx context.Context, commitID, platform, content string) (*Post, error)
 	GetPostByID(ctx context.Context, postID string) (*Post, error)
 	GetPostsByUserID(ctx context.Context, userID string) ([]*Post, error)
+	UpdatePostStatus(ctx context.Context, postID, status string) error
 }
 
 // CommitStoreForPosts defines commit lookup with ownership

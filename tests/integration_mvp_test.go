@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -268,6 +269,17 @@ func (s *MockPostStore) GetPostsByUserID(ctx context.Context, userID string) ([]
 		result = append(result, p)
 	}
 	return result, nil
+}
+
+func (s *MockPostStore) UpdatePostStatus(ctx context.Context, postID, status string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	post, ok := s.posts[postID]
+	if !ok {
+		return errors.New("post not found")
+	}
+	post.Status = status
+	return nil
 }
 
 // MockPostGenerator - mock post generator for deterministic testing
