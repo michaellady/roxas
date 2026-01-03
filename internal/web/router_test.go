@@ -1549,3 +1549,148 @@ func TestRouter_GetRepositoriesSuccess_WithAuth_ShowsConfig(t *testing.T) {
 		t.Errorf("Expected copy button data attributes in response")
 	}
 }
+
+// =============================================================================
+// Tests for GET /repositories (list repositories)
+// =============================================================================
+
+func TestRouter_GetRepositories_WithoutAuth_RedirectsToLogin(t *testing.T) {
+	router := NewRouter()
+
+	req := httptest.NewRequest(http.MethodGet, "/repositories", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected status 303, got %d", rr.Code)
+	}
+
+	location := rr.Header().Get("Location")
+	if location != "/login" {
+		t.Errorf("Expected redirect to /login, got %s", location)
+	}
+}
+
+func TestRouter_GetRepositories_WithAuth_RendersPage(t *testing.T) {
+	userStore := NewMockUserStore()
+	router := NewRouterWithStores(userStore)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/repositories", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	if !strings.Contains(body, "Repositories") {
+		t.Errorf("Expected 'Repositories' in response")
+	}
+}
+
+func TestRouter_GetRepositories_WithAuth_ShowsEmptyState(t *testing.T) {
+	userStore := NewMockUserStore()
+	router := NewRouterWithStores(userStore)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/repositories", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	// Should show empty state with link to add repository
+	if !strings.Contains(strings.ToLower(body), "no repositories") {
+		t.Errorf("Expected 'No Repositories' in empty state")
+	}
+	if !strings.Contains(body, "/repositories/new") {
+		t.Errorf("Expected link to add repository")
+	}
+}
+
+func TestRouter_GetRepositories_WithAuth_ShowsRepositories(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, nil, "")
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	// Add repositories
+	repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/user/repo1", "secret1")
+	repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/user/repo2", "secret2")
+
+	req := httptest.NewRequest(http.MethodGet, "/repositories", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	// Should show both repositories
+	if !strings.Contains(body, "repo1") {
+		t.Errorf("Expected repo1 in response")
+	}
+	if !strings.Contains(body, "repo2") {
+		t.Errorf("Expected repo2 in response")
+	}
+	// Should have Add Repository button
+	if !strings.Contains(body, "/repositories/new") {
+		t.Errorf("Expected Add Repository link")
+	}
+}
+
+func TestRouter_GetRepositories_WithAuth_DoesNotShowOtherUsersRepos(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, nil, "")
+
+	user1, _ := userStore.CreateUser(context.Background(), "user1@example.com", hashPassword("password123"))
+	user2, _ := userStore.CreateUser(context.Background(), "user2@example.com", hashPassword("password123"))
+
+	// Add repo for user1
+	repoStore.CreateRepository(context.Background(), user1.ID, "https://github.com/user1/privaterepo", "secret1")
+	// Add repo for user2
+	repoStore.CreateRepository(context.Background(), user2.ID, "https://github.com/user2/otherrepo", "secret2")
+
+	// Login as user1
+	token, _ := generateToken(user1.ID, user1.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/repositories", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	// Should show user1's repo
+	if !strings.Contains(body, "privaterepo") {
+		t.Errorf("Expected user1's repo in response")
+	}
+	// Should NOT show user2's repo
+	if strings.Contains(body, "otherrepo") {
+		t.Errorf("Should not show user2's repo in response")
+	}
+}

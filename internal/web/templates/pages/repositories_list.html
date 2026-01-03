@@ -1,0 +1,43 @@
+{{define "content"}}
+<div class="repositories-container">
+    <div class="page-header">
+        <h1>Repositories</h1>
+        <a href="/repositories/new" class="btn btn-primary">Add Repository</a>
+    </div>
+
+    {{if .Error}}
+    <div class="alert alert-error">{{.Error}}</div>
+    {{end}}
+
+    {{if .Data.Repositories}}
+    <div class="table-container">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Repository</th>
+                    <th>Added</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .Data.Repositories}}
+                <tr>
+                    <td><a href="{{.GitHubURL}}" target="_blank" rel="noopener">{{.GitHubURL}}</a></td>
+                    <td>{{.CreatedAt.Format "Jan 02, 2006"}}</td>
+                    <td>
+                        <a href="/repositories/{{.ID}}" class="btn btn-small">View</a>
+                    </td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+    {{else}}
+    <div class="empty-state">
+        <h2>No Repositories Yet</h2>
+        <p>Add your first repository to start automatically generating social media posts from your commits.</p>
+        <a href="/repositories/new" class="btn btn-primary">Add Repository</a>
+    </div>
+    {{end}}
+</div>
+{{end}}
