@@ -72,9 +72,24 @@
             <div class="post-card">
                 <div class="post-header">
                     <span class="platform-badge">{{.Platform}}</span>
+                    {{if eq .Status "draft"}}
+                    <span class="status-badge status-draft">Draft</span>
+                    {{else if eq .Status "posted"}}
+                    <span class="status-badge status-posted">Published</span>
+                    {{else if eq .Status "failed"}}
+                    <span class="status-badge status-failed">Failed</span>
+                    {{else}}
                     <span class="status-badge status-{{.Status}}">{{.Status}}</span>
+                    {{end}}
                 </div>
                 <p class="post-content">{{.Content}}</p>
+                {{if eq .Status "draft"}}
+                <div class="post-actions">
+                    <form action="/posts/{{.ID}}/publish" method="POST" class="publish-form">
+                        <button type="submit" class="btn btn-primary publish-btn">Publish to LinkedIn</button>
+                    </form>
+                </div>
+                {{end}}
             </div>
             {{end}}
         </div>

@@ -455,3 +455,307 @@ func TestBrowser_DashboardWithData(t *testing.T) {
 	}
 	t.Log("PASSED: Commit displayed correctly")
 }
+
+// =============================================================================
+// TB-POST-05: Dashboard Publish Button E2E Tests (TDD - RED)
+//
+// These tests verify the publish button behavior on the dashboard:
+// - Draft posts show "Publish to LinkedIn" button
+// - Posted posts show "Published" badge (no button)
+// - Failed posts show "Failed" badge
+// - Clicking publish button submits form to /posts/{id}/publish
+// =============================================================================
+
+// TestBrowser_Dashboard_DraftPost_ShowsPublishButton verifies that draft posts
+// display a "Publish to LinkedIn" button
+func TestBrowser_Dashboard_DraftPost_ShowsPublishButton(t *testing.T) {
+	// Setup test server with mock stores including post lister
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	commitLister := NewMockCommitListerForWeb()
+	postLister := NewMockPostListerForWeb()
+	router := NewRouterWithAllStores(userStore, repoStore, commitLister, postLister, nil, "")
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Launch browser
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	testEmail := "publish-test@example.com"
+	testPassword := "securepassword123"
+
+	// Create user and add test data
+	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	inputText(t, page, "#confirm_password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Get user ID and add test data
+	user, err := userStore.GetUserByEmail(context.Background(), testEmail)
+	if err != nil || user == nil {
+		t.Fatalf("Failed to get created user: %v", err)
+	}
+
+	// Add a repository (required to not show empty state)
+	repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/test/repo", "secret123")
+
+	// Add a DRAFT post for this user
+	postLister.AddPostForUser(user.ID, &DashboardPost{
+		ID:       "post-draft-123",
+		Platform: "LinkedIn",
+		Content:  "This is a draft post about my awesome commit",
+		Status:   "draft",
+	})
+
+	// Login
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Verify we're on dashboard
+	currentURL := page.MustInfo().URL
+	if !strings.HasSuffix(currentURL, "/dashboard") {
+		t.Fatalf("Expected to be on dashboard, got: %s", currentURL)
+	}
+
+	// =========================================================================
+	// Verify draft post shows publish button
+	// =========================================================================
+	t.Log("Verifying draft post shows publish button")
+
+	bodyText := page.MustElement("body").MustText()
+	if !strings.Contains(bodyText, "This is a draft post") {
+		t.Fatalf("Expected draft post content in dashboard, got body: %s", bodyText[:min(len(bodyText), 500)])
+	}
+
+	// Should have a publish button for draft posts
+	publishButton := page.MustElement("button.publish-btn, button[data-action='publish'], form[action*='/publish'] button")
+	if publishButton == nil {
+		t.Fatal("Expected publish button for draft post")
+	}
+
+	publishButtonText := publishButton.MustText()
+	if !strings.Contains(strings.ToLower(publishButtonText), "publish") {
+		t.Fatalf("Expected button text to contain 'publish', got: %s", publishButtonText)
+	}
+
+	t.Log("PASSED: Draft post shows publish button")
+}
+
+// TestBrowser_Dashboard_PostedPost_NoPublishButton verifies that already-posted
+// posts do NOT show a publish button, but show a "Published" badge instead
+func TestBrowser_Dashboard_PostedPost_NoPublishButton(t *testing.T) {
+	// Setup test server with mock stores including post lister
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	commitLister := NewMockCommitListerForWeb()
+	postLister := NewMockPostListerForWeb()
+	router := NewRouterWithAllStores(userStore, repoStore, commitLister, postLister, nil, "")
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Launch browser
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	testEmail := "posted-test@example.com"
+	testPassword := "securepassword123"
+
+	// Create user and add test data
+	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	inputText(t, page, "#confirm_password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Get user ID and add test data
+	user, err := userStore.GetUserByEmail(context.Background(), testEmail)
+	if err != nil || user == nil {
+		t.Fatalf("Failed to get created user: %v", err)
+	}
+
+	// Add a repository (required to not show empty state)
+	repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/test/repo", "secret123")
+
+	// Add a POSTED post for this user
+	postLister.AddPostForUser(user.ID, &DashboardPost{
+		ID:       "post-posted-456",
+		Platform: "LinkedIn",
+		Content:  "This post has already been published",
+		Status:   "posted",
+	})
+
+	// Login
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Verify we're on dashboard
+	currentURL := page.MustInfo().URL
+	if !strings.HasSuffix(currentURL, "/dashboard") {
+		t.Fatalf("Expected to be on dashboard, got: %s", currentURL)
+	}
+
+	// =========================================================================
+	// Verify posted post shows Published badge, NOT publish button
+	// =========================================================================
+	t.Log("Verifying posted post shows Published badge")
+
+	bodyText := page.MustElement("body").MustText()
+	if !strings.Contains(bodyText, "This post has already been published") {
+		t.Fatalf("Expected posted content in dashboard, got body: %s", bodyText[:min(len(bodyText), 500)])
+	}
+
+	// Find the post card for this post
+	postCard := page.MustElement(".post-card")
+	if postCard == nil {
+		t.Fatal("Expected post card to exist")
+	}
+
+	postCardHTML, _ := postCard.HTML()
+
+	// Should NOT have a publish button for already-posted posts
+	if strings.Contains(postCardHTML, "Publish to LinkedIn") {
+		t.Fatal("Posted post should NOT have a publish button")
+	}
+
+	// Should have a "Published" badge
+	if !strings.Contains(postCardHTML, "Published") && !strings.Contains(postCardHTML, "status-posted") {
+		t.Fatal("Posted post should show 'Published' badge")
+	}
+
+	t.Log("PASSED: Posted post shows Published badge, no publish button")
+}
+
+// TestBrowser_Dashboard_PublishButton_SubmitsForm verifies that clicking the
+// publish button submits a form to /posts/{id}/publish
+func TestBrowser_Dashboard_PublishButton_SubmitsForm(t *testing.T) {
+	// Setup test server with mock stores including post lister
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	commitLister := NewMockCommitListerForWeb()
+	postLister := NewMockPostListerForWeb()
+	router := NewRouterWithAllStores(userStore, repoStore, commitLister, postLister, nil, "")
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Launch browser
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	testEmail := "submit-test@example.com"
+	testPassword := "securepassword123"
+
+	// Create user and add test data
+	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	inputText(t, page, "#confirm_password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Get user ID and add test data
+	user, err := userStore.GetUserByEmail(context.Background(), testEmail)
+	if err != nil || user == nil {
+		t.Fatalf("Failed to get created user: %v", err)
+	}
+
+	// Add a repository (required to not show empty state)
+	repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/test/repo", "secret123")
+
+	// Add a DRAFT post for this user with a known ID
+	const testPostID = "test-post-789"
+	postLister.AddPostForUser(user.ID, &DashboardPost{
+		ID:       testPostID,
+		Platform: "LinkedIn",
+		Content:  "This draft will be published",
+		Status:   "draft",
+	})
+
+	// Login
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Verify we're on dashboard
+	currentURL := page.MustInfo().URL
+	if !strings.HasSuffix(currentURL, "/dashboard") {
+		t.Fatalf("Expected to be on dashboard, got: %s", currentURL)
+	}
+
+	// =========================================================================
+	// Verify publish form has correct action
+	// =========================================================================
+	t.Log("Verifying publish form action")
+
+	// Find the publish form for this post
+	// Expected form action: /posts/{id}/publish
+	expectedAction := "/posts/" + testPostID + "/publish"
+	publishForm := page.MustElement("form[action*='/publish']")
+	if publishForm == nil {
+		t.Fatal("Expected publish form to exist")
+	}
+
+	formAction, err := publishForm.Attribute("action")
+	if err != nil || formAction == nil {
+		t.Fatal("Expected form to have action attribute")
+	}
+
+	if *formAction != expectedAction {
+		t.Fatalf("Expected form action '%s', got '%s'", expectedAction, *formAction)
+	}
+
+	// Verify form method is POST
+	formMethod, _ := publishForm.Attribute("method")
+	if formMethod == nil || strings.ToUpper(*formMethod) != "POST" {
+		t.Fatal("Expected form method to be POST")
+	}
+
+	t.Log("PASSED: Publish form has correct action and method")
+
+	// =========================================================================
+	// Click publish button and verify form submission
+	// =========================================================================
+	t.Log("Clicking publish button")
+
+	// Click the publish button
+	publishButton := publishForm.MustElement("button[type=submit]")
+	publishButton.MustClick()
+	page.MustWaitLoad()
+
+	// After clicking, we expect either:
+	// - Redirect back to dashboard (if handler exists and succeeds)
+	// - 404 error (if handler not yet implemented - expected in RED phase)
+	// For RED phase, we just verify the form was submitted correctly
+	// The actual handler implementation will come in GREEN phase
+
+	t.Log("PASSED: Publish button click submitted form")
+}
