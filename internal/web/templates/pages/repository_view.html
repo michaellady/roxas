@@ -49,6 +49,15 @@
             </div>
         </section>
 
+        <section class="webhook-test">
+            <h2>Webhook Test</h2>
+            <p>Test your webhook configuration by sending a test ping.</p>
+            <div class="action-buttons">
+                <button type="button" id="test-webhook-btn" class="btn btn-primary" onclick="testWebhook()">Test Webhook</button>
+                <span id="webhook-test-result"></span>
+            </div>
+        </section>
+
         <section class="repo-actions">
             <h2>Actions</h2>
             <div class="action-buttons">
@@ -66,6 +75,41 @@ function confirmDelete() {
     if (confirm('Are you sure you want to delete this repository? This action cannot be undone.')) {
         // DELETE endpoint will be implemented in a future task
         alert('Delete functionality coming soon');
+    }
+}
+
+async function testWebhook() {
+    const btn = document.getElementById('test-webhook-btn');
+    const result = document.getElementById('webhook-test-result');
+
+    btn.disabled = true;
+    btn.textContent = 'Testing...';
+    result.textContent = '';
+    result.className = '';
+
+    try {
+        const response = await fetch('/repositories/{{.Data.Repository.ID}}/webhook/test', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            result.textContent = 'Success! Webhook responded with status ' + data.status_code;
+            result.className = 'status-success';
+        } else {
+            result.textContent = 'Failed: ' + data.error;
+            result.className = 'status-error';
+        }
+    } catch (error) {
+        result.textContent = 'Error: ' + error.message;
+        result.className = 'status-error';
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Test Webhook';
     }
 }
 </script>
