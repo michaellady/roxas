@@ -2051,3 +2051,224 @@ func TestRouter_PostRepositoryEdit_ToggleInactive_UpdatesStatus(t *testing.T) {
 		t.Errorf("Expected is_active to be false when checkbox unchecked")
 	}
 }
+
+// =============================================================================
+// Webhook Test Endpoint Tests (POST /repositories/:id/webhook/test)
+// =============================================================================
+
+// MockWebhookTester for testing webhook test endpoint
+type MockWebhookTester struct {
+	mu          sync.Mutex
+	lastURL     string
+	lastSecret  string
+	shouldError bool
+	statusCode  int
+}
+
+func NewMockWebhookTester() *MockWebhookTester {
+	return &MockWebhookTester{statusCode: 200}
+}
+
+func (m *MockWebhookTester) TestWebhook(ctx context.Context, webhookURL, secret string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastURL = webhookURL
+	m.lastSecret = secret
+	if m.shouldError {
+		return 0, context.DeadlineExceeded
+	}
+	return m.statusCode, nil
+}
+
+func (m *MockWebhookTester) SetShouldError(shouldError bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.shouldError = shouldError
+}
+
+func (m *MockWebhookTester) SetStatusCode(code int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.statusCode = code
+}
+
+func (m *MockWebhookTester) GetLastURL() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastURL
+}
+
+func TestRouter_PostWebhookTest_WithoutAuth_RedirectsToLogin(t *testing.T) {
+	router := NewRouter()
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/some-id/webhook/test", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected redirect status 303, got %d", rr.Code)
+	}
+	if rr.Header().Get("Location") != "/login" {
+		t.Errorf("Expected redirect to /login, got %s", rr.Header().Get("Location"))
+	}
+}
+
+func TestRouter_PostWebhookTest_NotFound_Returns404(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	webhookTester := NewMockWebhookTester()
+	router := NewRouterWithWebhookTester(userStore, repoStore, nil, nil, nil, "https://example.com", webhookTester)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/nonexistent-id/webhook/test", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404, got %d", rr.Code)
+	}
+}
+
+func TestRouter_PostWebhookTest_OtherUsersRepo_Returns404(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	webhookTester := NewMockWebhookTester()
+	router := NewRouterWithWebhookTester(userStore, repoStore, nil, nil, nil, "https://example.com", webhookTester)
+
+	user1, _ := userStore.CreateUser(context.Background(), "user1@example.com", hashPassword("password123"))
+	user2, _ := userStore.CreateUser(context.Background(), "user2@example.com", hashPassword("password123"))
+
+	// Create repo for user1
+	repo, _ := repoStore.CreateRepository(context.Background(), user1.ID, "https://github.com/user1/privaterepo", "secret")
+
+	// Try to test webhook as user2
+	token, _ := generateToken(user2.ID, user2.Email)
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/"+repo.ID+"/webhook/test", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404 for other user's repo, got %d", rr.Code)
+	}
+}
+
+func TestRouter_PostWebhookTest_Success_ReturnsOK(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	webhookTester := NewMockWebhookTester()
+	router := NewRouterWithWebhookTester(userStore, repoStore, nil, nil, nil, "https://example.com", webhookTester)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	repo, _ := repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/owner/myrepo", "webhook-secret")
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/"+repo.ID+"/webhook/test", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	if !strings.Contains(body, "success") && !strings.Contains(body, "Success") {
+		t.Errorf("Expected success message in response, got: %s", body)
+	}
+
+	// Verify the webhook tester was called with correct URL
+	expectedURL := "https://example.com/webhook/" + repo.ID
+	if webhookTester.GetLastURL() != expectedURL {
+		t.Errorf("Expected webhook tester to be called with %s, got %s", expectedURL, webhookTester.GetLastURL())
+	}
+}
+
+func TestRouter_PostWebhookTest_WebhookFails_ShowsError(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	webhookTester := NewMockWebhookTester()
+	webhookTester.SetShouldError(true)
+	router := NewRouterWithWebhookTester(userStore, repoStore, nil, nil, nil, "https://example.com", webhookTester)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	repo, _ := repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/owner/myrepo", "webhook-secret")
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/"+repo.ID+"/webhook/test", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	if !strings.Contains(strings.ToLower(body), "failed") && !strings.Contains(strings.ToLower(body), "error") {
+		t.Errorf("Expected error message in response, got: %s", body)
+	}
+}
+
+func TestRouter_PostWebhookTest_WebhookReturnsNon200_ShowsError(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	webhookTester := NewMockWebhookTester()
+	webhookTester.SetStatusCode(500)
+	router := NewRouterWithWebhookTester(userStore, repoStore, nil, nil, nil, "https://example.com", webhookTester)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	repo, _ := repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/owner/myrepo", "webhook-secret")
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/"+repo.ID+"/webhook/test", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	// Should indicate failure with status code
+	if !strings.Contains(body, "500") && !strings.Contains(strings.ToLower(body), "failed") {
+		t.Errorf("Expected error with status code in response, got: %s", body)
+	}
+}
+
+func TestRouter_GetWebhookTest_MethodNotAllowed(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	webhookTester := NewMockWebhookTester()
+	router := NewRouterWithWebhookTester(userStore, repoStore, nil, nil, nil, "https://example.com", webhookTester)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	repo, _ := repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/owner/myrepo", "webhook-secret")
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	// GET instead of POST
+	req := httptest.NewRequest(http.MethodGet, "/repositories/"+repo.ID+"/webhook/test", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("Expected status 405, got %d", rr.Code)
+	}
+}

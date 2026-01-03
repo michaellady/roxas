@@ -2,13 +2,17 @@ package web
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"fmt"
 	"html/template"
 	"io/fs"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/mikelady/roxas/internal/auth"
 	"github.com/mikelady/roxas/internal/handlers"
@@ -88,6 +92,54 @@ type PostLister interface {
 	ListPostsByUser(ctx context.Context, userID string) ([]*DashboardPost, error)
 }
 
+// WebhookTester interface for testing webhook connectivity
+type WebhookTester interface {
+	TestWebhook(ctx context.Context, webhookURL, secret string) (statusCode int, err error)
+}
+
+// HTTPWebhookTester implements WebhookTester using real HTTP requests
+type HTTPWebhookTester struct {
+	client *http.Client
+}
+
+// NewHTTPWebhookTester creates a new HTTP webhook tester with a default client
+func NewHTTPWebhookTester() *HTTPWebhookTester {
+	return &HTTPWebhookTester{
+		client: &http.Client{
+			Timeout: 10 * time.Second,
+		},
+	}
+}
+
+// TestWebhook sends a test ping to the webhook URL
+func (t *HTTPWebhookTester) TestWebhook(ctx context.Context, webhookURL, secret string) (int, error) {
+	// Create a simple test payload (similar to GitHub ping event)
+	payload := []byte(`{"zen": "Webhook test ping", "hook_id": 0}`)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, strings.NewReader(string(payload)))
+	if err != nil {
+		return 0, err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", "ping")
+	req.Header.Set("X-GitHub-Delivery", "test-delivery-id")
+
+	// Compute HMAC signature (same algorithm GitHub uses)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(payload)
+	signature := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+	req.Header.Set("X-Hub-Signature-256", signature)
+
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	return resp.StatusCode, nil
+}
+
 // DashboardCommit represents a commit for the dashboard
 type DashboardCommit struct {
 	ID      string
@@ -106,13 +158,14 @@ type DashboardPost struct {
 
 // Router is the main HTTP router for the web UI
 type Router struct {
-	mux          *http.ServeMux
-	userStore    UserStore
-	repoStore    RepositoryStore
-	commitLister CommitLister
-	postLister   PostLister
-	secretGen    SecretGenerator
-	webhookURL   string
+	mux           *http.ServeMux
+	userStore     UserStore
+	repoStore     RepositoryStore
+	commitLister  CommitLister
+	postLister    PostLister
+	secretGen     SecretGenerator
+	webhookURL    string
+	webhookTester WebhookTester
 }
 
 // NewRouter creates a new web router with all routes configured (no user store)
@@ -149,6 +202,22 @@ func NewRouterWithAllStores(userStore UserStore, repoStore RepositoryStore, comm
 	return r
 }
 
+// NewRouterWithWebhookTester creates a new web router with webhook tester support
+func NewRouterWithWebhookTester(userStore UserStore, repoStore RepositoryStore, commitLister CommitLister, postLister PostLister, secretGen SecretGenerator, webhookURL string, webhookTester WebhookTester) *Router {
+	r := &Router{
+		mux:           http.NewServeMux(),
+		userStore:     userStore,
+		repoStore:     repoStore,
+		commitLister:  commitLister,
+		postLister:    postLister,
+		secretGen:     secretGen,
+		webhookURL:    webhookURL,
+		webhookTester: webhookTester,
+	}
+	r.setupRoutes()
+	return r
+}
+
 // ServeHTTP implements http.Handler
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.mux.ServeHTTP(w, req)
@@ -171,6 +240,7 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("/repositories/{id}", r.handleRepositoryView)
 	r.mux.HandleFunc("GET /repositories/{id}/edit", r.handleRepositoryEdit)
 	r.mux.HandleFunc("POST /repositories/{id}/edit", r.handleRepositoryEditPost)
+	r.mux.HandleFunc("/repositories/{id}/webhook/test", r.handleWebhookTest)
 }
 
 func (r *Router) handleHome(w http.ResponseWriter, req *http.Request) {
@@ -939,6 +1009,107 @@ func (r *Router) handleRepositoryEditPost(w http.ResponseWriter, req *http.Reque
 
 	// Redirect to repositories list
 	http.Redirect(w, req, "/repositories", http.StatusSeeOther)
+}
+
+// WebhookTestResult holds the result of a webhook test
+type WebhookTestResult struct {
+	Success    bool
+	StatusCode int
+	Error      string
+}
+
+func (r *Router) handleWebhookTest(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Only accept POST requests
+	if req.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Get repository ID from path
+	repoID := req.PathValue("id")
+	if repoID == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Check if store is configured
+	if r.repoStore == nil {
+		http.Error(w, "Repository store not configured", http.StatusInternalServerError)
+		return
+	}
+
+	// Get repository
+	repo, err := r.repoStore.GetRepositoryByID(req.Context(), repoID)
+	if err != nil {
+		http.Error(w, "Failed to load repository", http.StatusInternalServerError)
+		return
+	}
+
+	// Repository not found
+	if repo == nil {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Verify the repository belongs to the current user
+	if repo.UserID != claims.UserID {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Build webhook URL
+	webhookURL := fmt.Sprintf("%s/webhook/%s", r.webhookURL, repo.ID)
+
+	// Test the webhook
+	var result WebhookTestResult
+	if r.webhookTester != nil {
+		statusCode, err := r.webhookTester.TestWebhook(req.Context(), webhookURL, repo.WebhookSecret)
+		if err != nil {
+			result = WebhookTestResult{
+				Success: false,
+				Error:   fmt.Sprintf("Connection failed: %v", err),
+			}
+		} else if statusCode >= 200 && statusCode < 300 {
+			result = WebhookTestResult{
+				Success:    true,
+				StatusCode: statusCode,
+			}
+		} else {
+			result = WebhookTestResult{
+				Success:    false,
+				StatusCode: statusCode,
+				Error:      fmt.Sprintf("Webhook returned status %d", statusCode),
+			}
+		}
+	} else {
+		result = WebhookTestResult{
+			Success: false,
+			Error:   "Webhook tester not configured",
+		}
+	}
+
+	// Return JSON response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if result.Success {
+		fmt.Fprintf(w, `{"success": true, "status_code": %d}`, result.StatusCode)
+	} else {
+		fmt.Fprintf(w, `{"success": false, "error": %q}`, result.Error)
+	}
 }
 
 func (r *Router) renderPage(w http.ResponseWriter, page string, data PageData) {
