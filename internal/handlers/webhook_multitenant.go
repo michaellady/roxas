@@ -34,10 +34,16 @@ type CommitStore interface {
 	GetCommitBySHA(ctx context.Context, repoID, sha string) (*StoredCommit, error)
 }
 
+// DeliveryStore defines the interface for recording webhook deliveries
+type DeliveryStore interface {
+	RecordDelivery(ctx context.Context, repoID, eventType string, payload []byte, statusCode int, errorMessage string, success bool) error
+}
+
 // MultiTenantWebhookHandler handles GitHub webhooks for multiple repositories
 type MultiTenantWebhookHandler struct {
-	repoStore   WebhookRepositoryStore
-	commitStore CommitStore
+	repoStore     WebhookRepositoryStore
+	commitStore   CommitStore
+	deliveryStore DeliveryStore
 }
 
 // NewMultiTenantWebhookHandler creates a new multi-tenant webhook handler
@@ -45,6 +51,15 @@ func NewMultiTenantWebhookHandler(repoStore WebhookRepositoryStore, commitStore 
 	return &MultiTenantWebhookHandler{
 		repoStore:   repoStore,
 		commitStore: commitStore,
+	}
+}
+
+// NewMultiTenantWebhookHandlerWithDelivery creates a handler with delivery recording
+func NewMultiTenantWebhookHandlerWithDelivery(repoStore WebhookRepositoryStore, commitStore CommitStore, deliveryStore DeliveryStore) *MultiTenantWebhookHandler {
+	return &MultiTenantWebhookHandler{
+		repoStore:     repoStore,
+		commitStore:   commitStore,
+		deliveryStore: deliveryStore,
 	}
 }
 
@@ -88,6 +103,10 @@ func (h *MultiTenantWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Extract event type EARLY - before signature validation
+	// This ensures we have the eventType for delivery recording even on auth failures
+	eventType := r.Header.Get("X-GitHub-Event")
+
 	// Look up repository by ID (multi-tenant boundary)
 	repo, err := h.repoStore.GetRepositoryByID(r.Context(), repoID)
 	if err != nil {
@@ -110,20 +129,20 @@ func (h *MultiTenantWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 	// Validate GitHub signature using repository's webhook secret
 	signature := r.Header.Get("X-Hub-Signature-256")
 	if signature == "" {
+		h.recordDelivery(r.Context(), repoID, eventType, body, http.StatusUnauthorized, "missing signature", false)
 		h.writeError(w, http.StatusUnauthorized, "missing signature")
 		return
 	}
 
 	if !h.validateSignature(body, signature, repo.WebhookSecret) {
+		h.recordDelivery(r.Context(), repoID, eventType, body, http.StatusUnauthorized, "invalid signature", false)
 		h.writeError(w, http.StatusUnauthorized, "invalid signature")
 		return
 	}
 
-	// Check event type
-	eventType := r.Header.Get("X-GitHub-Event")
-
 	// Handle ping event (GitHub health check)
 	if eventType == "ping" {
+		h.recordDelivery(r.Context(), repoID, eventType, body, http.StatusOK, "", true)
 		h.writeJSON(w, http.StatusOK, WebhookResponse{
 			Status:  "ok",
 			Message: "pong",
@@ -135,10 +154,12 @@ func (h *MultiTenantWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 	if eventType == "push" {
 		commitsProcessed, err := h.handlePushEvent(r, body, repo)
 		if err != nil {
+			h.recordDelivery(r.Context(), repoID, eventType, body, http.StatusBadRequest, err.Error(), false)
 			h.writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 
+		h.recordDelivery(r.Context(), repoID, eventType, body, http.StatusOK, "", true)
 		h.writeJSON(w, http.StatusOK, WebhookResponse{
 			Status:  "ok",
 			Message: "commits processed",
@@ -148,6 +169,7 @@ func (h *MultiTenantWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 	}
 
 	// Unknown event type - acknowledge but ignore
+	h.recordDelivery(r.Context(), repoID, eventType, body, http.StatusOK, "", true)
 	h.writeJSON(w, http.StatusOK, WebhookResponse{
 		Status:  "ok",
 		Message: "event ignored",
@@ -222,4 +244,13 @@ func (h *MultiTenantWebhookHandler) writeJSON(w http.ResponseWriter, status int,
 
 func (h *MultiTenantWebhookHandler) writeError(w http.ResponseWriter, status int, message string) {
 	h.writeJSON(w, status, ErrorResponse{Error: message})
+}
+
+// recordDelivery records a webhook delivery if a delivery store is configured
+func (h *MultiTenantWebhookHandler) recordDelivery(ctx context.Context, repoID, eventType string, payload []byte, statusCode int, errorMessage string, success bool) {
+	if h.deliveryStore == nil {
+		return
+	}
+	// Fire and forget - don't block webhook response on delivery recording
+	h.deliveryStore.RecordDelivery(ctx, repoID, eventType, payload, statusCode, errorMessage, success)
 }
