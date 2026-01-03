@@ -757,6 +757,16 @@ func (s *MockRepositoryStoreForWeb) GetRepositoryByID(ctx context.Context, repoI
 	return nil, nil
 }
 
+func (s *MockRepositoryStoreForWeb) UpdateRepository(ctx context.Context, repoID, name string, isActive bool) (*handlers.Repository, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if repo, ok := s.repos[repoID]; ok {
+		repo.Name = name
+		repo.IsActive = isActive
+		return repo, nil
+	}
+	return nil, nil
+}
 // MockCommit for web tests (alias for DashboardCommit)
 type MockCommit = DashboardCommit
 
@@ -1813,5 +1823,231 @@ func TestRouter_GetRepositoryView_OtherUsersRepo_Returns404(t *testing.T) {
 
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("Expected status 404 for other user's repo, got %d", rr.Code)
+	}
+}
+
+// Repository Edit Tests
+
+func TestRouter_GetRepositoryEdit_WithoutAuth_RedirectsToLogin(t *testing.T) {
+	router := NewRouter()
+
+	req := httptest.NewRequest(http.MethodGet, "/repositories/test-id/edit", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected status 303, got %d", rr.Code)
+	}
+
+	location := rr.Header().Get("Location")
+	if location != "/login" {
+		t.Errorf("Expected redirect to /login, got %s", location)
+	}
+}
+
+func TestRouter_GetRepositoryEdit_WithAuth_ShowsEditForm(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, nil, "")
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	// Create a repository
+	repo, _ := repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/user/myrepo", "secret")
+
+	req := httptest.NewRequest(http.MethodGet, "/repositories/"+repo.ID+"/edit", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	if !strings.Contains(body, "Edit Repository") {
+		t.Errorf("Expected edit form title in response")
+	}
+}
+
+func TestRouter_GetRepositoryEdit_NotFound_Returns404(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, nil, "")
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/repositories/nonexistent-id/edit", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404, got %d", rr.Code)
+	}
+}
+
+func TestRouter_GetRepositoryEdit_OtherUsersRepo_Returns404(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, nil, "")
+
+	user1, _ := userStore.CreateUser(context.Background(), "user1@example.com", hashPassword("password123"))
+	user2, _ := userStore.CreateUser(context.Background(), "user2@example.com", hashPassword("password123"))
+
+	// Create repo for user2
+	repo, _ := repoStore.CreateRepository(context.Background(), user2.ID, "https://github.com/user2/private", "secret")
+
+	// Try to access as user1
+	token, _ := generateToken(user1.ID, user1.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/repositories/"+repo.ID+"/edit", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should return 404 (not 403) to avoid revealing repo existence
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404, got %d", rr.Code)
+	}
+}
+
+func TestRouter_PostRepositoryEdit_WithoutAuth_RedirectsToLogin(t *testing.T) {
+	router := NewRouter()
+
+	form := url.Values{}
+	form.Set("name", "New Name")
+	form.Set("is_active", "true")
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/test-id/edit", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected status 303, got %d", rr.Code)
+	}
+
+	location := rr.Header().Get("Location")
+	if location != "/login" {
+		t.Errorf("Expected redirect to /login, got %s", location)
+	}
+}
+
+func TestRouter_PostRepositoryEdit_ValidData_UpdatesAndRedirects(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, nil, "")
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	// Create a repository
+	repo, _ := repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/user/myrepo", "secret")
+
+	form := url.Values{}
+	form.Set("name", "Updated Name")
+	form.Set("is_active", "true")
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/"+repo.ID+"/edit", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should redirect to repositories list
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected status 303, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	location := rr.Header().Get("Location")
+	if location != "/repositories" {
+		t.Errorf("Expected redirect to /repositories, got %s", location)
+	}
+
+	// Verify repo was updated
+	updatedRepo, _ := repoStore.GetRepositoryByID(context.Background(), repo.ID)
+	if updatedRepo.Name != "Updated Name" {
+		t.Errorf("Expected name to be updated, got %s", updatedRepo.Name)
+	}
+	if !updatedRepo.IsActive {
+		t.Errorf("Expected is_active to be true")
+	}
+}
+
+func TestRouter_PostRepositoryEdit_EmptyName_ShowsError(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, nil, "")
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	// Create a repository
+	repo, _ := repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/user/myrepo", "secret")
+
+	form := url.Values{}
+	form.Set("name", "")
+	form.Set("is_active", "true")
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/"+repo.ID+"/edit", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should return 200 with error
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	if !strings.Contains(strings.ToLower(body), "required") {
+		t.Errorf("Expected error about name being required")
+	}
+}
+
+func TestRouter_PostRepositoryEdit_ToggleInactive_UpdatesStatus(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, nil, "")
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	// Create a repository (defaults to active)
+	repo, _ := repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/user/myrepo", "secret")
+	repo.IsActive = true
+
+	// Submit form without is_active (checkbox unchecked = not sent)
+	form := url.Values{}
+	form.Set("name", "My Repo")
+	// Note: is_active not set, simulating unchecked checkbox
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/"+repo.ID+"/edit", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should redirect
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected status 303, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Verify repo was updated to inactive
+	updatedRepo, _ := repoStore.GetRepositoryByID(context.Background(), repo.ID)
+	if updatedRepo.IsActive {
+		t.Errorf("Expected is_active to be false when checkbox unchecked")
 	}
 }

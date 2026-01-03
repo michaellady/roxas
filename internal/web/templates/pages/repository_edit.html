@@ -1,0 +1,36 @@
+{{define "content"}}
+<div class="auth-container">
+    <h1>Edit Repository</h1>
+    {{if .Error}}
+    <div class="alert alert-error">{{.Error}}</div>
+    {{end}}
+    {{with .Data}}
+    <form action="/repositories/{{.Repository.ID}}/edit" method="POST" class="auth-form">
+        <div class="form-group">
+            <label for="name">Repository Name</label>
+            <input type="text" id="name" name="name" value="{{.Repository.Name}}" required
+                   placeholder="My Repository"
+                   maxlength="255">
+            <p class="form-help">A friendly name for this repository</p>
+        </div>
+        <div class="form-group">
+            <label>GitHub URL</label>
+            <p class="form-static">{{.Repository.GitHubURL}}</p>
+            <p class="form-help">The GitHub URL cannot be changed</p>
+        </div>
+        <div class="form-group">
+            <label for="is_active" class="checkbox-label">
+                <input type="checkbox" id="is_active" name="is_active" value="true" {{if .Repository.IsActive}}checked{{end}}>
+                Active
+            </label>
+            <p class="form-help">When inactive, webhooks for this repository will be ignored</p>
+        </div>
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Save Changes</button>
+            <a href="/repositories" class="btn btn-secondary">Cancel</a>
+        </div>
+    </form>
+    {{end}}
+    <p class="auth-link"><a href="/repositories">&larr; Back to Repositories</a></p>
+</div>
+{{end}}

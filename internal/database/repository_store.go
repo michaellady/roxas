@@ -31,13 +31,14 @@ func NewRepositoryStore(pool *Pool) *RepositoryStore {
 func (s *RepositoryStore) CreateRepository(ctx context.Context, userID, githubURL, webhookSecret string) (*handlers.Repository, error) {
 	var repo handlers.Repository
 	var createdAt time.Time
+	var name *string
 
 	err := s.pool.QueryRow(ctx,
 		`INSERT INTO repositories (user_id, github_url, webhook_secret)
 		 VALUES ($1, $2, $3)
-		 RETURNING id, user_id, github_url, webhook_secret, created_at`,
+		 RETURNING id, user_id, github_url, webhook_secret, name, is_active, created_at`,
 		userID, githubURL, webhookSecret,
-	).Scan(&repo.ID, &repo.UserID, &repo.GitHubURL, &repo.WebhookSecret, &createdAt)
+	).Scan(&repo.ID, &repo.UserID, &repo.GitHubURL, &repo.WebhookSecret, &name, &repo.IsActive, &createdAt)
 
 	if err != nil {
 		// Check for unique constraint violation (duplicate repo for user)
@@ -48,6 +49,9 @@ func (s *RepositoryStore) CreateRepository(ctx context.Context, userID, githubUR
 		return nil, err
 	}
 
+	if name != nil {
+		repo.Name = *name
+	}
 	repo.CreatedAt = createdAt
 	return &repo, nil
 }
@@ -56,13 +60,14 @@ func (s *RepositoryStore) CreateRepository(ctx context.Context, userID, githubUR
 func (s *RepositoryStore) GetRepositoryByUserAndURL(ctx context.Context, userID, githubURL string) (*handlers.Repository, error) {
 	var repo handlers.Repository
 	var createdAt time.Time
+	var name *string
 
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, user_id, github_url, webhook_secret, created_at
+		`SELECT id, user_id, github_url, webhook_secret, name, is_active, created_at
 		 FROM repositories
 		 WHERE user_id = $1 AND github_url = $2`,
 		userID, githubURL,
-	).Scan(&repo.ID, &repo.UserID, &repo.GitHubURL, &repo.WebhookSecret, &createdAt)
+	).Scan(&repo.ID, &repo.UserID, &repo.GitHubURL, &repo.WebhookSecret, &name, &repo.IsActive, &createdAt)
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -71,6 +76,9 @@ func (s *RepositoryStore) GetRepositoryByUserAndURL(ctx context.Context, userID,
 		return nil, err
 	}
 
+	if name != nil {
+		repo.Name = *name
+	}
 	repo.CreatedAt = createdAt
 	return &repo, nil
 }
@@ -78,7 +86,7 @@ func (s *RepositoryStore) GetRepositoryByUserAndURL(ctx context.Context, userID,
 // ListRepositoriesByUser retrieves all repositories for a user
 func (s *RepositoryStore) ListRepositoriesByUser(ctx context.Context, userID string) ([]*handlers.Repository, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, user_id, github_url, webhook_secret, created_at
+		`SELECT id, user_id, github_url, webhook_secret, name, is_active, created_at
 		 FROM repositories
 		 WHERE user_id = $1
 		 ORDER BY created_at DESC`,
@@ -93,8 +101,12 @@ func (s *RepositoryStore) ListRepositoriesByUser(ctx context.Context, userID str
 	for rows.Next() {
 		var repo handlers.Repository
 		var createdAt time.Time
-		if err := rows.Scan(&repo.ID, &repo.UserID, &repo.GitHubURL, &repo.WebhookSecret, &createdAt); err != nil {
+		var name *string
+		if err := rows.Scan(&repo.ID, &repo.UserID, &repo.GitHubURL, &repo.WebhookSecret, &name, &repo.IsActive, &createdAt); err != nil {
 			return nil, err
+		}
+		if name != nil {
+			repo.Name = *name
 		}
 		repo.CreatedAt = createdAt
 		repos = append(repos, &repo)
@@ -111,13 +123,14 @@ func (s *RepositoryStore) ListRepositoriesByUser(ctx context.Context, userID str
 func (s *RepositoryStore) GetRepositoryByID(ctx context.Context, repoID string) (*handlers.Repository, error) {
 	var repo handlers.Repository
 	var createdAt time.Time
+	var name *string
 
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, user_id, github_url, webhook_secret, created_at
+		`SELECT id, user_id, github_url, webhook_secret, name, is_active, created_at
 		 FROM repositories
 		 WHERE id = $1`,
 		repoID,
-	).Scan(&repo.ID, &repo.UserID, &repo.GitHubURL, &repo.WebhookSecret, &createdAt)
+	).Scan(&repo.ID, &repo.UserID, &repo.GitHubURL, &repo.WebhookSecret, &name, &repo.IsActive, &createdAt)
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -126,6 +139,37 @@ func (s *RepositoryStore) GetRepositoryByID(ctx context.Context, repoID string) 
 		return nil, err
 	}
 
+	if name != nil {
+		repo.Name = *name
+	}
+	repo.CreatedAt = createdAt
+	return &repo, nil
+}
+
+// UpdateRepository updates a repository's name and active status
+func (s *RepositoryStore) UpdateRepository(ctx context.Context, repoID, name string, isActive bool) (*handlers.Repository, error) {
+	var repo handlers.Repository
+	var createdAt time.Time
+	var namePtr *string
+
+	err := s.pool.QueryRow(ctx,
+		`UPDATE repositories
+		 SET name = $2, is_active = $3
+		 WHERE id = $1
+		 RETURNING id, user_id, github_url, webhook_secret, name, is_active, created_at`,
+		repoID, name, isActive,
+	).Scan(&repo.ID, &repo.UserID, &repo.GitHubURL, &repo.WebhookSecret, &namePtr, &repo.IsActive, &createdAt)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	if namePtr != nil {
+		repo.Name = *namePtr
+	}
 	repo.CreatedAt = createdAt
 	return &repo, nil
 }
