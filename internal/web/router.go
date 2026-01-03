@@ -43,7 +43,7 @@ var templateFuncs = template.FuncMap{
 
 func init() {
 	pageTemplates = make(map[string]*template.Template)
-	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "connections.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "repository_delete.html", "webhook_regenerate.html", "webhook_deliveries.html"}
+	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "connections.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "repository_delete.html", "webhook_regenerate.html", "webhook_deliveries.html", "connection_disconnect.html"}
 
 	for _, page := range pages {
 		// Clone the base template and parse the page with functions
@@ -173,6 +173,26 @@ type WebhookDeliveryStore interface {
 	ListDeliveriesByRepository(ctx context.Context, repoID string, limit int) ([]*WebhookDelivery, error)
 }
 
+// ConnectionService interface for connection management operations
+type ConnectionService interface {
+	GetConnection(ctx context.Context, userID, platform string) (*Connection, error)
+	Disconnect(ctx context.Context, userID, platform string) error
+}
+
+// Connection represents a user's connection to a social platform
+type Connection struct {
+	Platform    string
+	Status      string
+	DisplayName string
+	ProfileURL  string
+}
+
+// Connection status constants
+const (
+	ConnectionStatusConnected    = "connected"
+	ConnectionStatusDisconnected = "disconnected"
+)
+
 // DashboardCommit represents a commit for the dashboard
 type DashboardCommit struct {
 	ID      string
@@ -222,6 +242,7 @@ type Router struct {
 	webhookTester        WebhookTester
 	webhookDeliveryStore WebhookDeliveryStore
 	connectionLister     ConnectionLister
+	connectionService    ConnectionService
 }
 
 // NewRouter creates a new web router with all routes configured (no user store)
@@ -301,6 +322,17 @@ func NewRouterWithConnectionLister(userStore UserStore, connectionLister Connect
 	return r
 }
 
+// NewRouterWithConnectionService creates a new web router with connection service
+func NewRouterWithConnectionService(userStore UserStore, connectionService ConnectionService) *Router {
+	r := &Router{
+		mux:               http.NewServeMux(),
+		userStore:         userStore,
+		connectionService: connectionService,
+	}
+	r.setupRoutes()
+	return r
+}
+
 // ServeHTTP implements http.Handler
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.mux.ServeHTTP(w, req)
@@ -329,6 +361,10 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("/repositories/{id}/webhook/test", r.handleWebhookTest)
 	r.mux.HandleFunc("/repositories/{id}/webhook/regenerate", r.handleWebhookRegenerate)
 	r.mux.HandleFunc("GET /repositories/{id}/webhooks", r.handleWebhookDeliveries)
+
+	// Connection management
+	r.mux.HandleFunc("GET /connections/{platform}/disconnect", r.handleConnectionDisconnect)
+	r.mux.HandleFunc("POST /connections/{platform}/disconnect", r.handleConnectionDisconnectPost)
 }
 
 func (r *Router) handleHome(w http.ResponseWriter, req *http.Request) {
@@ -1618,4 +1654,133 @@ func (r *Router) handleWebhookDeliveries(w http.ResponseWriter, req *http.Reques
 			RepoName:   repoName,
 		},
 	})
+}
+
+// ConnectionDisconnectData holds data for the connection disconnect page
+type ConnectionDisconnectData struct {
+	Platform    string
+	DisplayName string
+	ProfileURL  string
+}
+
+func (r *Router) handleConnectionDisconnect(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get platform from path
+	platform := req.PathValue("platform")
+	if platform == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Check if connection service is available
+	if r.connectionService == nil {
+		r.renderPage(w, "connection_disconnect.html", PageData{
+			Title: "Disconnect " + platform,
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Connection service not configured",
+		})
+		return
+	}
+
+	// Get the connection
+	conn, err := r.connectionService.GetConnection(req.Context(), claims.UserID, platform)
+	if err != nil {
+		http.NotFound(w, req)
+		return
+	}
+
+	r.renderPage(w, "connection_disconnect.html", PageData{
+		Title: "Disconnect " + platform,
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+		Data: &ConnectionDisconnectData{
+			Platform:    conn.Platform,
+			DisplayName: conn.DisplayName,
+			ProfileURL:  conn.ProfileURL,
+		},
+	})
+}
+
+func (r *Router) handleConnectionDisconnectPost(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get platform from path
+	platform := req.PathValue("platform")
+	if platform == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Check if connection service is available
+	if r.connectionService == nil {
+		r.renderPage(w, "connection_disconnect.html", PageData{
+			Title: "Disconnect " + platform,
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Connection service not configured",
+		})
+		return
+	}
+
+	// Get the connection first to verify it exists
+	conn, err := r.connectionService.GetConnection(req.Context(), claims.UserID, platform)
+	if err != nil {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Disconnect the account
+	err = r.connectionService.Disconnect(req.Context(), claims.UserID, platform)
+	if err != nil {
+		r.renderPage(w, "connection_disconnect.html", PageData{
+			Title: "Disconnect " + platform,
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Failed to disconnect account",
+			Data: &ConnectionDisconnectData{
+				Platform:    conn.Platform,
+				DisplayName: conn.DisplayName,
+				ProfileURL:  conn.ProfileURL,
+			},
+		})
+		return
+	}
+
+	// Redirect to dashboard with success message
+	// Using query param for flash message since we don't have session-based flash
+	http.Redirect(w, req, "/dashboard?disconnected="+platform, http.StatusSeeOther)
 }

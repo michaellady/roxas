@@ -1040,3 +1040,212 @@ func TestBrowser_WebhookDeliveries_OtherUserRepo(t *testing.T) {
 
 	t.Log("PASSED: User cannot view another user's webhook deliveries")
 }
+
+// TestBrowser_ConnectionDisconnect tests the connection disconnect confirmation flow in a real browser.
+// Tests: auth required, confirmation page display, disconnect action, redirect after disconnect.
+func TestBrowser_ConnectionDisconnect(t *testing.T) {
+	// Setup test server with connection service
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Launch browser
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	testEmail := "disconnect-browser-test@example.com"
+	testPassword := "securepassword123"
+
+	// =========================================================================
+	// Step 1: Create user and add connection
+	// =========================================================================
+	t.Log("Step 1: Create user and add connection")
+
+	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	inputText(t, page, "#confirm_password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Get user and add a connection
+	user, err := userStore.GetUserByEmail(context.Background(), testEmail)
+	if err != nil || user == nil {
+		t.Fatalf("Step 1 FAILED: Could not get user: %v", err)
+	}
+	connService.AddConnection(user.ID, "twitter", "@testuser", "https://twitter.com/testuser")
+	t.Log("Step 1 PASSED: Created user and added Twitter connection")
+
+	// =========================================================================
+	// Step 2: Verify auth required for disconnect page
+	// =========================================================================
+	t.Log("Step 2: Verify auth required for disconnect page")
+
+	page.MustNavigate(ts.URL + "/connections/twitter/disconnect").MustWaitLoad()
+	page.MustWaitStable()
+
+	currentURL := page.MustInfo().URL
+	if !strings.HasSuffix(currentURL, "/login") {
+		t.Fatalf("Step 2 FAILED: Expected redirect to /login, got: %s", currentURL)
+	}
+	t.Log("Step 2 PASSED: Unauthenticated access redirects to login")
+
+	// =========================================================================
+	// Step 3: Login and view disconnect confirmation page
+	// =========================================================================
+	t.Log("Step 3: Login and view disconnect confirmation page")
+
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Navigate to disconnect page
+	page.MustNavigate(ts.URL + "/connections/twitter/disconnect").MustWaitLoad()
+	page.MustWaitStable()
+
+	// Verify page content
+	h1 := page.MustElement("h1").MustText()
+	if h1 != "Disconnect Account" {
+		t.Fatalf("Step 3 FAILED: Expected h1 'Disconnect Account', got: %s", h1)
+	}
+
+	bodyText := page.MustElement("body").MustText()
+	if !strings.Contains(bodyText, "twitter") {
+		t.Fatal("Step 3 FAILED: Expected platform 'twitter' in page")
+	}
+	if !strings.Contains(bodyText, "@testuser") {
+		t.Fatal("Step 3 FAILED: Expected display name '@testuser' in page")
+	}
+	if !strings.Contains(bodyText, "Are you sure") {
+		t.Fatal("Step 3 FAILED: Expected confirmation text in page")
+	}
+	t.Log("Step 3 PASSED: Disconnect confirmation page displays correctly")
+
+	// =========================================================================
+	// Step 4: Verify warning message is displayed
+	// =========================================================================
+	t.Log("Step 4: Verify warning message is displayed")
+
+	warningAlert := page.MustElement(".alert-warning")
+	warningText := warningAlert.MustText()
+	if !strings.Contains(warningText, "Warning") {
+		t.Fatalf("Step 4 FAILED: Expected warning message, got: %s", warningText)
+	}
+	t.Log("Step 4 PASSED: Warning message displayed")
+
+	// =========================================================================
+	// Step 5: Verify cancel button navigates back
+	// =========================================================================
+	t.Log("Step 5: Verify cancel button navigates back")
+
+	cancelBtn := page.MustElement("a.btn-secondary")
+	cancelText := cancelBtn.MustText()
+	if cancelText != "Cancel" {
+		t.Fatalf("Step 5 FAILED: Expected 'Cancel' button, got: %s", cancelText)
+	}
+	t.Log("Step 5 PASSED: Cancel button present")
+
+	// =========================================================================
+	// Step 6: Click disconnect button and verify redirect
+	// =========================================================================
+	t.Log("Step 6: Click disconnect button and verify redirect")
+
+	// Find and click the disconnect button (submit form)
+	disconnectBtn := page.MustElement("button.btn-danger")
+	disconnectText := disconnectBtn.MustText()
+	if !strings.Contains(disconnectText, "Disconnect") {
+		t.Fatalf("Step 6 FAILED: Expected 'Disconnect' button, got: %s", disconnectText)
+	}
+
+	disconnectBtn.MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Should redirect to dashboard with success param
+	currentURL = page.MustInfo().URL
+	if !strings.Contains(currentURL, "/dashboard") {
+		t.Fatalf("Step 6 FAILED: Expected redirect to /dashboard, got: %s", currentURL)
+	}
+	if !strings.Contains(currentURL, "disconnected=twitter") {
+		t.Fatalf("Step 6 FAILED: Expected 'disconnected=twitter' in URL, got: %s", currentURL)
+	}
+	t.Log("Step 6 PASSED: Disconnect successful, redirected to dashboard")
+
+	// =========================================================================
+	// Step 7: Verify connection is removed
+	// =========================================================================
+	t.Log("Step 7: Verify connection is removed")
+
+	_, err = connService.GetConnection(context.Background(), user.ID, "twitter")
+	if err == nil {
+		t.Fatal("Step 7 FAILED: Connection should have been removed")
+	}
+	t.Log("Step 7 PASSED: Connection successfully removed")
+
+	t.Log("=== CONNECTION DISCONNECT BROWSER E2E TEST PASSED ===")
+}
+
+// TestBrowser_ConnectionDisconnect_NotFound tests that disconnect returns 404 for non-existent connections.
+func TestBrowser_ConnectionDisconnect_NotFound(t *testing.T) {
+	// Setup test server
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	testEmail := "no-conn-test@example.com"
+	testPassword := "securepassword123"
+
+	// Create user (no connection)
+	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	inputText(t, page, "#confirm_password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Login
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// =========================================================================
+	// Test: Try to disconnect non-existent connection
+	// =========================================================================
+	t.Log("Testing: Disconnect non-existent connection returns 404")
+
+	page.MustNavigate(ts.URL + "/connections/twitter/disconnect").MustWaitLoad()
+	page.MustWaitStable()
+
+	bodyText := page.MustElement("body").MustText()
+	if !strings.Contains(bodyText, "404") && !strings.Contains(strings.ToLower(bodyText), "not found") {
+		// If we see the disconnect page, that's wrong
+		if strings.Contains(bodyText, "Disconnect Account") {
+			t.Fatal("FAILED: Should not show disconnect page for non-existent connection")
+		}
+	}
+
+	t.Log("PASSED: Non-existent connection returns 404")
+}

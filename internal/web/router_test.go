@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -3044,5 +3045,245 @@ func TestRouter_GetConnections_EmptyState(t *testing.T) {
 	// Should show empty state message
 	if !strings.Contains(body, "No connections") && !strings.Contains(body, "connect") {
 		t.Errorf("Expected empty state message, got: %s", body[:min(len(body), 500)])
+	}
+}
+
+// =============================================================================
+// Connection Disconnect Tests (hq-chj1)
+// =============================================================================
+
+// MockConnectionService implements ConnectionService for tests
+type MockConnectionService struct {
+	connections     map[string]map[string]*Connection // userID -> platform -> connection
+	disconnectCalls []struct{ UserID, Platform string }
+}
+
+func NewMockConnectionService() *MockConnectionService {
+	return &MockConnectionService{
+		connections: make(map[string]map[string]*Connection),
+	}
+}
+
+func (s *MockConnectionService) GetConnection(ctx context.Context, userID, platform string) (*Connection, error) {
+	userConns, ok := s.connections[userID]
+	if !ok {
+		return nil, errors.New("connection not found")
+	}
+	conn, ok := userConns[platform]
+	if !ok {
+		return nil, errors.New("connection not found")
+	}
+	return conn, nil
+}
+
+func (s *MockConnectionService) Disconnect(ctx context.Context, userID, platform string) error {
+	s.disconnectCalls = append(s.disconnectCalls, struct{ UserID, Platform string }{userID, platform})
+	userConns, ok := s.connections[userID]
+	if !ok {
+		return errors.New("connection not found")
+	}
+	if _, ok := userConns[platform]; !ok {
+		return errors.New("connection not found")
+	}
+	delete(userConns, platform)
+	return nil
+}
+
+func (s *MockConnectionService) AddConnection(userID, platform, displayName, profileURL string) {
+	if s.connections[userID] == nil {
+		s.connections[userID] = make(map[string]*Connection)
+	}
+	s.connections[userID][platform] = &Connection{
+		Platform:    platform,
+		Status:      ConnectionStatusConnected,
+		DisplayName: displayName,
+		ProfileURL:  profileURL,
+	}
+}
+
+func (s *MockConnectionService) GetDisconnectCalls() []struct{ UserID, Platform string } {
+	return s.disconnectCalls
+}
+
+func TestRouter_GetConnectionDisconnect_WithoutAuth_RedirectsToLogin(t *testing.T) {
+	router := NewRouter()
+
+	req := httptest.NewRequest(http.MethodGet, "/connections/twitter/disconnect", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected redirect status 303, got %d", rr.Code)
+	}
+	if rr.Header().Get("Location") != "/login" {
+		t.Errorf("Expected redirect to /login, got %s", rr.Header().Get("Location"))
+	}
+}
+
+func TestRouter_GetConnectionDisconnect_WithAuth_ShowsConfirmation(t *testing.T) {
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	connService.AddConnection(user.ID, "twitter", "@testuser", "https://twitter.com/testuser")
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/connections/twitter/disconnect", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	if !strings.Contains(body, "Disconnect Account") {
+		t.Errorf("Expected 'Disconnect Account' in response")
+	}
+	if !strings.Contains(body, "twitter") {
+		t.Errorf("Expected platform 'twitter' in response")
+	}
+	if !strings.Contains(body, "@testuser") {
+		t.Errorf("Expected display name '@testuser' in response")
+	}
+	if !strings.Contains(body, "Are you sure") {
+		t.Errorf("Expected confirmation text in response")
+	}
+}
+
+func TestRouter_GetConnectionDisconnect_NotFound_Returns404(t *testing.T) {
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	// No connection added
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/connections/twitter/disconnect", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404, got %d", rr.Code)
+	}
+}
+
+func TestRouter_PostConnectionDisconnect_WithoutAuth_RedirectsToLogin(t *testing.T) {
+	router := NewRouter()
+
+	req := httptest.NewRequest(http.MethodPost, "/connections/twitter/disconnect", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected redirect status 303, got %d", rr.Code)
+	}
+	if rr.Header().Get("Location") != "/login" {
+		t.Errorf("Expected redirect to /login, got %s", rr.Header().Get("Location"))
+	}
+}
+
+func TestRouter_PostConnectionDisconnect_WithAuth_DisconnectsAndRedirects(t *testing.T) {
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	connService.AddConnection(user.ID, "twitter", "@testuser", "https://twitter.com/testuser")
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodPost, "/connections/twitter/disconnect", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected redirect status 303, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Header().Get("Location"), "/dashboard") {
+		t.Errorf("Expected redirect to /dashboard, got %s", rr.Header().Get("Location"))
+	}
+	if !strings.Contains(rr.Header().Get("Location"), "disconnected=twitter") {
+		t.Errorf("Expected disconnected=twitter in redirect URL, got %s", rr.Header().Get("Location"))
+	}
+
+	// Verify disconnect was called
+	calls := connService.GetDisconnectCalls()
+	if len(calls) != 1 {
+		t.Fatalf("Expected 1 disconnect call, got %d", len(calls))
+	}
+	if calls[0].UserID != user.ID || calls[0].Platform != "twitter" {
+		t.Errorf("Disconnect called with wrong params: %+v", calls[0])
+	}
+
+	// Verify connection is gone
+	_, err := connService.GetConnection(context.Background(), user.ID, "twitter")
+	if err == nil {
+		t.Errorf("Expected connection to be removed after disconnect")
+	}
+}
+
+func TestRouter_PostConnectionDisconnect_NotFound_Returns404(t *testing.T) {
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	// No connection added
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodPost, "/connections/twitter/disconnect", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404, got %d", rr.Code)
+	}
+}
+
+func TestRouter_PostConnectionDisconnect_OtherUserConnection_Returns404(t *testing.T) {
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	// Create user1 with a connection
+	user1, _ := userStore.CreateUser(context.Background(), "user1@example.com", hashPassword("password123"))
+	connService.AddConnection(user1.ID, "twitter", "@user1", "https://twitter.com/user1")
+
+	// Create user2 (no connection)
+	user2, _ := userStore.CreateUser(context.Background(), "user2@example.com", hashPassword("password123"))
+
+	// User2 tries to disconnect user1's connection
+	token, _ := generateToken(user2.ID, user2.Email)
+
+	req := httptest.NewRequest(http.MethodPost, "/connections/twitter/disconnect", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404 for other user's connection, got %d", rr.Code)
+	}
+
+	// Verify user1's connection was NOT deleted
+	conn, err := connService.GetConnection(context.Background(), user1.ID, "twitter")
+	if err != nil || conn == nil {
+		t.Errorf("User1's connection should NOT have been deleted by user2")
 	}
 }
