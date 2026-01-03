@@ -2,6 +2,9 @@ package services
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -518,6 +521,271 @@ func TestJoinScopes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// =============================================================================
+// Bluesky-Specific Tests
+// =============================================================================
+
+func TestBlueskyAuthProvider_CreateSession_Success(t *testing.T) {
+	// Create a mock server for Bluesky API
+	server := newBlueskyMockServer(t, blueskyMockConfig{
+		createSessionResponse: &blueskySessionResponse{
+			AccessJwt:  "test-access-jwt",
+			RefreshJwt: "test-refresh-jwt",
+			DID:        "did:plc:abc123",
+			Handle:     "testuser.bsky.social",
+		},
+	})
+	defer server.Close()
+
+	provider := &BlueskyAuthProvider{
+		PDSURL: server.URL,
+		Client: server.Client(),
+	}
+
+	// For Bluesky, we pass credentials as "handle:password" in the code parameter
+	tokens, err := provider.ExchangeCode(context.Background(), "testuser.bsky.social:test-app-password", "")
+	if err != nil {
+		t.Fatalf("ExchangeCode() returned error: %v", err)
+	}
+
+	if tokens.AccessToken != "test-access-jwt" {
+		t.Errorf("Expected AccessToken 'test-access-jwt', got '%s'", tokens.AccessToken)
+	}
+	if tokens.RefreshToken != "test-refresh-jwt" {
+		t.Errorf("Expected RefreshToken 'test-refresh-jwt', got '%s'", tokens.RefreshToken)
+	}
+	if tokens.PlatformUserID != "did:plc:abc123" {
+		t.Errorf("Expected PlatformUserID 'did:plc:abc123', got '%s'", tokens.PlatformUserID)
+	}
+}
+
+func TestBlueskyAuthProvider_CreateSession_InvalidCredentials(t *testing.T) {
+	server := newBlueskyMockServer(t, blueskyMockConfig{
+		createSessionError: true,
+	})
+	defer server.Close()
+
+	provider := &BlueskyAuthProvider{
+		PDSURL: server.URL,
+		Client: server.Client(),
+	}
+
+	_, err := provider.ExchangeCode(context.Background(), "baduser:wrongpassword", "")
+	if err == nil {
+		t.Fatal("Expected error for invalid credentials")
+	}
+	if !strings.Contains(err.Error(), "invalid") && err != ErrInvalidCredentials {
+		t.Errorf("Expected invalid credentials error, got: %v", err)
+	}
+}
+
+func TestBlueskyAuthProvider_RefreshSession_Success(t *testing.T) {
+	server := newBlueskyMockServer(t, blueskyMockConfig{
+		refreshSessionResponse: &blueskySessionResponse{
+			AccessJwt:  "new-access-jwt",
+			RefreshJwt: "new-refresh-jwt",
+			DID:        "did:plc:abc123",
+			Handle:     "testuser.bsky.social",
+		},
+	})
+	defer server.Close()
+
+	provider := &BlueskyAuthProvider{
+		PDSURL: server.URL,
+		Client: server.Client(),
+	}
+
+	tokens, err := provider.RefreshTokens(context.Background(), "old-refresh-jwt")
+	if err != nil {
+		t.Fatalf("RefreshTokens() returned error: %v", err)
+	}
+
+	if tokens.AccessToken != "new-access-jwt" {
+		t.Errorf("Expected AccessToken 'new-access-jwt', got '%s'", tokens.AccessToken)
+	}
+	if tokens.RefreshToken != "new-refresh-jwt" {
+		t.Errorf("Expected RefreshToken 'new-refresh-jwt', got '%s'", tokens.RefreshToken)
+	}
+}
+
+func TestBlueskyAuthProvider_RefreshSession_Failure(t *testing.T) {
+	server := newBlueskyMockServer(t, blueskyMockConfig{
+		refreshSessionError: true,
+	})
+	defer server.Close()
+
+	provider := &BlueskyAuthProvider{
+		PDSURL: server.URL,
+		Client: server.Client(),
+	}
+
+	_, err := provider.RefreshTokens(context.Background(), "invalid-refresh-jwt")
+	if err == nil {
+		t.Fatal("Expected error for invalid refresh token")
+	}
+}
+
+func TestBlueskyAuthProvider_HandleNormalization(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "already has .bsky.social",
+			input:    "testuser.bsky.social",
+			expected: "testuser.bsky.social",
+		},
+		{
+			name:     "bare handle",
+			input:    "testuser",
+			expected: "testuser.bsky.social",
+		},
+		{
+			name:     "custom domain",
+			input:    "user.example.com",
+			expected: "user.example.com",
+		},
+		{
+			name:     "has @ prefix",
+			input:    "@testuser.bsky.social",
+			expected: "testuser.bsky.social",
+		},
+		{
+			name:     "bare handle with @",
+			input:    "@testuser",
+			expected: "testuser.bsky.social",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeBlueskyHandle(tt.input)
+			if got != tt.expected {
+				t.Errorf("normalizeBlueskyHandle(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestBlueskyAuthProvider_ParseCredentials(t *testing.T) {
+	tests := []struct {
+		name         string
+		input        string
+		wantHandle   string
+		wantPassword string
+		wantErr      bool
+	}{
+		{
+			name:         "valid credentials",
+			input:        "testuser.bsky.social:app-password-123",
+			wantHandle:   "testuser.bsky.social",
+			wantPassword: "app-password-123",
+			wantErr:      false,
+		},
+		{
+			name:         "password with colons",
+			input:        "user:pass:word:with:colons",
+			wantHandle:   "user",
+			wantPassword: "pass:word:with:colons",
+			wantErr:      false,
+		},
+		{
+			name:    "missing password",
+			input:   "justhandle",
+			wantErr: true,
+		},
+		{
+			name:    "empty input",
+			input:   "",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handle, password, err := parseBlueskyCredentials(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("Expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if handle != tt.wantHandle {
+				t.Errorf("handle = %q, want %q", handle, tt.wantHandle)
+			}
+			if password != tt.wantPassword {
+				t.Errorf("password = %q, want %q", password, tt.wantPassword)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// Bluesky Mock Server
+// =============================================================================
+
+// blueskyMockSessionResponse is the mock server's response type
+// (uses the same JSON structure as blueskySessionResponse in oauth_provider.go)
+type blueskyMockSessionResponse struct {
+	AccessJwt  string `json:"accessJwt"`
+	RefreshJwt string `json:"refreshJwt"`
+	DID        string `json:"did"`
+	Handle     string `json:"handle"`
+}
+
+type blueskyMockConfig struct {
+	createSessionResponse  *blueskySessionResponse
+	createSessionError     bool
+	refreshSessionResponse *blueskySessionResponse
+	refreshSessionError    bool
+}
+
+func newBlueskyMockServer(t *testing.T, config blueskyMockConfig) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/xrpc/com.atproto.server.createSession":
+			if config.createSessionError {
+				w.WriteHeader(http.StatusUnauthorized)
+				json.NewEncoder(w).Encode(map[string]string{
+					"error":   "AuthenticationRequired",
+					"message": "Invalid identifier or password",
+				})
+				return
+			}
+			if config.createSessionResponse != nil {
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(config.createSessionResponse)
+				return
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+
+		case "/xrpc/com.atproto.server.refreshSession":
+			if config.refreshSessionError {
+				w.WriteHeader(http.StatusUnauthorized)
+				json.NewEncoder(w).Encode(map[string]string{
+					"error":   "ExpiredToken",
+					"message": "Token has expired",
+				})
+				return
+			}
+			if config.refreshSessionResponse != nil {
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(config.refreshSessionResponse)
+				return
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
 }
 
 // =============================================================================
