@@ -2867,3 +2867,182 @@ func TestRouter_PostRepositoryDelete_OtherUsersRepo_Returns404(t *testing.T) {
 		t.Errorf("Repository should NOT have been deleted by other user")
 	}
 }
+
+// =============================================================================
+// TB-CONN-RATELIMIT: Connections page with rate limit display (hq-w12c)
+// =============================================================================
+
+// MockConnectionLister provides connection data for testing
+type MockConnectionLister struct {
+	connections []*ConnectionData
+}
+
+func (m *MockConnectionLister) ListConnectionsWithRateLimits(ctx context.Context, userID string) ([]*ConnectionData, error) {
+	return m.connections, nil
+}
+
+func TestRouter_GetConnections_RequiresAuth(t *testing.T) {
+	router := NewRouter()
+
+	req := httptest.NewRequest(http.MethodGet, "/connections", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should redirect to login
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected redirect status 303, got %d", rr.Code)
+	}
+	if rr.Header().Get("Location") != "/login" {
+		t.Errorf("Expected redirect to /login, got %s", rr.Header().Get("Location"))
+	}
+}
+
+func TestRouter_GetConnections_ShowsRateLimits(t *testing.T) {
+	userStore := NewMockUserStore()
+	connLister := &MockConnectionLister{
+		connections: []*ConnectionData{
+			{
+				Platform:    "threads",
+				Status:      "connected",
+				DisplayName: "@testuser",
+				IsHealthy:   true,
+				RateLimit: &RateLimitData{
+					Limit:     100,
+					Remaining: 75,
+					ResetAt:   time.Now().Add(time.Hour),
+				},
+			},
+		},
+	}
+	router := NewRouterWithConnectionLister(userStore, connLister)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/connections", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+
+	// Should show rate limit as X/Y remaining
+	if !strings.Contains(body, "75") || !strings.Contains(body, "100") {
+		t.Errorf("Expected rate limit display (75/100), got: %s", body[:min(len(body), 500)])
+	}
+}
+
+func TestRouter_GetConnections_ShowsLowRateLimitWarning(t *testing.T) {
+	userStore := NewMockUserStore()
+	connLister := &MockConnectionLister{
+		connections: []*ConnectionData{
+			{
+				Platform:    "threads",
+				Status:      "connected",
+				DisplayName: "@testuser",
+				IsHealthy:   true,
+				RateLimit: &RateLimitData{
+					Limit:     100,
+					Remaining: 5, // Low limit
+					ResetAt:   time.Now().Add(time.Hour),
+				},
+			},
+		},
+	}
+	router := NewRouterWithConnectionLister(userStore, connLister)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/connections", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+
+	// Should show warning class for low rate limit
+	if !strings.Contains(body, "rate-limit-warning") && !strings.Contains(body, "rate-limit-low") {
+		t.Errorf("Expected low rate limit warning indicator, got: %s", body[:min(len(body), 500)])
+	}
+}
+
+func TestRouter_GetConnections_ShowsResetTime(t *testing.T) {
+	userStore := NewMockUserStore()
+	resetTime := time.Now().Add(30 * time.Minute)
+	connLister := &MockConnectionLister{
+		connections: []*ConnectionData{
+			{
+				Platform:    "threads",
+				Status:      "connected",
+				DisplayName: "@testuser",
+				IsHealthy:   true,
+				RateLimit: &RateLimitData{
+					Limit:     100,
+					Remaining: 50,
+					ResetAt:   resetTime,
+				},
+			},
+		},
+	}
+	router := NewRouterWithConnectionLister(userStore, connLister)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/connections", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+
+	// Should show reset time in human-readable format (e.g., "30 minutes" or time)
+	if !strings.Contains(body, "reset") && !strings.Contains(body, "Reset") {
+		t.Errorf("Expected reset time display, got: %s", body[:min(len(body), 500)])
+	}
+}
+
+func TestRouter_GetConnections_EmptyState(t *testing.T) {
+	userStore := NewMockUserStore()
+	connLister := &MockConnectionLister{
+		connections: []*ConnectionData{},
+	}
+	router := NewRouterWithConnectionLister(userStore, connLister)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/connections", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+
+	// Should show empty state message
+	if !strings.Contains(body, "No connections") && !strings.Contains(body, "connect") {
+		t.Errorf("Expected empty state message, got: %s", body[:min(len(body), 500)])
+	}
+}

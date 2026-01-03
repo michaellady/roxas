@@ -28,13 +28,26 @@ var staticFS embed.FS
 // Templates holds parsed HTML templates per page
 var pageTemplates map[string]*template.Template
 
+// templateFuncs provides helper functions for templates
+var templateFuncs = template.FuncMap{
+	"percent": func(remaining, limit int) int {
+		if limit == 0 {
+			return 0
+		}
+		return (remaining * 100) / limit
+	},
+	"le": func(a, b int) bool {
+		return a <= b
+	},
+}
+
 func init() {
 	pageTemplates = make(map[string]*template.Template)
-	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "repository_delete.html", "webhook_regenerate.html", "webhook_deliveries.html"}
+	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "connections.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "repository_delete.html", "webhook_regenerate.html", "webhook_deliveries.html"}
 
 	for _, page := range pages {
-		// Clone the base template and parse the page
-		t := template.Must(template.ParseFS(templatesFS,
+		// Clone the base template and parse the page with functions
+		t := template.Must(template.New("").Funcs(templateFuncs).ParseFS(templatesFS,
 			"templates/layouts/base.html",
 			"templates/pages/"+page,
 		))
@@ -176,6 +189,27 @@ type DashboardPost struct {
 	Status   string
 }
 
+// ConnectionLister retrieves connections with rate limits for a user
+type ConnectionLister interface {
+	ListConnectionsWithRateLimits(ctx context.Context, userID string) ([]*ConnectionData, error)
+}
+
+// ConnectionData represents connection with rate limit for templates
+type ConnectionData struct {
+	Platform    string
+	Status      string
+	DisplayName string
+	IsHealthy   bool
+	RateLimit   *RateLimitData
+}
+
+// RateLimitData represents rate limit info for templates
+type RateLimitData struct {
+	Limit     int
+	Remaining int
+	ResetAt   time.Time
+}
+
 // Router is the main HTTP router for the web UI
 type Router struct {
 	mux                  *http.ServeMux
@@ -187,6 +221,7 @@ type Router struct {
 	webhookURL           string
 	webhookTester        WebhookTester
 	webhookDeliveryStore WebhookDeliveryStore
+	connectionLister     ConnectionLister
 }
 
 // NewRouter creates a new web router with all routes configured (no user store)
@@ -255,6 +290,17 @@ func NewRouterWithWebhookDeliveries(userStore UserStore, repoStore RepositorySto
 	return r
 }
 
+// NewRouterWithConnectionLister creates a new web router with connection lister for rate limits (hq-w12c)
+func NewRouterWithConnectionLister(userStore UserStore, connectionLister ConnectionLister) *Router {
+	r := &Router{
+		mux:              http.NewServeMux(),
+		userStore:        userStore,
+		connectionLister: connectionLister,
+	}
+	r.setupRoutes()
+	return r
+}
+
 // ServeHTTP implements http.Handler
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.mux.ServeHTTP(w, req)
@@ -271,6 +317,7 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("/signup", r.handleSignup)
 	r.mux.HandleFunc("/dashboard", r.handleDashboard)
 	r.mux.HandleFunc("/logout", r.handleLogout)
+	r.mux.HandleFunc("/connections", r.handleConnections)
 	r.mux.HandleFunc("/repositories", r.handleRepositories)
 	r.mux.HandleFunc("/repositories/new", r.handleRepositoriesNew)
 	r.mux.HandleFunc("/repositories/success", r.handleRepositoriesSuccess)
@@ -552,6 +599,46 @@ func (r *Router) handleLogout(w http.ResponseWriter, req *http.Request) {
 
 	// Redirect to login page
 	http.Redirect(w, req, "/login", http.StatusSeeOther)
+}
+
+// =============================================================================
+// Connections Page (hq-w12c)
+// =============================================================================
+
+// ConnectionsPageData holds data for the connections page
+type ConnectionsPageData struct {
+	Connections []*ConnectionData
+}
+
+func (r *Router) handleConnections(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get connections with rate limits
+	var connections []*ConnectionData
+	if r.connectionLister != nil {
+		connections, err = r.connectionLister.ListConnectionsWithRateLimits(req.Context(), claims.UserID)
+		if err != nil {
+			// Log error but show empty state
+			connections = []*ConnectionData{}
+		}
+	}
+
+	r.renderPage(w, "connections.html", PageData{
+		Title: "Connections",
+		User:  &UserData{ID: claims.UserID, Email: claims.Email},
+		Data:  ConnectionsPageData{Connections: connections},
+	})
 }
 
 // RepositoriesListData holds data for the repositories list page
