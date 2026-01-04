@@ -192,6 +192,62 @@ jobs:
           echo "url=$WEBHOOK_URL" >> $GITHUB_OUTPUT
           echo "function_name=$FUNCTION_NAME" >> $GITHUB_OUTPUT
 
+      - name: Test Lambda and fetch logs
+        if: steps.check-changes.outputs.needs_deployment == 'true'
+        run: |
+          FUNCTION_NAME="${{ steps.deployment-info.outputs.function_name }}"
+          DEPLOY_URL="https://pr-${{ env.PR_NUMBER }}.roxasapp.com"
+          LOG_GROUP="/aws/lambda/${FUNCTION_NAME}"
+
+          echo "=== Testing Lambda endpoint ==="
+          HTTP_STATUS=$(curl -s -o /tmp/response.txt -w "%{http_code}" "$DEPLOY_URL/" || echo "000")
+          echo "HTTP Status: $HTTP_STATUS"
+          echo "Response body:"
+          cat /tmp/response.txt | head -c 1000
+          echo ""
+
+          # Wait for logs to be written
+          echo ""
+          echo "=== Waiting 10s for CloudWatch logs ==="
+          sleep 10
+
+          # Fetch recent logs
+          echo ""
+          echo "=== Recent CloudWatch Logs (last 5 minutes) ==="
+          START_TIME=$(($(date +%s) * 1000 - 300000))
+
+          # Get log streams sorted by last event time
+          LOG_STREAMS=$(aws logs describe-log-streams \
+            --log-group-name "$LOG_GROUP" \
+            --order-by LastEventTime \
+            --descending \
+            --limit 3 \
+            --query 'logStreams[*].logStreamName' \
+            --output text 2>/dev/null || echo "")
+
+          if [ -z "$LOG_STREAMS" ]; then
+            echo "No log streams found in $LOG_GROUP"
+          else
+            for STREAM in $LOG_STREAMS; do
+              echo ""
+              echo "--- Log Stream: $STREAM ---"
+              aws logs get-log-events \
+                --log-group-name "$LOG_GROUP" \
+                --log-stream-name "$STREAM" \
+                --start-time "$START_TIME" \
+                --limit 100 \
+                --query 'events[*].message' \
+                --output text 2>/dev/null | head -200 || echo "Failed to fetch logs"
+            done
+          fi
+
+          # Exit with error if Lambda returned 500
+          if [ "$HTTP_STATUS" = "500" ]; then
+            echo ""
+            echo "=== ERROR: Lambda returned 500 ==="
+            exit 1
+          fi
+
       # E2E test disabled - LinkedIn API returns "Member is restricted" error
       # TODO: Re-enable when LinkedIn credentials are refreshed
       # - name: Run E2E Test

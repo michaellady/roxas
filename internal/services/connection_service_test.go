@@ -888,6 +888,32 @@ func (m *MockCredentialStore) UpdateTokens(ctx context.Context, userID, platform
 	return ErrCredentialsNotFound
 }
 
+func (m *MockCredentialStore) UpdateHealthStatus(ctx context.Context, userID, platform string, isHealthy bool, healthError *string) error {
+	if userCreds, ok := m.credentials[userID]; ok {
+		if cred, ok := userCreds[platform]; ok {
+			cred.IsHealthy = isHealthy
+			cred.HealthError = healthError
+			now := time.Now()
+			cred.LastHealthCheck = &now
+			return nil
+		}
+	}
+	return ErrCredentialsNotFound
+}
+
+func (m *MockCredentialStore) GetCredentialsNeedingCheck(ctx context.Context, notCheckedWithin time.Duration) ([]*PlatformCredentials, error) {
+	var result []*PlatformCredentials
+	threshold := time.Now().Add(-notCheckedWithin)
+	for _, userCreds := range m.credentials {
+		for _, cred := range userCreds {
+			if cred.LastHealthCheck == nil || cred.LastHealthCheck.Before(threshold) {
+				result = append(result, cred)
+			}
+		}
+	}
+	return result, nil
+}
+
 // ConnTestMockOAuthProvider implements OAuthProvider for testing connection service
 type ConnTestMockOAuthProvider struct {
 	platform      string
