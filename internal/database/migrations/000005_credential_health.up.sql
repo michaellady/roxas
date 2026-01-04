@@ -8,7 +8,7 @@ ALTER TABLE platform_credentials
     ADD COLUMN last_successful_post TIMESTAMP;
 
 -- Index for finding credentials that need health checks
--- (not checked recently or not healthy)
+-- Query should filter by time, not the index (NOW() is volatile, can't be used in partial indexes)
 CREATE INDEX idx_platform_credentials_health_check
     ON platform_credentials(last_health_check)
-    WHERE last_health_check IS NULL OR last_health_check < NOW() - INTERVAL '24 hours';
+    WHERE is_healthy = FALSE;
