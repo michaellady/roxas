@@ -1,0 +1,172 @@
+{{define "content"}}
+<div class="bluesky-connect-container">
+    <div class="connect-card">
+        <div class="platform-header">
+            <div class="platform-icon platform-bluesky">
+                <svg viewBox="0 0 24 24" width="48" height="48" fill="currentColor">
+                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
+                </svg>
+            </div>
+            <h1>Connect Bluesky</h1>
+        </div>
+
+        <p class="description">
+            Connect your Bluesky account using an App Password. This allows Roxas to post on your behalf
+            without sharing your main password.
+        </p>
+
+        {{if .Error}}
+        <div class="alert alert-error">{{.Error}}</div>
+        {{end}}
+
+        <form method="POST" action="/connections/bluesky/connect" class="connect-form">
+            <div class="form-group">
+                <label for="handle">Bluesky Handle</label>
+                <input type="text" id="handle" name="handle" placeholder="yourname.bsky.social or @yourname" required>
+                <span class="help-text">Your Bluesky username (with or without @)</span>
+            </div>
+
+            <div class="form-group">
+                <label for="app_password">App Password</label>
+                <input type="password" id="app_password" name="app_password" placeholder="xxxx-xxxx-xxxx-xxxx" required>
+                <span class="help-text">
+                    Create an App Password at
+                    <a href="https://bsky.app/settings/app-passwords" target="_blank" rel="noopener">bsky.app/settings/app-passwords</a>
+                </span>
+            </div>
+
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary">Connect Account</button>
+                <a href="/connections/new" class="btn btn-secondary">Cancel</a>
+            </div>
+        </form>
+
+        <div class="security-note">
+            <strong>Security Note:</strong> App Passwords are separate from your main password and can be revoked at any time.
+            We recommend creating a dedicated App Password for Roxas.
+        </div>
+    </div>
+</div>
+
+<style>
+.bluesky-connect-container {
+    max-width: 500px;
+    margin: 40px auto;
+    padding: 0 20px;
+}
+
+.connect-card {
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: 12px;
+    padding: 40px;
+}
+
+.platform-header {
+    text-align: center;
+    margin-bottom: 24px;
+}
+
+.platform-icon {
+    width: 80px;
+    height: 80px;
+    margin: 0 auto 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+}
+
+.platform-icon.platform-bluesky {
+    background: #e8f4fd;
+    color: #0085ff;
+}
+
+.platform-header h1 {
+    margin: 0;
+    font-size: 1.5rem;
+}
+
+.description {
+    color: #666;
+    text-align: center;
+    margin-bottom: 30px;
+    line-height: 1.5;
+}
+
+.connect-form {
+    margin-bottom: 24px;
+}
+
+.form-group {
+    margin-bottom: 20px;
+}
+
+.form-group label {
+    display: block;
+    font-weight: 500;
+    margin-bottom: 8px;
+}
+
+.form-group input {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    font-size: 16px;
+    box-sizing: border-box;
+}
+
+.form-group input:focus {
+    outline: none;
+    border-color: #0085ff;
+    box-shadow: 0 0 0 3px rgba(0, 133, 255, 0.1);
+}
+
+.help-text {
+    display: block;
+    margin-top: 6px;
+    font-size: 13px;
+    color: #888;
+}
+
+.help-text a {
+    color: #0085ff;
+}
+
+.form-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 24px;
+}
+
+.form-actions .btn {
+    flex: 1;
+    padding: 12px 20px;
+    text-align: center;
+    text-decoration: none;
+}
+
+.security-note {
+    background: #f8f9fa;
+    border-radius: 6px;
+    padding: 16px;
+    font-size: 13px;
+    color: #666;
+    line-height: 1.5;
+}
+
+.security-note strong {
+    color: #333;
+}
+
+.alert-error {
+    background: #fee;
+    border: 1px solid #fcc;
+    color: #c00;
+    padding: 12px 16px;
+    border-radius: 6px;
+    margin-bottom: 20px;
+}
+</style>
+{{end}}

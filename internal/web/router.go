@@ -43,7 +43,7 @@ var templateFuncs = template.FuncMap{
 
 func init() {
 	pageTemplates = make(map[string]*template.Template)
-	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "connections.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "repository_delete.html", "webhook_regenerate.html", "webhook_deliveries.html", "connection_disconnect.html"}
+	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "connections.html", "connections_new.html", "bluesky_connect.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "repository_delete.html", "webhook_regenerate.html", "webhook_deliveries.html", "connection_disconnect.html"}
 
 	for _, page := range pages {
 		// Clone the base template and parse the page with functions
@@ -180,6 +180,23 @@ type ConnectionService interface {
 	Disconnect(ctx context.Context, userID, platform string) error
 }
 
+// BlueskyConnector handles Bluesky authentication with app passwords
+type BlueskyConnector interface {
+	// Connect authenticates with Bluesky and stores the connection
+	// handle: Bluesky handle (e.g., "user.bsky.social" or "@user")
+	// appPassword: App password from bsky.app/settings/app-passwords
+	Connect(ctx context.Context, userID, handle, appPassword string) (*BlueskyConnectResult, error)
+}
+
+// BlueskyConnectResult contains the result of connecting a Bluesky account
+type BlueskyConnectResult struct {
+	Handle      string
+	DID         string
+	DisplayName string
+	Success     bool
+	Error       string
+}
+
 // Connection represents a user's connection to a social platform
 type Connection struct {
 	Platform    string
@@ -244,6 +261,7 @@ type Router struct {
 	webhookDeliveryStore WebhookDeliveryStore
 	connectionLister     ConnectionLister
 	connectionService    ConnectionService
+	blueskyConnector     BlueskyConnector
 }
 
 // NewRouter creates a new web router with all routes configured (no user store)
@@ -334,6 +352,17 @@ func NewRouterWithConnectionService(userStore UserStore, connectionService Conne
 	return r
 }
 
+// NewRouterWithBlueskyConnector creates a new web router with Bluesky connector
+func NewRouterWithBlueskyConnector(userStore UserStore, blueskyConnector BlueskyConnector) *Router {
+	r := &Router{
+		mux:              http.NewServeMux(),
+		userStore:        userStore,
+		blueskyConnector: blueskyConnector,
+	}
+	r.setupRoutes()
+	return r
+}
+
 // NewRouterWithWebhookTesterAndDeliveries creates a new web router with both webhook tester and delivery store
 func NewRouterWithWebhookTesterAndDeliveries(userStore UserStore, repoStore RepositoryStore, commitLister CommitLister, postLister PostLister, secretGen SecretGenerator, webhookURL string, webhookTester WebhookTester, webhookDeliveryStore WebhookDeliveryStore) *Router {
 	r := &Router{
@@ -368,6 +397,7 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("/dashboard", r.handleDashboard)
 	r.mux.HandleFunc("/logout", r.handleLogout)
 	r.mux.HandleFunc("/connections", r.handleConnections)
+	r.mux.HandleFunc("/connections/new", r.handleConnectionsNew)
 	r.mux.HandleFunc("/repositories", r.handleRepositories)
 	r.mux.HandleFunc("/repositories/new", r.handleRepositoriesNew)
 	r.mux.HandleFunc("/repositories/success", r.handleRepositoriesSuccess)
@@ -381,6 +411,8 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("GET /repositories/{id}/webhooks", r.handleWebhookDeliveries)
 
 	// Connection management
+	r.mux.HandleFunc("GET /connections/bluesky/connect", r.handleBlueskyConnect)
+	r.mux.HandleFunc("POST /connections/bluesky/connect", r.handleBlueskyConnectPost)
 	r.mux.HandleFunc("GET /connections/{platform}/disconnect", r.handleConnectionDisconnect)
 	r.mux.HandleFunc("POST /connections/{platform}/disconnect", r.handleConnectionDisconnectPost)
 }
@@ -693,6 +725,121 @@ func (r *Router) handleConnections(w http.ResponseWriter, req *http.Request) {
 		User:  &UserData{ID: claims.UserID, Email: claims.Email},
 		Data:  ConnectionsPageData{Connections: connections},
 	})
+}
+
+func (r *Router) handleConnectionsNew(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	r.renderPage(w, "connections_new.html", PageData{
+		Title: "Connect Account",
+		User:  &UserData{ID: claims.UserID, Email: claims.Email},
+	})
+}
+
+func (r *Router) handleBlueskyConnect(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	r.renderPage(w, "bluesky_connect.html", PageData{
+		Title: "Connect Bluesky",
+		User:  &UserData{ID: claims.UserID, Email: claims.Email},
+	})
+}
+
+func (r *Router) handleBlueskyConnectPost(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Parse form
+	if err := req.ParseForm(); err != nil {
+		r.renderPage(w, "bluesky_connect.html", PageData{
+			Title: "Connect Bluesky",
+			User:  &UserData{ID: claims.UserID, Email: claims.Email},
+			Error: "Invalid form data",
+		})
+		return
+	}
+
+	handle := strings.TrimSpace(req.FormValue("handle"))
+	appPassword := req.FormValue("app_password")
+
+	// Validate input
+	if handle == "" || appPassword == "" {
+		r.renderPage(w, "bluesky_connect.html", PageData{
+			Title: "Connect Bluesky",
+			User:  &UserData{ID: claims.UserID, Email: claims.Email},
+			Error: "Handle and App Password are required",
+		})
+		return
+	}
+
+	// Check if connector is available
+	if r.blueskyConnector == nil {
+		r.renderPage(w, "bluesky_connect.html", PageData{
+			Title: "Connect Bluesky",
+			User:  &UserData{ID: claims.UserID, Email: claims.Email},
+			Error: "Bluesky connection not configured",
+		})
+		return
+	}
+
+	// Connect to Bluesky
+	result, err := r.blueskyConnector.Connect(req.Context(), claims.UserID, handle, appPassword)
+	if err != nil {
+		errMsg := "Failed to connect to Bluesky"
+		if err.Error() != "" {
+			errMsg = err.Error()
+		}
+		r.renderPage(w, "bluesky_connect.html", PageData{
+			Title: "Connect Bluesky",
+			User:  &UserData{ID: claims.UserID, Email: claims.Email},
+			Error: errMsg,
+		})
+		return
+	}
+
+	if !result.Success {
+		r.renderPage(w, "bluesky_connect.html", PageData{
+			Title: "Connect Bluesky",
+			User:  &UserData{ID: claims.UserID, Email: claims.Email},
+			Error: result.Error,
+		})
+		return
+	}
+
+	// Success - redirect to connections list
+	http.Redirect(w, req, "/connections?connected=bluesky", http.StatusSeeOther)
 }
 
 // RepositoriesListData holds data for the repositories list page
