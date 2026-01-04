@@ -1,0 +1,181 @@
+name: Orphan Lambda Scanner
+
+# Scheduled job to detect orphaned Lambda functions from closed PRs.
+# Background: PR #118 Lambda orphaned due to GitHub Actions event delivery failure.
+# This scanner runs daily to catch any Lambdas that weren't cleaned up when PRs closed.
+
+on:
+  schedule:
+    # Run daily at 6 AM UTC (10 PM PST / 1 AM EST)
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (report only, no deletion)'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      delete_orphans:
+        description: 'Delete orphaned resources (requires dry_run=false)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+jobs:
+  scan-orphans:
+    name: Scan for Orphaned Lambdas
+    runs-on: ubuntu-latest
+    environment: dev
+
+    permissions:
+      pull-requests: read
+      contents: read
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Scan for orphaned Lambda functions
+        id: scan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run || 'true' }}
+          DELETE_ORPHANS: ${{ inputs.delete_orphans || 'false' }}
+        run: |
+          set -euo pipefail
+
+          echo "=== Orphan Lambda Scanner ==="
+          echo "Dry run: $DRY_RUN"
+          echo "Delete orphans: $DELETE_ORPHANS"
+          echo ""
+
+          # Pattern for PR Lambda functions
+          PATTERN="roxas-webhook-handler-pr-"
+
+          # List all Lambda functions matching the PR pattern
+          echo "Listing Lambda functions matching pattern: ${PATTERN}*-dev"
+          LAMBDAS=$(aws lambda list-functions \
+            --query "Functions[?starts_with(FunctionName, '${PATTERN}') && ends_with(FunctionName, '-dev')].FunctionName" \
+            --output text || echo "")
+
+          if [ -z "$LAMBDAS" ]; then
+            echo "No PR Lambda functions found."
+            echo "orphan_count=0" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Found Lambda functions:"
+          echo "$LAMBDAS" | tr '\t' '\n'
+          echo ""
+
+          ORPHAN_COUNT=0
+          ORPHAN_LIST=""
+          DELETED_COUNT=0
+
+          for LAMBDA_NAME in $LAMBDAS; do
+            # Extract PR number from function name
+            # Format: roxas-webhook-handler-pr-{N}-dev
+            PR_NUMBER=$(echo "$LAMBDA_NAME" | sed -n 's/roxas-webhook-handler-pr-\([0-9]*\)-dev/\1/p')
+
+            if [ -z "$PR_NUMBER" ]; then
+              echo "WARNING: Could not extract PR number from $LAMBDA_NAME"
+              continue
+            fi
+
+            echo "Checking PR #$PR_NUMBER for Lambda: $LAMBDA_NAME"
+
+            # Query GitHub API for PR status
+            PR_STATE=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json state --jq '.state' 2>/dev/null || echo "NOT_FOUND")
+
+            if [ "$PR_STATE" = "NOT_FOUND" ]; then
+              echo "  WARNING: PR #$PR_NUMBER not found (may have been deleted)"
+              PR_STATE="CLOSED"
+            fi
+
+            echo "  PR state: $PR_STATE"
+
+            if [ "$PR_STATE" != "OPEN" ]; then
+              echo "  ORPHAN DETECTED: Lambda $LAMBDA_NAME exists but PR #$PR_NUMBER is $PR_STATE"
+              ORPHAN_COUNT=$((ORPHAN_COUNT + 1))
+              ORPHAN_LIST="${ORPHAN_LIST}${LAMBDA_NAME} (PR #${PR_NUMBER} - ${PR_STATE})\n"
+
+              if [ "$DRY_RUN" = "false" ] && [ "$DELETE_ORPHANS" = "true" ]; then
+                echo "  Deleting orphaned Lambda: $LAMBDA_NAME"
+
+                # Delete the Lambda function
+                if aws lambda delete-function --function-name "$LAMBDA_NAME"; then
+                  echo "  Successfully deleted Lambda: $LAMBDA_NAME"
+                  DELETED_COUNT=$((DELETED_COUNT + 1))
+
+                  # Also try to clean up related resources
+                  echo "  Cleaning up related Terraform workspace..."
+                  # Note: Terraform workspace cleanup requires checkout and init
+                  # For now, just delete the Lambda. Full cleanup can be done manually or via pr-cleanup workflow
+                else
+                  echo "  ERROR: Failed to delete Lambda: $LAMBDA_NAME"
+                fi
+              fi
+            else
+              echo "  OK: PR #$PR_NUMBER is still open"
+            fi
+
+            echo ""
+          done
+
+          echo "=== Scan Summary ==="
+          echo "Total PR Lambdas found: $(echo "$LAMBDAS" | wc -w | tr -d ' ')"
+          echo "Orphaned Lambdas: $ORPHAN_COUNT"
+          if [ "$DRY_RUN" = "false" ] && [ "$DELETE_ORPHANS" = "true" ]; then
+            echo "Deleted Lambdas: $DELETED_COUNT"
+          fi
+
+          if [ $ORPHAN_COUNT -gt 0 ]; then
+            echo ""
+            echo "Orphan list:"
+            echo -e "$ORPHAN_LIST"
+          fi
+
+          # Set outputs for potential notifications
+          echo "orphan_count=$ORPHAN_COUNT" >> $GITHUB_OUTPUT
+          echo "deleted_count=$DELETED_COUNT" >> $GITHUB_OUTPUT
+
+      - name: Create summary
+        if: always()
+        env:
+          ORPHAN_COUNT: ${{ steps.scan.outputs.orphan_count || '0' }}
+          DELETED_COUNT: ${{ steps.scan.outputs.deleted_count || '0' }}
+        run: |
+          echo "## Orphan Lambda Scanner Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Orphaned Lambdas | $ORPHAN_COUNT |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deleted Lambdas | $DELETED_COUNT |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$ORPHAN_COUNT" -gt 0 ]; then
+            echo "> **Warning**: Orphaned Lambda functions detected!" >> $GITHUB_STEP_SUMMARY
+            echo "> These Lambdas exist but their PRs are closed. Consider running with \`delete_orphans=true\` to clean them up." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "> No orphaned Lambda functions found." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      # Optional: Alert on orphans (uncomment to enable)
+      # - name: Alert on orphans
+      #   if: steps.scan.outputs.orphan_count > 0
+      #   run: |
+      #     # Slack webhook example:
+      #     # curl -X POST -H 'Content-type: application/json' \
+      #     #   --data '{"text":"Orphan Lambda Scanner: ${{ steps.scan.outputs.orphan_count }} orphaned Lambdas detected"}' \
+      #     #   ${{ secrets.SLACK_WEBHOOK_URL }}
+      #     echo "Orphan alert would be sent here"
