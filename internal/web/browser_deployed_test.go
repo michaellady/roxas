@@ -58,6 +58,12 @@ func TestDeployed_FullAuthFlow(t *testing.T) {
 
 	page.MustWaitLoad()
 
+	// First check if the server is responding with HTML (not JSON error)
+	bodyText := page.MustElement("body").MustText()
+	if strings.Contains(bodyText, "Internal Server Error") {
+		t.Fatalf("Step 1 FAILED: Server returned Internal Server Error. The Lambda may be failing to start. Body: %s", bodyText)
+	}
+
 	// Verify we're on the home page
 	title := page.MustElement("title").MustText()
 	if !strings.Contains(title, "Roxas") {

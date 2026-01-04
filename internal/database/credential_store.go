@@ -397,3 +397,125 @@ func (s *CredentialStore) UpdateTokens(ctx context.Context, userID, platform, ac
 
 	return nil
 }
+
+// UpdateHealthStatus updates the health status of a credential
+func (s *CredentialStore) UpdateHealthStatus(ctx context.Context, userID, platform string, isHealthy bool, healthError *string) error {
+	if err := services.ValidatePlatform(platform); err != nil {
+		return err
+	}
+
+	result, err := s.pool.Exec(ctx,
+		`UPDATE platform_credentials
+		 SET is_healthy = $3, health_error = $4, last_health_check = NOW(), updated_at = NOW()
+		 WHERE user_id = $1 AND platform = $2`,
+		userID, platform, isHealthy, healthError,
+	)
+
+	if err != nil {
+		return fmt.Errorf("updating health status: %w", err)
+	}
+
+	if result.RowsAffected() == 0 {
+		return services.ErrCredentialsNotFound
+	}
+
+	return nil
+}
+
+// GetCredentialsNeedingCheck retrieves credentials that haven't been checked
+// within the given duration (or have never been checked)
+func (s *CredentialStore) GetCredentialsNeedingCheck(ctx context.Context, notCheckedWithin time.Duration) ([]*services.PlatformCredentials, error) {
+	checkThreshold := time.Now().Add(-notCheckedWithin)
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, user_id, platform, access_token, refresh_token,
+		        token_expires_at, platform_user_id, scopes, created_at, updated_at,
+		        last_health_check, is_healthy, health_error, last_successful_post
+		 FROM platform_credentials
+		 WHERE last_health_check IS NULL OR last_health_check < $1
+		 ORDER BY last_health_check NULLS FIRST`,
+		checkThreshold,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying credentials needing check: %w", err)
+	}
+	defer rows.Close()
+
+	return s.scanCredentialsWithHealth(rows)
+}
+
+// scanCredentialsWithHealth scans credential rows including health columns
+func (s *CredentialStore) scanCredentialsWithHealth(rows interface {
+	Next() bool
+	Scan(dest ...interface{}) error
+	Err() error
+}) ([]*services.PlatformCredentials, error) {
+	var credentials []*services.PlatformCredentials
+
+	type scannable interface {
+		Next() bool
+		Scan(dest ...interface{}) error
+		Err() error
+	}
+
+	r := rows.(scannable)
+	for r.Next() {
+		var creds services.PlatformCredentials
+		var encryptedAccessToken string
+		var refreshToken, platformUserID, scopes, healthError *string
+		var tokenExpiresAt, lastHealthCheck, lastSuccessfulPost *time.Time
+		var isHealthy *bool
+
+		err := r.Scan(
+			&creds.ID, &creds.UserID, &creds.Platform,
+			&encryptedAccessToken, &refreshToken,
+			&tokenExpiresAt, &platformUserID, &scopes,
+			&creds.CreatedAt, &creds.UpdatedAt,
+			&lastHealthCheck, &isHealthy, &healthError, &lastSuccessfulPost,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scanning credential row: %w", err)
+		}
+
+		// Decrypt tokens
+		accessToken, err := s.decrypt(encryptedAccessToken)
+		if err != nil {
+			return nil, err
+		}
+		creds.AccessToken = accessToken
+
+		if refreshToken != nil {
+			rt, err := s.decrypt(*refreshToken)
+			if err != nil {
+				return nil, err
+			}
+			creds.RefreshToken = rt
+		}
+
+		creds.TokenExpiresAt = tokenExpiresAt
+		if platformUserID != nil {
+			creds.PlatformUserID = *platformUserID
+		}
+		if scopes != nil {
+			creds.Scopes = *scopes
+		}
+
+		// Health fields
+		creds.LastHealthCheck = lastHealthCheck
+		if isHealthy != nil {
+			creds.IsHealthy = *isHealthy
+		} else {
+			creds.IsHealthy = true // Default to healthy if NULL
+		}
+		creds.HealthError = healthError
+		creds.LastSuccessfulPost = lastSuccessfulPost
+
+		credentials = append(credentials, &creds)
+	}
+
+	if err := r.Err(); err != nil {
+		return nil, fmt.Errorf("iterating credential rows: %w", err)
+	}
+
+	return credentials, nil
+}
