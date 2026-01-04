@@ -110,6 +110,7 @@ resource "aws_lambda_function" "roxas" {
       WEBHOOK_SECRET        = var.webhook_secret
       LOG_LEVEL             = var.log_level
       DB_SECRET_NAME        = aws_secretsmanager_secret.database.name
+      WEBHOOK_BASE_URL      = local.create_custom_domain ? "https://${local.full_domain_name}" : aws_apigatewayv2_api.webhook.api_endpoint
     }
   }
 
