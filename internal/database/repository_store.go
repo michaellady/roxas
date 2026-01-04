@@ -190,3 +190,20 @@ func (s *RepositoryStore) UpdateWebhookSecret(ctx context.Context, repoID, newSe
 
 	return nil
 }
+
+// DeleteRepository removes a repository from the database
+func (s *RepositoryStore) DeleteRepository(ctx context.Context, repoID string) error {
+	result, err := s.pool.Exec(ctx,
+		`DELETE FROM repositories WHERE id = $1`,
+		repoID,
+	)
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+
+	return nil
+}

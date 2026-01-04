@@ -39,16 +39,20 @@ var SupportedPlatforms = map[string]bool{
 
 // PlatformCredentials represents OAuth credentials for a platform
 type PlatformCredentials struct {
-	ID              string     `json:"id"`
-	UserID          string     `json:"user_id"`
-	Platform        string     `json:"platform"`
-	AccessToken     string     `json:"access_token"`      // Encrypted at rest
-	RefreshToken    string     `json:"refresh_token"`     // Encrypted at rest, may be empty
-	TokenExpiresAt  *time.Time `json:"token_expires_at"`  // nil if token doesn't expire
-	PlatformUserID  string     `json:"platform_user_id"`  // e.g., LinkedIn URN, Twitter handle
-	Scopes          string     `json:"scopes"`            // Comma-separated list of granted scopes
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	ID                 string     `json:"id"`
+	UserID             string     `json:"user_id"`
+	Platform           string     `json:"platform"`
+	AccessToken        string     `json:"access_token"`        // Encrypted at rest
+	RefreshToken       string     `json:"refresh_token"`       // Encrypted at rest, may be empty
+	TokenExpiresAt     *time.Time `json:"token_expires_at"`    // nil if token doesn't expire
+	PlatformUserID     string     `json:"platform_user_id"`    // e.g., LinkedIn URN, Twitter handle
+	Scopes             string     `json:"scopes"`              // Comma-separated list of granted scopes
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	LastHealthCheck    *time.Time `json:"last_health_check"`   // Last time health was checked
+	IsHealthy          bool       `json:"is_healthy"`          // Current health status
+	HealthError        *string    `json:"health_error"`        // Error message if unhealthy
+	LastSuccessfulPost *time.Time `json:"last_successful_post"` // Last successful post timestamp
 }
 
 // IsExpired returns true if the access token has expired
@@ -94,6 +98,14 @@ type CredentialStore interface {
 	// UpdateTokens updates just the access and refresh tokens (and expiry)
 	// Used after a token refresh operation
 	UpdateTokens(ctx context.Context, userID, platform, accessToken, refreshToken string, expiresAt *time.Time) error
+
+	// UpdateHealthStatus updates the health status of a credential
+	// Called by the health check job after testing a connection
+	UpdateHealthStatus(ctx context.Context, userID, platform string, isHealthy bool, healthError *string) error
+
+	// GetCredentialsNeedingCheck retrieves credentials that haven't been checked
+	// within the given duration (or have never been checked)
+	GetCredentialsNeedingCheck(ctx context.Context, notCheckedWithin time.Duration) ([]*PlatformCredentials, error)
 }
 
 // ValidatePlatform checks if a platform string is valid

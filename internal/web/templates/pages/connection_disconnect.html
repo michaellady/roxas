@@ -1,0 +1,157 @@
+{{define "content"}}
+<div class="disconnect-container">
+    <div class="page-header">
+        <div class="header-back">
+            <a href="/dashboard" class="btn btn-small">&larr; Back to Dashboard</a>
+        </div>
+        <h1>Disconnect Account</h1>
+    </div>
+
+    {{if .Error}}
+    <div class="alert alert-error">{{.Error}}</div>
+    {{end}}
+
+    {{if .Data}}
+    <div class="card">
+        <div class="alert alert-warning">
+            <strong>Warning:</strong> This will revoke access to your {{.Data.Platform}} account. You will need to reconnect to post content to this platform.
+        </div>
+
+        <section class="disconnect-confirmation">
+            <h2>Are you sure you want to disconnect this account?</h2>
+
+            <div class="detail-field">
+                <label>Platform</label>
+                <div class="detail-value platform-name">{{.Data.Platform}}</div>
+            </div>
+
+            {{if .Data.DisplayName}}
+            <div class="detail-field">
+                <label>Account</label>
+                <div class="detail-value">
+                    {{if .Data.ProfileURL}}
+                    <a href="{{.Data.ProfileURL}}" target="_blank" rel="noopener">{{.Data.DisplayName}}</a>
+                    {{else}}
+                    {{.Data.DisplayName}}
+                    {{end}}
+                </div>
+            </div>
+            {{end}}
+
+            <div class="action-buttons">
+                <a href="/dashboard" class="btn btn-secondary">Cancel</a>
+                <form action="/connections/{{.Data.Platform}}/disconnect" method="POST" style="display: inline;">
+                    <button type="submit" class="btn btn-danger">Disconnect Account</button>
+                </form>
+            </div>
+        </section>
+    </div>
+    {{end}}
+</div>
+
+<style>
+.disconnect-container {
+    max-width: 600px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.page-header {
+    margin-bottom: 20px;
+}
+
+.page-header h1 {
+    margin: 10px 0 0;
+}
+
+.disconnect-confirmation h2 {
+    font-size: 1.2em;
+    margin-bottom: 20px;
+}
+
+.detail-field {
+    margin-bottom: 15px;
+}
+
+.detail-field label {
+    display: block;
+    font-weight: 600;
+    color: #666;
+    margin-bottom: 5px;
+    font-size: 0.9em;
+}
+
+.detail-value {
+    font-size: 1.1em;
+}
+
+.platform-name {
+    text-transform: capitalize;
+}
+
+.action-buttons {
+    margin-top: 30px;
+    display: flex;
+    gap: 10px;
+}
+
+.btn {
+    display: inline-block;
+    padding: 10px 20px;
+    border-radius: 6px;
+    text-decoration: none;
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    font-size: 1em;
+}
+
+.btn-small {
+    padding: 6px 12px;
+    font-size: 0.9em;
+}
+
+.btn-secondary {
+    background-color: #6c757d;
+    color: white;
+}
+
+.btn-secondary:hover {
+    background-color: #5a6268;
+}
+
+.btn-danger {
+    background-color: #dc3545;
+    color: white;
+}
+
+.btn-danger:hover {
+    background-color: #c82333;
+}
+
+.alert {
+    padding: 15px;
+    border-radius: 6px;
+    margin-bottom: 20px;
+}
+
+.alert-warning {
+    background-color: #fff3cd;
+    border: 1px solid #ffeeba;
+    color: #856404;
+}
+
+.alert-error {
+    background-color: #f8d7da;
+    border: 1px solid #f5c6cb;
+    color: #721c24;
+}
+
+.card {
+    background: white;
+    border-radius: 8px;
+    padding: 25px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+</style>
+{{end}}

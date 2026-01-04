@@ -24,8 +24,10 @@
                 <tr>
                     <td><a href="{{.GitHubURL}}" target="_blank" rel="noopener">{{.GitHubURL}}</a></td>
                     <td>{{.CreatedAt.Format "Jan 02, 2006"}}</td>
-                    <td>
+                    <td class="actions-cell">
                         <a href="/repositories/{{.ID}}" class="btn btn-small">View</a>
+                        <a href="/repositories/{{.ID}}/edit" class="btn btn-small">Edit</a>
+                        <a href="/repositories/{{.ID}}/delete" class="btn btn-small btn-danger">Delete</a>
                     </td>
                 </tr>
                 {{end}}

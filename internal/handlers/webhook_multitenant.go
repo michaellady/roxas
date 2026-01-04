@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -34,10 +35,28 @@ type CommitStore interface {
 	GetCommitBySHA(ctx context.Context, repoID, sha string) (*StoredCommit, error)
 }
 
+// WebhookDelivery represents a webhook delivery attempt for tracking
+type WebhookDelivery struct {
+	RepositoryID string
+	EventType    string
+	Payload      string
+	ResponseCode int
+	ResponseBody string
+	Success      bool
+	ErrorMessage string
+	DeliveredAt  time.Time
+}
+
+// WebhookDeliveryStore defines the interface for recording webhook deliveries
+type WebhookDeliveryStore interface {
+	RecordDelivery(ctx context.Context, delivery *WebhookDelivery) error
+}
+
 // MultiTenantWebhookHandler handles GitHub webhooks for multiple repositories
 type MultiTenantWebhookHandler struct {
-	repoStore   WebhookRepositoryStore
-	commitStore CommitStore
+	repoStore     WebhookRepositoryStore
+	commitStore   CommitStore
+	deliveryStore WebhookDeliveryStore // optional, for tracking deliveries
 }
 
 // NewMultiTenantWebhookHandler creates a new multi-tenant webhook handler
@@ -46,6 +65,12 @@ func NewMultiTenantWebhookHandler(repoStore WebhookRepositoryStore, commitStore 
 		repoStore:   repoStore,
 		commitStore: commitStore,
 	}
+}
+
+// WithDeliveryStore adds a delivery store for tracking webhook deliveries
+func (h *MultiTenantWebhookHandler) WithDeliveryStore(store WebhookDeliveryStore) *MultiTenantWebhookHandler {
+	h.deliveryStore = store
+	return h
 }
 
 // WebhookResponse is the JSON response for webhook requests
@@ -88,6 +113,10 @@ func (h *MultiTenantWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Extract event type EARLY - before signature validation
+	// This ensures we have the eventType for delivery recording even on auth failures
+	eventType := r.Header.Get("X-GitHub-Event")
+
 	// Look up repository by ID (multi-tenant boundary)
 	repo, err := h.repoStore.GetRepositoryByID(r.Context(), repoID)
 	if err != nil {
@@ -110,24 +139,24 @@ func (h *MultiTenantWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 	// Validate GitHub signature using repository's webhook secret
 	signature := r.Header.Get("X-Hub-Signature-256")
 	if signature == "" {
+		// Record auth failure with TRUNCATED payload (security: don't store full attacker-controlled data)
+		h.recordDeliveryAuthFailure(r.Context(), repoID, eventType, body, http.StatusUnauthorized, "missing signature")
 		h.writeError(w, http.StatusUnauthorized, "missing signature")
 		return
 	}
 
 	if !h.validateSignature(body, signature, repo.WebhookSecret) {
+		// Record auth failure with TRUNCATED payload (security: don't store full attacker-controlled data)
+		h.recordDeliveryAuthFailure(r.Context(), repoID, eventType, body, http.StatusUnauthorized, "invalid signature")
 		h.writeError(w, http.StatusUnauthorized, "invalid signature")
 		return
 	}
 
-	// Check event type
-	eventType := r.Header.Get("X-GitHub-Event")
-
 	// Handle ping event (GitHub health check)
 	if eventType == "ping" {
-		h.writeJSON(w, http.StatusOK, WebhookResponse{
-			Status:  "ok",
-			Message: "pong",
-		})
+		response := WebhookResponse{Status: "ok", Message: "pong"}
+		h.recordDeliverySuccess(r.Context(), repoID, eventType, body, http.StatusOK, response)
+		h.writeJSON(w, http.StatusOK, response)
 		return
 	}
 
@@ -135,23 +164,21 @@ func (h *MultiTenantWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 	if eventType == "push" {
 		commitsProcessed, err := h.handlePushEvent(r, body, repo)
 		if err != nil {
+			h.recordDelivery(r.Context(), repoID, eventType, string(body), http.StatusBadRequest, err.Error(), false)
 			h.writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 
-		h.writeJSON(w, http.StatusOK, WebhookResponse{
-			Status:  "ok",
-			Message: "commits processed",
-			Commits: commitsProcessed,
-		})
+		response := WebhookResponse{Status: "ok", Message: "commits processed", Commits: commitsProcessed}
+		h.recordDeliverySuccess(r.Context(), repoID, eventType, body, http.StatusOK, response)
+		h.writeJSON(w, http.StatusOK, response)
 		return
 	}
 
 	// Unknown event type - acknowledge but ignore
-	h.writeJSON(w, http.StatusOK, WebhookResponse{
-		Status:  "ok",
-		Message: "event ignored",
-	})
+	response := WebhookResponse{Status: "ok", Message: "event ignored"}
+	h.recordDeliverySuccess(r.Context(), repoID, eventType, body, http.StatusOK, response)
+	h.writeJSON(w, http.StatusOK, response)
 }
 
 // extractRepoIDFromPath extracts the repository ID from the URL path
@@ -222,4 +249,88 @@ func (h *MultiTenantWebhookHandler) writeJSON(w http.ResponseWriter, status int,
 
 func (h *MultiTenantWebhookHandler) writeError(w http.ResponseWriter, status int, message string) {
 	h.writeJSON(w, status, ErrorResponse{Error: message})
+}
+
+// =============================================================================
+// Webhook Delivery Recording (with security-conscious payload handling)
+// =============================================================================
+
+// maxPayloadBytesForAuthFailure is the maximum payload size stored for auth failures.
+// This prevents attackers from using failed webhook requests to store arbitrary data.
+const maxPayloadBytesForAuthFailure = 256
+
+// recordDelivery records a webhook delivery attempt (if store is configured)
+func (h *MultiTenantWebhookHandler) recordDelivery(ctx context.Context, repoID, eventType, payload string, statusCode int, responseBody string, success bool) {
+	if h.deliveryStore == nil {
+		return
+	}
+
+	delivery := &WebhookDelivery{
+		RepositoryID: repoID,
+		EventType:    eventType,
+		Payload:      payload,
+		ResponseCode: statusCode,
+		ResponseBody: responseBody,
+		Success:      success,
+		DeliveredAt:  time.Now(),
+	}
+	if !success {
+		delivery.ErrorMessage = responseBody
+	}
+
+	// Best-effort recording - don't fail the request if recording fails
+	_ = h.deliveryStore.RecordDelivery(ctx, delivery)
+}
+
+// recordDeliverySuccess records a successful webhook delivery with full payload
+func (h *MultiTenantWebhookHandler) recordDeliverySuccess(ctx context.Context, repoID, eventType string, payload []byte, statusCode int, response interface{}) {
+	if h.deliveryStore == nil {
+		return
+	}
+
+	responseBody, _ := json.Marshal(response)
+	h.recordDelivery(ctx, repoID, eventType, string(payload), statusCode, string(responseBody), true)
+}
+
+// recordDeliveryAuthFailure records an authentication failure with TRUNCATED payload.
+// Security: We don't store full payloads for auth failures to prevent attackers
+// from using forged webhook requests to store arbitrary data in our database.
+// Instead, we store the first N bytes plus a hash for debugging.
+func (h *MultiTenantWebhookHandler) recordDeliveryAuthFailure(ctx context.Context, repoID, eventType string, payload []byte, statusCode int, errorMessage string) {
+	if h.deliveryStore == nil {
+		return
+	}
+
+	// Truncate payload for security - only store first N bytes + hash
+	truncatedPayload := truncatePayloadForAuthFailure(payload)
+
+	delivery := &WebhookDelivery{
+		RepositoryID: repoID,
+		EventType:    eventType,
+		Payload:      truncatedPayload,
+		ResponseCode: statusCode,
+		ResponseBody: errorMessage,
+		Success:      false,
+		ErrorMessage: errorMessage,
+		DeliveredAt:  time.Now(),
+	}
+
+	// Best-effort recording
+	_ = h.deliveryStore.RecordDelivery(ctx, delivery)
+}
+
+// truncatePayloadForAuthFailure truncates a payload for auth failure recording.
+// Returns first N bytes plus a SHA256 hash of the full payload for correlation.
+func truncatePayloadForAuthFailure(payload []byte) string {
+	if len(payload) <= maxPayloadBytesForAuthFailure {
+		return string(payload)
+	}
+
+	// Compute hash of full payload for debugging/correlation
+	hash := sha256.Sum256(payload)
+	hashHex := hex.EncodeToString(hash[:])
+
+	// Return truncated payload with hash
+	truncated := payload[:maxPayloadBytesForAuthFailure]
+	return fmt.Sprintf("%s...[truncated, %d bytes total, sha256:%s]", string(truncated), len(payload), hashHex[:16])
 }

@@ -1,0 +1,45 @@
+{{define "content"}}
+<div class="delete-container">
+    <div class="page-header">
+        <div class="header-back">
+            <a href="/repositories/{{.Data.Repository.ID}}" class="btn btn-small">&larr; Back to Repository</a>
+        </div>
+        <h1>Delete Repository</h1>
+    </div>
+
+    {{if .Error}}
+    <div class="alert alert-error">{{.Error}}</div>
+    {{end}}
+
+    {{if .Data}}
+    <div class="card">
+        <div class="alert alert-warning">
+            <strong>Warning:</strong> This action cannot be undone. All webhook configuration and delivery history for this repository will be permanently deleted.
+        </div>
+
+        <section class="delete-confirmation">
+            <h2>Are you sure you want to delete this repository?</h2>
+
+            <div class="detail-field">
+                <label>Repository</label>
+                <div class="detail-value">{{.Data.RepoName}}</div>
+            </div>
+
+            <div class="detail-field">
+                <label>GitHub URL</label>
+                <div class="detail-value">
+                    <a href="{{.Data.Repository.GitHubURL}}" target="_blank" rel="noopener">{{.Data.Repository.GitHubURL}}</a>
+                </div>
+            </div>
+
+            <div class="action-buttons">
+                <a href="/repositories/{{.Data.Repository.ID}}" class="btn btn-secondary">Cancel</a>
+                <form action="/repositories/{{.Data.Repository.ID}}/delete" method="POST" style="display: inline;">
+                    <button type="submit" class="btn btn-danger">Delete Repository</button>
+                </form>
+            </div>
+        </section>
+    </div>
+    {{end}}
+</div>
+{{end}}
