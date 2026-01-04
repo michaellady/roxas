@@ -1477,3 +1477,218 @@ func TestBrowser_TestWebhookButton_Failure(t *testing.T) {
 
 	t.Log("PASSED: Error message displayed correctly for failed webhook")
 }
+
+// TestBrowser_DeleteRepositoryFlow tests the complete delete repository workflow:
+// add repo → view repo → click delete → confirmation page → cancel → back to repo
+// then: click delete again → confirm delete → redirected to repositories list → repo gone
+func TestBrowser_DeleteRepositoryFlow(t *testing.T) {
+	// Setup test server with mock stores
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	secretGen := &MockSecretGeneratorForWeb{Secret: "test-secret"}
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, secretGen, "https://api.test")
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Launch browser
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	testEmail := "delete-test@example.com"
+	testPassword := "securepassword123"
+	testGitHubURL := "https://github.com/deletetest/myrepo"
+
+	// =========================================================================
+	// Step 1: Sign up and log in
+	// =========================================================================
+	t.Log("Step 1: Sign up and log in")
+
+	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	inputText(t, page, "#confirm_password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Login
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	currentURL := page.MustInfo().URL
+	if !strings.HasSuffix(currentURL, "/dashboard") {
+		t.Fatalf("Step 1 FAILED: Expected /dashboard, got: %s", currentURL)
+	}
+	t.Log("Step 1 PASSED: Signed up and logged in")
+
+	// =========================================================================
+	// Step 2: Add a repository
+	// =========================================================================
+	t.Log("Step 2: Add a repository")
+
+	page.MustNavigate(ts.URL + "/repositories/new").MustWaitLoad()
+	el := page.MustElement("#github_url")
+	el.MustSelectAllText().MustInput(testGitHubURL)
+	page.MustElement("form.auth-form").MustEval(`() => this.submit()`)
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	currentURL = page.MustInfo().URL
+	if !strings.Contains(currentURL, "/repositories/success") {
+		bodyText := page.MustElement("body").MustText()
+		t.Fatalf("Step 2 FAILED: Expected /repositories/success, got: %s\nBody: %s", currentURL, bodyText[:min(len(bodyText), 300)])
+	}
+	t.Log("Step 2 PASSED: Repository added")
+
+	// =========================================================================
+	// Step 3: Navigate to repository view
+	// =========================================================================
+	t.Log("Step 3: Navigate to repository view")
+
+	// Go to repositories list first
+	page.MustNavigate(ts.URL + "/repositories").MustWaitLoad()
+	page.MustWaitStable()
+
+	// Click on the repository to view it - find the view link
+	repoLinks := page.MustElements("a[href^='/repositories/']")
+	var repoViewLink *rod.Element
+	for _, link := range repoLinks {
+		linkHref := link.MustProperty("href").String()
+		if !strings.Contains(linkHref, "/edit") && !strings.Contains(linkHref, "/delete") && !strings.Contains(linkHref, "/webhook") && !strings.Contains(linkHref, "/new") && !strings.Contains(linkHref, "/success") {
+			repoViewLink = link
+			break
+		}
+	}
+	if repoViewLink == nil {
+		t.Fatal("Step 3 FAILED: Could not find repository view link")
+	}
+
+	repoViewLink.MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	currentURL = page.MustInfo().URL
+	if !strings.Contains(currentURL, "/repositories/") {
+		t.Fatalf("Step 3 FAILED: Expected repository view URL, got: %s", currentURL)
+	}
+	t.Log("Step 3 PASSED: On repository view page")
+
+	// =========================================================================
+	// Step 4: Click Delete Repository button
+	// =========================================================================
+	t.Log("Step 4: Click Delete Repository button")
+
+	deleteBtn := page.MustElement("a.btn-danger[href*='/delete']")
+	if deleteBtn == nil {
+		t.Fatal("Step 4 FAILED: Delete Repository button not found")
+	}
+
+	deleteBtn.MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	currentURL = page.MustInfo().URL
+	if !strings.Contains(currentURL, "/delete") {
+		t.Fatalf("Step 4 FAILED: Expected delete confirmation URL, got: %s", currentURL)
+	}
+	t.Log("Step 4 PASSED: On delete confirmation page")
+
+	// =========================================================================
+	// Step 5: Verify confirmation page content
+	// =========================================================================
+	t.Log("Step 5: Verify confirmation page content")
+
+	bodyText := page.MustElement("body").MustText()
+
+	// Should show repo name
+	if !strings.Contains(bodyText, "deletetest/myrepo") {
+		t.Fatalf("Step 5 FAILED: Expected repo name 'deletetest/myrepo' on confirmation page, got: %s", bodyText[:min(len(bodyText), 500)])
+	}
+
+	// Should show warning
+	if !strings.Contains(strings.ToLower(bodyText), "warning") {
+		t.Fatalf("Step 5 FAILED: Expected warning on confirmation page")
+	}
+
+	// Should have Delete and Cancel buttons
+	if !strings.Contains(bodyText, "Delete Repository") {
+		t.Fatal("Step 5 FAILED: Delete Repository button not found")
+	}
+	if !strings.Contains(bodyText, "Cancel") {
+		t.Fatal("Step 5 FAILED: Cancel button not found")
+	}
+	t.Log("Step 5 PASSED: Confirmation page shows repo name, warning, and buttons")
+
+	// =========================================================================
+	// Step 6: Test Cancel returns to repository view
+	// =========================================================================
+	t.Log("Step 6: Test Cancel button")
+
+	cancelBtn := page.MustElement("a.btn-secondary")
+	if cancelBtn == nil {
+		t.Fatal("Step 6 FAILED: Cancel button not found")
+	}
+
+	cancelBtn.MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	currentURL = page.MustInfo().URL
+	// Cancel should go back to repository view (not delete page)
+	if strings.Contains(currentURL, "/delete") {
+		t.Fatalf("Step 6 FAILED: Cancel should navigate away from delete page, got: %s", currentURL)
+	}
+	t.Log("Step 6 PASSED: Cancel returns to repository view")
+
+	// =========================================================================
+	// Step 7: Go back to delete and confirm deletion
+	// =========================================================================
+	t.Log("Step 7: Confirm deletion")
+
+	// Click delete button again
+	deleteBtn = page.MustElement("a.btn-danger[href*='/delete']")
+	deleteBtn.MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Now click the actual Delete Repository submit button
+	deleteSubmitBtn := page.MustElement("button.btn-danger[type='submit']")
+	if deleteSubmitBtn == nil {
+		t.Fatal("Step 7 FAILED: Delete submit button not found")
+	}
+
+	deleteSubmitBtn.MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Should redirect to repositories list
+	currentURL = page.MustInfo().URL
+	if !strings.HasSuffix(currentURL, "/repositories") {
+		t.Fatalf("Step 7 FAILED: Expected redirect to /repositories after delete, got: %s", currentURL)
+	}
+	t.Log("Step 7 PASSED: Delete successful, redirected to repositories list")
+
+	// =========================================================================
+	// Step 8: Verify repository is no longer in the list
+	// =========================================================================
+	t.Log("Step 8: Verify repository is deleted")
+
+	bodyText = page.MustElement("body").MustText()
+
+	// Repository should NOT appear in the list
+	if strings.Contains(bodyText, "deletetest/myrepo") {
+		t.Fatal("Step 8 FAILED: Deleted repository still appears in list")
+	}
+
+	t.Log("Step 8 PASSED: Repository no longer appears in list")
+
+	t.Log("=== DELETE REPOSITORY BROWSER E2E TEST PASSED ===")
+}
