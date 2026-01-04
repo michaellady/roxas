@@ -43,7 +43,7 @@ var templateFuncs = template.FuncMap{
 
 func init() {
 	pageTemplates = make(map[string]*template.Template)
-	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "connections.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "repository_delete.html", "webhook_regenerate.html", "webhook_deliveries.html", "connection_disconnect.html"}
+	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "connections.html", "connections_new.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "repository_delete.html", "webhook_regenerate.html", "webhook_deliveries.html", "connection_disconnect.html"}
 
 	for _, page := range pages {
 		// Clone the base template and parse the page with functions
@@ -368,6 +368,7 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("/dashboard", r.handleDashboard)
 	r.mux.HandleFunc("/logout", r.handleLogout)
 	r.mux.HandleFunc("/connections", r.handleConnections)
+	r.mux.HandleFunc("/connections/new", r.handleConnectionsNew)
 	r.mux.HandleFunc("/repositories", r.handleRepositories)
 	r.mux.HandleFunc("/repositories/new", r.handleRepositoriesNew)
 	r.mux.HandleFunc("/repositories/success", r.handleRepositoriesSuccess)
@@ -692,6 +693,26 @@ func (r *Router) handleConnections(w http.ResponseWriter, req *http.Request) {
 		Title: "Connections",
 		User:  &UserData{ID: claims.UserID, Email: claims.Email},
 		Data:  ConnectionsPageData{Connections: connections},
+	})
+}
+
+func (r *Router) handleConnectionsNew(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	r.renderPage(w, "connections_new.html", PageData{
+		Title: "Connect Account",
+		User:  &UserData{ID: claims.UserID, Email: claims.Email},
 	})
 }
 
