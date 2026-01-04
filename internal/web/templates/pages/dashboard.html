@@ -11,7 +11,10 @@
     {{else}}
 
     <section class="dashboard-section">
-        <h2>Repositories</h2>
+        <div class="section-header">
+            <h2>Repositories</h2>
+            <a href="/repositories/new" class="btn btn-primary btn-sm">Add Repository</a>
+        </div>
         {{if .Data.Repositories}}
         <div class="table-container">
             <table class="data-table">
@@ -19,6 +22,7 @@
                     <tr>
                         <th>Repository</th>
                         <th>Added</th>
+                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -26,13 +30,18 @@
                     <tr>
                         <td><a href="{{.GitHubURL}}" target="_blank">{{.GitHubURL}}</a></td>
                         <td>{{.CreatedAt.Format "Jan 02, 2006"}}</td>
+                        <td class="actions-cell">
+                            <a href="/repositories/{{.ID}}" class="btn btn-secondary btn-sm">View</a>
+                            <a href="/repositories/{{.ID}}/edit" class="btn btn-secondary btn-sm">Edit</a>
+                            <a href="/repositories/{{.ID}}/delete" class="btn btn-danger btn-sm">Delete</a>
+                        </td>
                     </tr>
                     {{end}}
                 </tbody>
             </table>
         </div>
         {{else}}
-        <p class="empty-message">No repositories yet. <a href="/repositories/new">Add your first repository</a></p>
+        <p class="empty-message">No repositories yet.</p>
         {{end}}
     </section>
 
