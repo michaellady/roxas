@@ -304,6 +304,22 @@ main {
     margin-bottom: 2rem;
 }
 
+.section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+
+.section-header h2 {
+    margin: 0;
+}
+
+.actions-cell {
+    display: flex;
+    gap: 0.5rem;
+}
+
 .card {
     background: white;
     border: 1px solid var(--border);
