@@ -1,0 +1,146 @@
+{{define "content"}}
+<div class="connections-new-container">
+    <h1>Connect Account</h1>
+    <p class="subtitle">Choose a platform to connect your social media account.</p>
+
+    {{if .Error}}
+    <div class="alert alert-error">{{.Error}}</div>
+    {{end}}
+
+    <div class="platform-cards">
+        <div class="platform-card">
+            <div class="platform-icon platform-bluesky">
+                <svg viewBox="0 0 24 24" width="48" height="48" fill="currentColor">
+                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
+                </svg>
+            </div>
+            <h3>Bluesky</h3>
+            <p>Connect using an App Password</p>
+            <a href="/connections/bluesky/connect" class="btn btn-primary">Connect</a>
+        </div>
+
+        <div class="platform-card platform-disabled">
+            <div class="platform-icon platform-threads">
+                <svg viewBox="0 0 24 24" width="48" height="48" fill="currentColor">
+                    <path d="M12.186 24h-.007c-3.581-.024-6.334-1.205-8.184-3.509C2.35 18.44 1.5 15.586 1.472 12.01v-.017c.03-3.579.879-6.43 2.525-8.482C5.845 1.205 8.6.024 12.18 0h.014c2.746.02 5.043.725 6.826 2.098 1.677 1.29 2.858 3.13 3.509 5.467l-2.04.569c-1.104-3.96-3.898-5.984-8.304-6.015-2.91.022-5.11.936-6.54 2.717C4.307 6.504 3.616 8.914 3.589 12c.027 3.086.718 5.496 2.057 7.164 1.43 1.783 3.631 2.698 6.54 2.717 2.623-.02 4.358-.631 5.8-2.045 1.647-1.613 1.618-3.593 1.09-4.798-.31-.71-.873-1.3-1.634-1.75-.192 1.352-.622 2.446-1.284 3.272-.886 1.102-2.14 1.704-3.73 1.79-1.202.065-2.361-.218-3.259-.801-1.063-.689-1.685-1.74-1.752-2.96-.065-1.182.408-2.256 1.33-3.022.88-.73 2.099-1.135 3.556-1.204 1.05-.05 2.032.018 2.941.203-.065-.742-.262-1.332-.606-1.763-.405-.506-1.058-.764-1.942-.77h-.053c-.752.007-1.7.218-2.274.654l-1.203-1.645c.875-.64 2.155-.98 3.503-.987h.082c1.577.014 2.812.514 3.676 1.488.757.853 1.2 2.007 1.313 3.43.472.119.915.27 1.322.455 1.117.508 1.988 1.264 2.519 2.186.647 1.127.795 2.541.417 3.978-.514 1.95-1.699 3.528-3.432 4.567-1.56.936-3.5 1.43-5.77 1.468zM8.67 13.452c-.018.327.096.607.34.834.298.278.72.423 1.258.434 1.1-.063 1.86-.456 2.32-1.202.41-.661.627-1.593.65-2.776-.63-.089-1.296-.119-1.992-.089-.991.046-1.78.298-2.283.728-.445.38-.283.765-.293 1.07z"/>
+                </svg>
+            </div>
+            <h3>Threads</h3>
+            <p>Coming soon</p>
+            <button class="btn btn-secondary" disabled>Coming Soon</button>
+        </div>
+
+        <div class="platform-card platform-disabled">
+            <div class="platform-icon platform-twitter">
+                <svg viewBox="0 0 24 24" width="48" height="48" fill="currentColor">
+                    <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+                </svg>
+            </div>
+            <h3>X (Twitter)</h3>
+            <p>Coming soon</p>
+            <button class="btn btn-secondary" disabled>Coming Soon</button>
+        </div>
+    </div>
+
+    <div class="back-link">
+        <a href="/connections">&larr; Back to Connections</a>
+    </div>
+</div>
+
+<style>
+.connections-new-container {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.connections-new-container h1 {
+    margin-bottom: 8px;
+}
+
+.subtitle {
+    color: #666;
+    margin-bottom: 30px;
+}
+
+.platform-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 24px;
+    margin-bottom: 30px;
+}
+
+.platform-card {
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: 12px;
+    padding: 30px;
+    text-align: center;
+    transition: box-shadow 0.2s, transform 0.2s;
+}
+
+.platform-card:hover:not(.platform-disabled) {
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    transform: translateY(-2px);
+}
+
+.platform-card.platform-disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.platform-icon {
+    width: 80px;
+    height: 80px;
+    margin: 0 auto 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+}
+
+.platform-icon.platform-bluesky {
+    background: #e8f4fd;
+    color: #0085ff;
+}
+
+.platform-icon.platform-threads {
+    background: #f0f0f0;
+    color: #000;
+}
+
+.platform-icon.platform-twitter {
+    background: #f0f0f0;
+    color: #000;
+}
+
+.platform-card h3 {
+    margin: 0 0 8px 0;
+    font-size: 1.25rem;
+}
+
+.platform-card p {
+    color: #666;
+    margin: 0 0 20px 0;
+    font-size: 0.9rem;
+}
+
+.platform-card .btn {
+    width: 100%;
+}
+
+.back-link {
+    margin-top: 20px;
+}
+
+.back-link a {
+    color: #666;
+    text-decoration: none;
+}
+
+.back-link a:hover {
+    color: #333;
+    text-decoration: underline;
+}
+</style>
+{{end}}
