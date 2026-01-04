@@ -1040,3 +1040,655 @@ func TestBrowser_WebhookDeliveries_OtherUserRepo(t *testing.T) {
 
 	t.Log("PASSED: User cannot view another user's webhook deliveries")
 }
+
+// TestBrowser_ConnectionDisconnect tests the connection disconnect confirmation flow in a real browser.
+// Tests: auth required, confirmation page display, disconnect action, redirect after disconnect.
+func TestBrowser_ConnectionDisconnect(t *testing.T) {
+	// Setup test server with connection service
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Launch browser
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	testEmail := "disconnect-browser-test@example.com"
+	testPassword := "securepassword123"
+
+	// =========================================================================
+	// Step 1: Create user and add connection
+	// =========================================================================
+	t.Log("Step 1: Create user and add connection")
+
+	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	inputText(t, page, "#confirm_password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Get user and add a connection
+	user, err := userStore.GetUserByEmail(context.Background(), testEmail)
+	if err != nil || user == nil {
+		t.Fatalf("Step 1 FAILED: Could not get user: %v", err)
+	}
+	connService.AddConnection(user.ID, "twitter", "@testuser", "https://twitter.com/testuser")
+	t.Log("Step 1 PASSED: Created user and added Twitter connection")
+
+	// =========================================================================
+	// Step 2: Verify auth required for disconnect page
+	// =========================================================================
+	t.Log("Step 2: Verify auth required for disconnect page")
+
+	page.MustNavigate(ts.URL + "/connections/twitter/disconnect").MustWaitLoad()
+	page.MustWaitStable()
+
+	currentURL := page.MustInfo().URL
+	if !strings.HasSuffix(currentURL, "/login") {
+		t.Fatalf("Step 2 FAILED: Expected redirect to /login, got: %s", currentURL)
+	}
+	t.Log("Step 2 PASSED: Unauthenticated access redirects to login")
+
+	// =========================================================================
+	// Step 3: Login and view disconnect confirmation page
+	// =========================================================================
+	t.Log("Step 3: Login and view disconnect confirmation page")
+
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Navigate to disconnect page
+	page.MustNavigate(ts.URL + "/connections/twitter/disconnect").MustWaitLoad()
+	page.MustWaitStable()
+
+	// Verify page content
+	h1 := page.MustElement("h1").MustText()
+	if h1 != "Disconnect Account" {
+		t.Fatalf("Step 3 FAILED: Expected h1 'Disconnect Account', got: %s", h1)
+	}
+
+	bodyText := page.MustElement("body").MustText()
+	if !strings.Contains(bodyText, "twitter") {
+		t.Fatal("Step 3 FAILED: Expected platform 'twitter' in page")
+	}
+	if !strings.Contains(bodyText, "@testuser") {
+		t.Fatal("Step 3 FAILED: Expected display name '@testuser' in page")
+	}
+	if !strings.Contains(bodyText, "Are you sure") {
+		t.Fatal("Step 3 FAILED: Expected confirmation text in page")
+	}
+	t.Log("Step 3 PASSED: Disconnect confirmation page displays correctly")
+
+	// =========================================================================
+	// Step 4: Verify warning message is displayed
+	// =========================================================================
+	t.Log("Step 4: Verify warning message is displayed")
+
+	warningAlert := page.MustElement(".alert-warning")
+	warningText := warningAlert.MustText()
+	if !strings.Contains(warningText, "Warning") {
+		t.Fatalf("Step 4 FAILED: Expected warning message, got: %s", warningText)
+	}
+	t.Log("Step 4 PASSED: Warning message displayed")
+
+	// =========================================================================
+	// Step 5: Verify cancel button navigates back
+	// =========================================================================
+	t.Log("Step 5: Verify cancel button navigates back")
+
+	cancelBtn := page.MustElement("a.btn-secondary")
+	cancelText := cancelBtn.MustText()
+	if cancelText != "Cancel" {
+		t.Fatalf("Step 5 FAILED: Expected 'Cancel' button, got: %s", cancelText)
+	}
+	t.Log("Step 5 PASSED: Cancel button present")
+
+	// =========================================================================
+	// Step 6: Click disconnect button and verify redirect
+	// =========================================================================
+	t.Log("Step 6: Click disconnect button and verify redirect")
+
+	// Find and click the disconnect button (submit form)
+	disconnectBtn := page.MustElement("button.btn-danger")
+	disconnectText := disconnectBtn.MustText()
+	if !strings.Contains(disconnectText, "Disconnect") {
+		t.Fatalf("Step 6 FAILED: Expected 'Disconnect' button, got: %s", disconnectText)
+	}
+
+	disconnectBtn.MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Should redirect to dashboard with success param
+	currentURL = page.MustInfo().URL
+	if !strings.Contains(currentURL, "/dashboard") {
+		t.Fatalf("Step 6 FAILED: Expected redirect to /dashboard, got: %s", currentURL)
+	}
+	if !strings.Contains(currentURL, "disconnected=twitter") {
+		t.Fatalf("Step 6 FAILED: Expected 'disconnected=twitter' in URL, got: %s", currentURL)
+	}
+	t.Log("Step 6 PASSED: Disconnect successful, redirected to dashboard")
+
+	// =========================================================================
+	// Step 7: Verify connection is removed
+	// =========================================================================
+	t.Log("Step 7: Verify connection is removed")
+
+	_, err = connService.GetConnection(context.Background(), user.ID, "twitter")
+	if err == nil {
+		t.Fatal("Step 7 FAILED: Connection should have been removed")
+	}
+	t.Log("Step 7 PASSED: Connection successfully removed")
+
+	t.Log("=== CONNECTION DISCONNECT BROWSER E2E TEST PASSED ===")
+}
+
+// TestBrowser_ConnectionDisconnect_NotFound tests that disconnect returns 404 for non-existent connections.
+func TestBrowser_ConnectionDisconnect_NotFound(t *testing.T) {
+	// Setup test server
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	testEmail := "no-conn-test@example.com"
+	testPassword := "securepassword123"
+
+	// Create user (no connection)
+	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	inputText(t, page, "#confirm_password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Login
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// =========================================================================
+	// Test: Try to disconnect non-existent connection
+	// =========================================================================
+	t.Log("Testing: Disconnect non-existent connection returns 404")
+
+	page.MustNavigate(ts.URL + "/connections/twitter/disconnect").MustWaitLoad()
+	page.MustWaitStable()
+
+	bodyText := page.MustElement("body").MustText()
+	if !strings.Contains(bodyText, "404") && !strings.Contains(strings.ToLower(bodyText), "not found") {
+		// If we see the disconnect page, that's wrong
+		if strings.Contains(bodyText, "Disconnect Account") {
+			t.Fatal("FAILED: Should not show disconnect page for non-existent connection")
+		}
+	}
+
+	t.Log("PASSED: Non-existent connection returns 404")
+}
+
+// TestBrowser_TestWebhookButton tests clicking the Test Webhook button in repository view
+func TestBrowser_TestWebhookButton(t *testing.T) {
+	// Fixed webhook secret for deterministic testing
+	const testWebhookSecret = "test-webhook-secret-for-browser"
+	const testWebhookBaseURL = "https://api.roxas.test"
+
+	// Setup test server with mock stores
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	secretGen := &MockSecretGeneratorForWeb{Secret: testWebhookSecret}
+	webhookTester := NewMockWebhookTester()
+	router := NewRouterWithWebhookTester(userStore, repoStore, nil, nil, secretGen, testWebhookBaseURL, webhookTester)
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Launch browser
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	testEmail := "webhook-test@example.com"
+	testPassword := "securepassword123"
+	testGitHubURL := "https://github.com/webhooktest/myrepo"
+
+	// =========================================================================
+	// Step 1: Sign up
+	// =========================================================================
+	t.Log("Step 1: Sign up new user")
+
+	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
+
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	inputText(t, page, "#confirm_password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+	t.Log("Step 1 PASSED: Sign up successful")
+
+	// =========================================================================
+	// Step 2: Log in
+	// =========================================================================
+	t.Log("Step 2: Log in")
+
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+	t.Log("Step 2 PASSED: Login successful")
+
+	// =========================================================================
+	// Step 3: Add a repository
+	// =========================================================================
+	t.Log("Step 3: Add a repository")
+
+	page.MustNavigate(ts.URL + "/repositories/new").MustWaitLoad()
+
+	el := page.MustElement("#github_url")
+	el.MustSelectAllText().MustInput(testGitHubURL)
+	page.MustElement("form.auth-form").MustEval(`() => this.submit()`)
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	currentURL := page.MustInfo().URL
+	if !strings.Contains(currentURL, "/repositories/success") {
+		t.Fatalf("Step 3 FAILED: Expected /repositories/success, got: %s", currentURL)
+	}
+	t.Log("Step 3 PASSED: Repository added")
+
+	// =========================================================================
+	// Step 4: Navigate to repository view
+	// =========================================================================
+	t.Log("Step 4: Navigate to repository view")
+
+	// Go to dashboard first
+	page.MustNavigate(ts.URL + "/dashboard").MustWaitLoad()
+	page.MustWaitStable()
+
+	// Navigate to repositories list
+	page.MustNavigate(ts.URL + "/repositories").MustWaitLoad()
+	page.MustWaitStable()
+
+	// Click on the repository to view it (link is in the Actions column as "View" button)
+	repoLink := page.MustElement("table a.btn-small[href^='/repositories/']")
+	repoLink.MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	currentURL = page.MustInfo().URL
+	if !strings.Contains(currentURL, "/repositories/") {
+		t.Fatalf("Step 4 FAILED: Expected to be on repository view, got: %s", currentURL)
+	}
+	t.Log("Step 4 PASSED: On repository view page")
+
+	// =========================================================================
+	// Step 5: Click Test Webhook button
+	// =========================================================================
+	t.Log("Step 5: Click Test Webhook button")
+
+	// Find the Test Webhook button
+	testWebhookBtn := page.MustElement("#test-webhook-btn")
+	if testWebhookBtn == nil {
+		t.Fatal("Step 5 FAILED: Test Webhook button not found")
+	}
+
+	// Click the button
+	testWebhookBtn.MustClick()
+
+	// Wait for the async request to complete
+	// The button should show "Testing..." then back to "Test Webhook"
+	page.MustWaitStable()
+
+	// Give time for the fetch to complete
+	time.Sleep(500 * time.Millisecond)
+
+	// =========================================================================
+	// Step 6: Verify success message is displayed
+	// =========================================================================
+	t.Log("Step 6: Verify success message")
+
+	resultSpan := page.MustElement("#webhook-test-result")
+	if resultSpan == nil {
+		t.Fatal("Step 6 FAILED: Result span not found")
+	}
+
+	resultText := resultSpan.MustText()
+	if !strings.Contains(resultText, "Success") {
+		t.Fatalf("Step 6 FAILED: Expected 'Success' in result, got: %s", resultText)
+	}
+
+	// Verify the result has success styling
+	resultClass := resultSpan.MustProperty("className").String()
+	if !strings.Contains(resultClass, "status-success") {
+		t.Logf("Warning: Expected status-success class, got: %s", resultClass)
+	}
+
+	t.Log("Step 6 PASSED: Success message displayed")
+
+	t.Log("=== TEST WEBHOOK BUTTON BROWSER E2E TEST PASSED ===")
+}
+
+// TestBrowser_TestWebhookButton_Failure tests the webhook test button when webhook fails
+func TestBrowser_TestWebhookButton_Failure(t *testing.T) {
+	const testWebhookSecret = "test-webhook-secret-fail"
+	const testWebhookBaseURL = "https://api.roxas.test"
+
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	secretGen := &MockSecretGeneratorForWeb{Secret: testWebhookSecret}
+	webhookTester := NewMockWebhookTester()
+	webhookTester.SetShouldError(true) // Make webhook fail
+	router := NewRouterWithWebhookTester(userStore, repoStore, nil, nil, secretGen, testWebhookBaseURL, webhookTester)
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	testEmail := "webhook-fail-test@example.com"
+	testPassword := "securepassword123"
+	testGitHubURL := "https://github.com/webhookfail/myrepo"
+
+	// Sign up and login
+	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	inputText(t, page, "#confirm_password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Add a repository
+	page.MustNavigate(ts.URL + "/repositories/new").MustWaitLoad()
+	el := page.MustElement("#github_url")
+	el.MustSelectAllText().MustInput(testGitHubURL)
+	page.MustElement("form.auth-form").MustEval(`() => this.submit()`)
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Navigate to repositories list and view
+	page.MustNavigate(ts.URL + "/repositories").MustWaitLoad()
+	page.MustWaitStable()
+
+	repoLink := page.MustElement("table a.btn-small[href^='/repositories/']")
+	repoLink.MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Click Test Webhook button
+	t.Log("Clicking Test Webhook button (expecting failure)")
+	testWebhookBtn := page.MustElement("#test-webhook-btn")
+	testWebhookBtn.MustClick()
+	page.MustWaitStable()
+	time.Sleep(500 * time.Millisecond)
+
+	// Verify error message is displayed
+	resultSpan := page.MustElement("#webhook-test-result")
+	resultText := resultSpan.MustText()
+
+	if !strings.Contains(resultText, "Failed") && !strings.Contains(resultText, "Error") && !strings.Contains(resultText, "error") {
+		t.Fatalf("Expected 'Failed' or 'Error' in result, got: %s", resultText)
+	}
+
+	// Verify the result has error styling
+	resultClass := resultSpan.MustProperty("className").String()
+	if !strings.Contains(resultClass, "status-error") {
+		t.Logf("Warning: Expected status-error class, got: %s", resultClass)
+	}
+
+	t.Log("PASSED: Error message displayed correctly for failed webhook")
+}
+
+// TestBrowser_DeleteRepositoryFlow tests the complete delete repository workflow:
+// add repo → view repo → click delete → confirmation page → cancel → back to repo
+// then: click delete again → confirm delete → redirected to repositories list → repo gone
+func TestBrowser_DeleteRepositoryFlow(t *testing.T) {
+	// Setup test server with mock stores
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	secretGen := &MockSecretGeneratorForWeb{Secret: "test-secret"}
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, secretGen, "https://api.test")
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Launch browser
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	testEmail := "delete-test@example.com"
+	testPassword := "securepassword123"
+	testGitHubURL := "https://github.com/deletetest/myrepo"
+
+	// =========================================================================
+	// Step 1: Sign up and log in
+	// =========================================================================
+	t.Log("Step 1: Sign up and log in")
+
+	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	inputText(t, page, "#confirm_password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Login
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	currentURL := page.MustInfo().URL
+	if !strings.HasSuffix(currentURL, "/dashboard") {
+		t.Fatalf("Step 1 FAILED: Expected /dashboard, got: %s", currentURL)
+	}
+	t.Log("Step 1 PASSED: Signed up and logged in")
+
+	// =========================================================================
+	// Step 2: Add a repository
+	// =========================================================================
+	t.Log("Step 2: Add a repository")
+
+	page.MustNavigate(ts.URL + "/repositories/new").MustWaitLoad()
+	el := page.MustElement("#github_url")
+	el.MustSelectAllText().MustInput(testGitHubURL)
+	page.MustElement("form.auth-form").MustEval(`() => this.submit()`)
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	currentURL = page.MustInfo().URL
+	if !strings.Contains(currentURL, "/repositories/success") {
+		bodyText := page.MustElement("body").MustText()
+		t.Fatalf("Step 2 FAILED: Expected /repositories/success, got: %s\nBody: %s", currentURL, bodyText[:min(len(bodyText), 300)])
+	}
+	t.Log("Step 2 PASSED: Repository added")
+
+	// =========================================================================
+	// Step 3: Navigate to repository view
+	// =========================================================================
+	t.Log("Step 3: Navigate to repository view")
+
+	// Go to repositories list first
+	page.MustNavigate(ts.URL + "/repositories").MustWaitLoad()
+	page.MustWaitStable()
+
+	// Click on the repository to view it - find the view link
+	repoLinks := page.MustElements("a[href^='/repositories/']")
+	var repoViewLink *rod.Element
+	for _, link := range repoLinks {
+		linkHref := link.MustProperty("href").String()
+		if !strings.Contains(linkHref, "/edit") && !strings.Contains(linkHref, "/delete") && !strings.Contains(linkHref, "/webhook") && !strings.Contains(linkHref, "/new") && !strings.Contains(linkHref, "/success") {
+			repoViewLink = link
+			break
+		}
+	}
+	if repoViewLink == nil {
+		t.Fatal("Step 3 FAILED: Could not find repository view link")
+	}
+
+	repoViewLink.MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	currentURL = page.MustInfo().URL
+	if !strings.Contains(currentURL, "/repositories/") {
+		t.Fatalf("Step 3 FAILED: Expected repository view URL, got: %s", currentURL)
+	}
+	t.Log("Step 3 PASSED: On repository view page")
+
+	// =========================================================================
+	// Step 4: Click Delete Repository button
+	// =========================================================================
+	t.Log("Step 4: Click Delete Repository button")
+
+	deleteBtn := page.MustElement("a.btn-danger[href*='/delete']")
+	if deleteBtn == nil {
+		t.Fatal("Step 4 FAILED: Delete Repository button not found")
+	}
+
+	deleteBtn.MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	currentURL = page.MustInfo().URL
+	if !strings.Contains(currentURL, "/delete") {
+		t.Fatalf("Step 4 FAILED: Expected delete confirmation URL, got: %s", currentURL)
+	}
+	t.Log("Step 4 PASSED: On delete confirmation page")
+
+	// =========================================================================
+	// Step 5: Verify confirmation page content
+	// =========================================================================
+	t.Log("Step 5: Verify confirmation page content")
+
+	bodyText := page.MustElement("body").MustText()
+
+	// Should show repo name
+	if !strings.Contains(bodyText, "deletetest/myrepo") {
+		t.Fatalf("Step 5 FAILED: Expected repo name 'deletetest/myrepo' on confirmation page, got: %s", bodyText[:min(len(bodyText), 500)])
+	}
+
+	// Should show warning
+	if !strings.Contains(strings.ToLower(bodyText), "warning") {
+		t.Fatalf("Step 5 FAILED: Expected warning on confirmation page")
+	}
+
+	// Should have Delete and Cancel buttons
+	if !strings.Contains(bodyText, "Delete Repository") {
+		t.Fatal("Step 5 FAILED: Delete Repository button not found")
+	}
+	if !strings.Contains(bodyText, "Cancel") {
+		t.Fatal("Step 5 FAILED: Cancel button not found")
+	}
+	t.Log("Step 5 PASSED: Confirmation page shows repo name, warning, and buttons")
+
+	// =========================================================================
+	// Step 6: Test Cancel returns to repository view
+	// =========================================================================
+	t.Log("Step 6: Test Cancel button")
+
+	cancelBtn := page.MustElement("a.btn-secondary")
+	if cancelBtn == nil {
+		t.Fatal("Step 6 FAILED: Cancel button not found")
+	}
+
+	cancelBtn.MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	currentURL = page.MustInfo().URL
+	// Cancel should go back to repository view (not delete page)
+	if strings.Contains(currentURL, "/delete") {
+		t.Fatalf("Step 6 FAILED: Cancel should navigate away from delete page, got: %s", currentURL)
+	}
+	t.Log("Step 6 PASSED: Cancel returns to repository view")
+
+	// =========================================================================
+	// Step 7: Go back to delete and confirm deletion
+	// =========================================================================
+	t.Log("Step 7: Confirm deletion")
+
+	// Click delete button again
+	deleteBtn = page.MustElement("a.btn-danger[href*='/delete']")
+	deleteBtn.MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Now click the actual Delete Repository submit button
+	deleteSubmitBtn := page.MustElement("button.btn-danger[type='submit']")
+	if deleteSubmitBtn == nil {
+		t.Fatal("Step 7 FAILED: Delete submit button not found")
+	}
+
+	deleteSubmitBtn.MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Should redirect to repositories list
+	currentURL = page.MustInfo().URL
+	if !strings.HasSuffix(currentURL, "/repositories") {
+		t.Fatalf("Step 7 FAILED: Expected redirect to /repositories after delete, got: %s", currentURL)
+	}
+	t.Log("Step 7 PASSED: Delete successful, redirected to repositories list")
+
+	// =========================================================================
+	// Step 8: Verify repository is no longer in the list
+	// =========================================================================
+	t.Log("Step 8: Verify repository is deleted")
+
+	bodyText = page.MustElement("body").MustText()
+
+	// Repository should NOT appear in the list
+	if strings.Contains(bodyText, "deletetest/myrepo") {
+		t.Fatal("Step 8 FAILED: Deleted repository still appears in list")
+	}
+
+	t.Log("Step 8 PASSED: Repository no longer appears in list")
+
+	t.Log("=== DELETE REPOSITORY BROWSER E2E TEST PASSED ===")
+}

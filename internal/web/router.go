@@ -28,13 +28,26 @@ var staticFS embed.FS
 // Templates holds parsed HTML templates per page
 var pageTemplates map[string]*template.Template
 
+// templateFuncs provides helper functions for templates
+var templateFuncs = template.FuncMap{
+	"percent": func(remaining, limit int) int {
+		if limit == 0 {
+			return 0
+		}
+		return (remaining * 100) / limit
+	},
+	"le": func(a, b int) bool {
+		return a <= b
+	},
+}
+
 func init() {
 	pageTemplates = make(map[string]*template.Template)
-	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "repository_delete.html", "webhook_regenerate.html", "webhook_deliveries.html"}
+	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "connections.html", "connections_new.html", "bluesky_connect.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "repository_delete.html", "webhook_regenerate.html", "webhook_deliveries.html", "connection_disconnect.html"}
 
 	for _, page := range pages {
-		// Clone the base template and parse the page
-		t := template.Must(template.ParseFS(templatesFS,
+		// Clone the base template and parse the page with functions
+		t := template.Must(template.New("").Funcs(templateFuncs).ParseFS(templatesFS,
 			"templates/layouts/base.html",
 			"templates/pages/"+page,
 		))
@@ -158,7 +171,45 @@ type WebhookDelivery struct {
 // WebhookDeliveryStore interface for webhook delivery operations
 type WebhookDeliveryStore interface {
 	ListDeliveriesByRepository(ctx context.Context, repoID string, limit int) ([]*WebhookDelivery, error)
+	CreateDelivery(ctx context.Context, repoID, eventType string, payload []byte, statusCode int, errorMessage *string) (*WebhookDelivery, error)
 }
+
+// ConnectionService interface for connection management operations
+type ConnectionService interface {
+	GetConnection(ctx context.Context, userID, platform string) (*Connection, error)
+	Disconnect(ctx context.Context, userID, platform string) error
+}
+
+// BlueskyConnector handles Bluesky authentication with app passwords
+type BlueskyConnector interface {
+	// Connect authenticates with Bluesky and stores the connection
+	// handle: Bluesky handle (e.g., "user.bsky.social" or "@user")
+	// appPassword: App password from bsky.app/settings/app-passwords
+	Connect(ctx context.Context, userID, handle, appPassword string) (*BlueskyConnectResult, error)
+}
+
+// BlueskyConnectResult contains the result of connecting a Bluesky account
+type BlueskyConnectResult struct {
+	Handle      string
+	DID         string
+	DisplayName string
+	Success     bool
+	Error       string
+}
+
+// Connection represents a user's connection to a social platform
+type Connection struct {
+	Platform    string
+	Status      string
+	DisplayName string
+	ProfileURL  string
+}
+
+// Connection status constants
+const (
+	ConnectionStatusConnected    = "connected"
+	ConnectionStatusDisconnected = "disconnected"
+)
 
 // DashboardCommit represents a commit for the dashboard
 type DashboardCommit struct {
@@ -176,6 +227,27 @@ type DashboardPost struct {
 	Status   string
 }
 
+// ConnectionLister retrieves connections with rate limits for a user
+type ConnectionLister interface {
+	ListConnectionsWithRateLimits(ctx context.Context, userID string) ([]*ConnectionData, error)
+}
+
+// ConnectionData represents connection with rate limit for templates
+type ConnectionData struct {
+	Platform    string
+	Status      string
+	DisplayName string
+	IsHealthy   bool
+	RateLimit   *RateLimitData
+}
+
+// RateLimitData represents rate limit info for templates
+type RateLimitData struct {
+	Limit     int
+	Remaining int
+	ResetAt   time.Time
+}
+
 // Router is the main HTTP router for the web UI
 type Router struct {
 	mux                  *http.ServeMux
@@ -187,6 +259,9 @@ type Router struct {
 	webhookURL           string
 	webhookTester        WebhookTester
 	webhookDeliveryStore WebhookDeliveryStore
+	connectionLister     ConnectionLister
+	connectionService    ConnectionService
+	blueskyConnector     BlueskyConnector
 }
 
 // NewRouter creates a new web router with all routes configured (no user store)
@@ -255,6 +330,56 @@ func NewRouterWithWebhookDeliveries(userStore UserStore, repoStore RepositorySto
 	return r
 }
 
+// NewRouterWithConnectionLister creates a new web router with connection lister for rate limits (hq-w12c)
+func NewRouterWithConnectionLister(userStore UserStore, connectionLister ConnectionLister) *Router {
+	r := &Router{
+		mux:              http.NewServeMux(),
+		userStore:        userStore,
+		connectionLister: connectionLister,
+	}
+	r.setupRoutes()
+	return r
+}
+
+// NewRouterWithConnectionService creates a new web router with connection service
+func NewRouterWithConnectionService(userStore UserStore, connectionService ConnectionService) *Router {
+	r := &Router{
+		mux:               http.NewServeMux(),
+		userStore:         userStore,
+		connectionService: connectionService,
+	}
+	r.setupRoutes()
+	return r
+}
+
+// NewRouterWithBlueskyConnector creates a new web router with Bluesky connector
+func NewRouterWithBlueskyConnector(userStore UserStore, blueskyConnector BlueskyConnector) *Router {
+	r := &Router{
+		mux:              http.NewServeMux(),
+		userStore:        userStore,
+		blueskyConnector: blueskyConnector,
+	}
+	r.setupRoutes()
+	return r
+}
+
+// NewRouterWithWebhookTesterAndDeliveries creates a new web router with both webhook tester and delivery store
+func NewRouterWithWebhookTesterAndDeliveries(userStore UserStore, repoStore RepositoryStore, commitLister CommitLister, postLister PostLister, secretGen SecretGenerator, webhookURL string, webhookTester WebhookTester, webhookDeliveryStore WebhookDeliveryStore) *Router {
+	r := &Router{
+		mux:                  http.NewServeMux(),
+		userStore:            userStore,
+		repoStore:            repoStore,
+		commitLister:         commitLister,
+		postLister:           postLister,
+		secretGen:            secretGen,
+		webhookURL:           webhookURL,
+		webhookTester:        webhookTester,
+		webhookDeliveryStore: webhookDeliveryStore,
+	}
+	r.setupRoutes()
+	return r
+}
+
 // ServeHTTP implements http.Handler
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.mux.ServeHTTP(w, req)
@@ -271,6 +396,8 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("/signup", r.handleSignup)
 	r.mux.HandleFunc("/dashboard", r.handleDashboard)
 	r.mux.HandleFunc("/logout", r.handleLogout)
+	r.mux.HandleFunc("/connections", r.handleConnections)
+	r.mux.HandleFunc("/connections/new", r.handleConnectionsNew)
 	r.mux.HandleFunc("/repositories", r.handleRepositories)
 	r.mux.HandleFunc("/repositories/new", r.handleRepositoriesNew)
 	r.mux.HandleFunc("/repositories/success", r.handleRepositoriesSuccess)
@@ -282,6 +409,12 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("/repositories/{id}/webhook/test", r.handleWebhookTest)
 	r.mux.HandleFunc("/repositories/{id}/webhook/regenerate", r.handleWebhookRegenerate)
 	r.mux.HandleFunc("GET /repositories/{id}/webhooks", r.handleWebhookDeliveries)
+
+	// Connection management
+	r.mux.HandleFunc("GET /connections/bluesky/connect", r.handleBlueskyConnect)
+	r.mux.HandleFunc("POST /connections/bluesky/connect", r.handleBlueskyConnectPost)
+	r.mux.HandleFunc("GET /connections/{platform}/disconnect", r.handleConnectionDisconnect)
+	r.mux.HandleFunc("POST /connections/{platform}/disconnect", r.handleConnectionDisconnectPost)
 }
 
 func (r *Router) handleHome(w http.ResponseWriter, req *http.Request) {
@@ -552,6 +685,161 @@ func (r *Router) handleLogout(w http.ResponseWriter, req *http.Request) {
 
 	// Redirect to login page
 	http.Redirect(w, req, "/login", http.StatusSeeOther)
+}
+
+// =============================================================================
+// Connections Page (hq-w12c)
+// =============================================================================
+
+// ConnectionsPageData holds data for the connections page
+type ConnectionsPageData struct {
+	Connections []*ConnectionData
+}
+
+func (r *Router) handleConnections(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get connections with rate limits
+	var connections []*ConnectionData
+	if r.connectionLister != nil {
+		connections, err = r.connectionLister.ListConnectionsWithRateLimits(req.Context(), claims.UserID)
+		if err != nil {
+			// Log error but show empty state
+			connections = []*ConnectionData{}
+		}
+	}
+
+	r.renderPage(w, "connections.html", PageData{
+		Title: "Connections",
+		User:  &UserData{ID: claims.UserID, Email: claims.Email},
+		Data:  ConnectionsPageData{Connections: connections},
+	})
+}
+
+func (r *Router) handleConnectionsNew(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	r.renderPage(w, "connections_new.html", PageData{
+		Title: "Connect Account",
+		User:  &UserData{ID: claims.UserID, Email: claims.Email},
+	})
+}
+
+func (r *Router) handleBlueskyConnect(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	r.renderPage(w, "bluesky_connect.html", PageData{
+		Title: "Connect Bluesky",
+		User:  &UserData{ID: claims.UserID, Email: claims.Email},
+	})
+}
+
+func (r *Router) handleBlueskyConnectPost(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Parse form
+	if err := req.ParseForm(); err != nil {
+		r.renderPage(w, "bluesky_connect.html", PageData{
+			Title: "Connect Bluesky",
+			User:  &UserData{ID: claims.UserID, Email: claims.Email},
+			Error: "Invalid form data",
+		})
+		return
+	}
+
+	handle := strings.TrimSpace(req.FormValue("handle"))
+	appPassword := req.FormValue("app_password")
+
+	// Validate input
+	if handle == "" || appPassword == "" {
+		r.renderPage(w, "bluesky_connect.html", PageData{
+			Title: "Connect Bluesky",
+			User:  &UserData{ID: claims.UserID, Email: claims.Email},
+			Error: "Handle and App Password are required",
+		})
+		return
+	}
+
+	// Check if connector is available
+	if r.blueskyConnector == nil {
+		r.renderPage(w, "bluesky_connect.html", PageData{
+			Title: "Connect Bluesky",
+			User:  &UserData{ID: claims.UserID, Email: claims.Email},
+			Error: "Bluesky connection not configured",
+		})
+		return
+	}
+
+	// Connect to Bluesky
+	result, err := r.blueskyConnector.Connect(req.Context(), claims.UserID, handle, appPassword)
+	if err != nil {
+		errMsg := "Failed to connect to Bluesky"
+		if err.Error() != "" {
+			errMsg = err.Error()
+		}
+		r.renderPage(w, "bluesky_connect.html", PageData{
+			Title: "Connect Bluesky",
+			User:  &UserData{ID: claims.UserID, Email: claims.Email},
+			Error: errMsg,
+		})
+		return
+	}
+
+	if !result.Success {
+		r.renderPage(w, "bluesky_connect.html", PageData{
+			Title: "Connect Bluesky",
+			User:  &UserData{ID: claims.UserID, Email: claims.Email},
+			Error: result.Error,
+		})
+		return
+	}
+
+	// Success - redirect to connections list
+	http.Redirect(w, req, "/connections?connected=bluesky", http.StatusSeeOther)
 }
 
 // RepositoriesListData holds data for the repositories list page
@@ -1252,12 +1540,15 @@ func (r *Router) handleWebhookTest(w http.ResponseWriter, req *http.Request) {
 
 	// Test the webhook
 	var result WebhookTestResult
+	var statusCode int
+	var testErr error
+
 	if r.webhookTester != nil {
-		statusCode, err := r.webhookTester.TestWebhook(req.Context(), webhookURL, repo.WebhookSecret)
-		if err != nil {
+		statusCode, testErr = r.webhookTester.TestWebhook(req.Context(), webhookURL, repo.WebhookSecret)
+		if testErr != nil {
 			result = WebhookTestResult{
 				Success: false,
-				Error:   fmt.Sprintf("Connection failed: %v", err),
+				Error:   fmt.Sprintf("Connection failed: %v", testErr),
 			}
 		} else if statusCode >= 200 && statusCode < 300 {
 			result = WebhookTestResult{
@@ -1270,6 +1561,20 @@ func (r *Router) handleWebhookTest(w http.ResponseWriter, req *http.Request) {
 				StatusCode: statusCode,
 				Error:      fmt.Sprintf("Webhook returned status %d", statusCode),
 			}
+		}
+
+		// Record the delivery if store is configured
+		if r.webhookDeliveryStore != nil {
+			testPayload := []byte(`{"zen": "Webhook test ping", "hook_id": 0}`)
+			var errorMsg *string
+			if testErr != nil {
+				errStr := testErr.Error()
+				errorMsg = &errStr
+			} else if !result.Success {
+				errorMsg = &result.Error
+			}
+			// Ignore errors from recording - test result is what matters to user
+			_, _ = r.webhookDeliveryStore.CreateDelivery(req.Context(), repoID, "ping", testPayload, statusCode, errorMsg)
 		}
 	} else {
 		result = WebhookTestResult{
@@ -1531,4 +1836,133 @@ func (r *Router) handleWebhookDeliveries(w http.ResponseWriter, req *http.Reques
 			RepoName:   repoName,
 		},
 	})
+}
+
+// ConnectionDisconnectData holds data for the connection disconnect page
+type ConnectionDisconnectData struct {
+	Platform    string
+	DisplayName string
+	ProfileURL  string
+}
+
+func (r *Router) handleConnectionDisconnect(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get platform from path
+	platform := req.PathValue("platform")
+	if platform == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Check if connection service is available
+	if r.connectionService == nil {
+		r.renderPage(w, "connection_disconnect.html", PageData{
+			Title: "Disconnect " + platform,
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Connection service not configured",
+		})
+		return
+	}
+
+	// Get the connection
+	conn, err := r.connectionService.GetConnection(req.Context(), claims.UserID, platform)
+	if err != nil {
+		http.NotFound(w, req)
+		return
+	}
+
+	r.renderPage(w, "connection_disconnect.html", PageData{
+		Title: "Disconnect " + platform,
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+		Data: &ConnectionDisconnectData{
+			Platform:    conn.Platform,
+			DisplayName: conn.DisplayName,
+			ProfileURL:  conn.ProfileURL,
+		},
+	})
+}
+
+func (r *Router) handleConnectionDisconnectPost(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get platform from path
+	platform := req.PathValue("platform")
+	if platform == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Check if connection service is available
+	if r.connectionService == nil {
+		r.renderPage(w, "connection_disconnect.html", PageData{
+			Title: "Disconnect " + platform,
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Connection service not configured",
+		})
+		return
+	}
+
+	// Get the connection first to verify it exists
+	conn, err := r.connectionService.GetConnection(req.Context(), claims.UserID, platform)
+	if err != nil {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Disconnect the account
+	err = r.connectionService.Disconnect(req.Context(), claims.UserID, platform)
+	if err != nil {
+		r.renderPage(w, "connection_disconnect.html", PageData{
+			Title: "Disconnect " + platform,
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Failed to disconnect account",
+			Data: &ConnectionDisconnectData{
+				Platform:    conn.Platform,
+				DisplayName: conn.DisplayName,
+				ProfileURL:  conn.ProfileURL,
+			},
+		})
+		return
+	}
+
+	// Redirect to dashboard with success message
+	// Using query param for flash message since we don't have session-based flash
+	http.Redirect(w, req, "/dashboard?disconnected="+platform, http.StatusSeeOther)
 }
