@@ -48,7 +48,8 @@
             {{end}}
 
             <div class="connection-actions">
-                <a href="/connections/{{.Platform}}/test" class="btn btn-secondary btn-sm">Test</a>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="testConnection('{{.Platform}}', this)">Test</button>
+                <span class="test-result test-result-{{.Platform}}"></span>
                 <a href="/connections/{{.Platform}}/disconnect" class="btn btn-danger btn-sm">Disconnect</a>
             </div>
         </div>
@@ -183,5 +184,54 @@
     color: #666;
     margin-bottom: 20px;
 }
+
+.test-result {
+    display: inline-block;
+    margin-left: 8px;
+    font-size: 13px;
+}
+
+.test-result.status-success {
+    color: #4caf50;
+}
+
+.test-result.status-error {
+    color: #f44336;
+}
 </style>
+
+<script>
+async function testConnection(platform, btn) {
+    const result = btn.nextElementSibling;
+    btn.disabled = true;
+    btn.textContent = 'Testing...';
+    result.textContent = '';
+    result.className = 'test-result test-result-' + platform;
+
+    try {
+        const response = await fetch('/connections/' + encodeURIComponent(platform) + '/test', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+
+        const data = await response.json();
+
+        if (data.healthy) {
+            result.textContent = 'Healthy (' + data.latency_ms + 'ms)';
+            result.className = 'test-result test-result-' + platform + ' status-success';
+        } else {
+            result.textContent = 'Failed: ' + data.error;
+            result.className = 'test-result test-result-' + platform + ' status-error';
+        }
+    } catch (error) {
+        result.textContent = 'Error: ' + error.message;
+        result.className = 'test-result test-result-' + platform + ' status-error';
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Test';
+    }
+}
+</script>
 {{end}}

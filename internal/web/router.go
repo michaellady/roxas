@@ -178,6 +178,15 @@ type WebhookDeliveryStore interface {
 type ConnectionService interface {
 	GetConnection(ctx context.Context, userID, platform string) (*Connection, error)
 	Disconnect(ctx context.Context, userID, platform string) error
+	TestConnection(ctx context.Context, userID, platform string) (*ConnectionTestResult, error)
+}
+
+// ConnectionTestResult represents the result of testing a connection
+type ConnectionTestResult struct {
+	Success  bool
+	Latency  time.Duration
+	TestedAt time.Time
+	Error    string
 }
 
 // BlueskyConnector handles Bluesky authentication with app passwords
@@ -413,6 +422,7 @@ func (r *Router) setupRoutes() {
 	// Connection management
 	r.mux.HandleFunc("GET /connections/bluesky/connect", r.handleBlueskyConnect)
 	r.mux.HandleFunc("POST /connections/bluesky/connect", r.handleBlueskyConnectPost)
+	r.mux.HandleFunc("POST /connections/{platform}/test", r.handleConnectionTest)
 	r.mux.HandleFunc("GET /connections/{platform}/disconnect", r.handleConnectionDisconnect)
 	r.mux.HandleFunc("POST /connections/{platform}/disconnect", r.handleConnectionDisconnectPost)
 }
@@ -1965,4 +1975,61 @@ func (r *Router) handleConnectionDisconnectPost(w http.ResponseWriter, req *http
 	// Redirect to dashboard with success message
 	// Using query param for flash message since we don't have session-based flash
 	http.Redirect(w, req, "/dashboard?disconnected="+platform, http.StatusSeeOther)
+}
+
+// handleConnectionTest handles POST /connections/{platform}/test
+// Returns JSON response with connection health status
+func (r *Router) handleConnectionTest(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"healthy": false, "error": "Not authenticated"}`)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"healthy": false, "error": "Invalid token"}`)
+		return
+	}
+
+	// Get platform from path
+	platform := req.PathValue("platform")
+	if platform == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"healthy": false, "error": "Platform not specified"}`)
+		return
+	}
+
+	// Check if connection service is available
+	if r.connectionService == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, `{"healthy": false, "error": "Connection service not configured"}`)
+		return
+	}
+
+	// Test the connection
+	result, err := r.connectionService.TestConnection(req.Context(), claims.UserID, platform)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprintf(w, `{"healthy": false, "error": %q}`, err.Error())
+		return
+	}
+
+	// Return JSON response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if result.Success {
+		fmt.Fprintf(w, `{"healthy": true, "latency_ms": %d}`, result.Latency.Milliseconds())
+	} else {
+		fmt.Fprintf(w, `{"healthy": false, "error": %q}`, result.Error)
+	}
 }

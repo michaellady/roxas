@@ -3196,6 +3196,21 @@ func (s *MockConnectionService) Disconnect(ctx context.Context, userID, platform
 	return nil
 }
 
+func (s *MockConnectionService) TestConnection(ctx context.Context, userID, platform string) (*ConnectionTestResult, error) {
+	userConns, ok := s.connections[userID]
+	if !ok {
+		return nil, errors.New("connection not found")
+	}
+	if _, ok := userConns[platform]; !ok {
+		return nil, errors.New("connection not found")
+	}
+	return &ConnectionTestResult{
+		Success:  true,
+		Latency:  75 * time.Millisecond,
+		TestedAt: time.Now(),
+	}, nil
+}
+
 func (s *MockConnectionService) AddConnection(userID, platform, displayName, profileURL string) {
 	if s.connections[userID] == nil {
 		s.connections[userID] = make(map[string]*Connection)
@@ -3392,5 +3407,73 @@ func TestRouter_PostConnectionDisconnect_OtherUserConnection_Returns404(t *testi
 	conn, err := connService.GetConnection(context.Background(), user1.ID, "twitter")
 	if err != nil || conn == nil {
 		t.Errorf("User1's connection should NOT have been deleted by user2")
+	}
+}
+
+// =============================================================================
+// Connection Test Endpoint Tests (valkyrie-1)
+// =============================================================================
+
+func TestRouter_PostConnectionTest_WithoutAuth_ReturnsUnauthorized(t *testing.T) {
+	router := NewRouter()
+
+	req := httptest.NewRequest(http.MethodPost, "/connections/bluesky/test", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("Expected status 401, got %d", rr.Code)
+	}
+
+	if !strings.Contains(rr.Body.String(), "Not authenticated") {
+		t.Errorf("Expected 'Not authenticated' error, got: %s", rr.Body.String())
+	}
+}
+
+func TestRouter_PostConnectionTest_NotFound_ReturnsNotFound(t *testing.T) {
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodPost, "/connections/bluesky/test", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404, got %d", rr.Code)
+	}
+}
+
+func TestRouter_PostConnectionTest_Success_ReturnsHealthy(t *testing.T) {
+	userStore := NewMockUserStore()
+	connService := NewMockConnectionService()
+	router := NewRouterWithConnectionService(userStore, connService)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	connService.AddConnection(user.ID, "bluesky", "@test.bsky.social", "https://bsky.app/profile/test.bsky.social")
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodPost, "/connections/bluesky/test", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	if !strings.Contains(body, `"healthy":true`) && !strings.Contains(body, `"healthy": true`) {
+		t.Errorf("Expected healthy:true in response, got: %s", body)
+	}
+	if !strings.Contains(body, `"latency_ms"`) {
+		t.Errorf("Expected latency_ms in response, got: %s", body)
 	}
 }
