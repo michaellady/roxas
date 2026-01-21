@@ -21,12 +21,17 @@ var ErrDuplicatePost = errors.New("post already exists for this commit and platf
 
 // Post represents a generated social media post in the database
 type Post struct {
-	ID        string
-	CommitID  string
-	Platform  string
-	Content   string
-	Status    string // draft, posted, failed
-	CreatedAt time.Time
+	ID              string
+	CommitID        string  // Deprecated: use DraftID for new posts
+	DraftID         *string // New: reference to draft (nullable for legacy posts)
+	Platform        string
+	PlatformPostID  *string // ID returned by the platform after posting
+	PlatformPostURL *string // URL to the post on the platform
+	Content         string
+	Status          string // posted, failed (draft status now on drafts table)
+	ErrorMessage    *string
+	PostedAt        *time.Time
+	CreatedAt       time.Time
 }
 
 // Supported platforms for post generation
@@ -280,12 +285,17 @@ func (h *PostsHandler) writeError(w http.ResponseWriter, status int, message str
 
 // PostResponse is the post object in API responses
 type PostResponse struct {
-	ID        string `json:"id"`
-	CommitID  string `json:"commit_id"`
-	Platform  string `json:"platform"`
-	Content   string `json:"content"`
-	Status    string `json:"status"`
-	CreatedAt string `json:"created_at"`
+	ID              string  `json:"id"`
+	CommitID        string  `json:"commit_id,omitempty"`         // Deprecated
+	DraftID         *string `json:"draft_id,omitempty"`          // New
+	Platform        string  `json:"platform"`
+	PlatformPostID  *string `json:"platform_post_id,omitempty"`  // ID from platform
+	PlatformPostURL *string `json:"platform_post_url,omitempty"` // URL on platform
+	Content         string  `json:"content"`
+	Status          string  `json:"status"`
+	ErrorMessage    *string `json:"error_message,omitempty"`
+	PostedAt        *string `json:"posted_at,omitempty"`
+	CreatedAt       string  `json:"created_at"`
 }
 
 // CreatePostResponse is the response for creating a post
