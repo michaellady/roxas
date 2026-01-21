@@ -1791,8 +1791,8 @@ func TestBrowser_DraftsNavigation_LinkAppearsInNav(t *testing.T) {
 func TestBrowser_DraftsNavigation_BadgeShowsCount(t *testing.T) {
 	// Setup test server with mock stores including draft store
 	userStore := NewMockUserStore()
-	draftStore := NewMockDraftStore()
-	router := NewRouterWithDraftStore(userStore, draftStore)
+	draftStore := NewMockBrowserDraftStore()
+	router := NewRouterWithBrowserDraftStore(userStore, draftStore)
 
 	ts := httptest.NewServer(router)
 	defer ts.Close()
@@ -1828,20 +1828,26 @@ func TestBrowser_DraftsNavigation_BadgeShowsCount(t *testing.T) {
 	}
 
 	// Add 3 drafts for this user
-	draftStore.AddDraft(user.ID, &Draft{
-		ID:      "draft-1",
-		Title:   "Draft Post 1",
-		Content: "Content for draft 1",
+	draftStore.AddDraft(user.ID, &DraftItem{
+		ID:          "draft-1",
+		RepoName:    "test/repo",
+		PreviewText: "Content for draft 1",
+		Platform:    "threads",
+		CreatedAt:   time.Now(),
 	})
-	draftStore.AddDraft(user.ID, &Draft{
-		ID:      "draft-2",
-		Title:   "Draft Post 2",
-		Content: "Content for draft 2",
+	draftStore.AddDraft(user.ID, &DraftItem{
+		ID:          "draft-2",
+		RepoName:    "test/repo",
+		PreviewText: "Content for draft 2",
+		Platform:    "threads",
+		CreatedAt:   time.Now(),
 	})
-	draftStore.AddDraft(user.ID, &Draft{
-		ID:      "draft-3",
-		Title:   "Draft Post 3",
-		Content: "Content for draft 3",
+	draftStore.AddDraft(user.ID, &DraftItem{
+		ID:          "draft-3",
+		RepoName:    "test/repo",
+		PreviewText: "Content for draft 3",
+		Platform:    "threads",
+		CreatedAt:   time.Now(),
 	})
 
 	// Login
@@ -1883,10 +1889,12 @@ func TestBrowser_DraftsNavigation_BadgeShowsCount(t *testing.T) {
 	t.Log("Step 3: Verify badge updates when draft count changes")
 
 	// Add another draft
-	draftStore.AddDraft(user.ID, &Draft{
-		ID:      "draft-4",
-		Title:   "Draft Post 4",
-		Content: "Content for draft 4",
+	draftStore.AddDraft(user.ID, &DraftItem{
+		ID:          "draft-4",
+		RepoName:    "test/repo",
+		PreviewText: "Content for draft 4",
+		Platform:    "threads",
+		CreatedAt:   time.Now(),
 	})
 
 	// Reload the page
@@ -1914,8 +1922,8 @@ func TestBrowser_DraftsNavigation_BadgeShowsCount(t *testing.T) {
 func TestBrowser_DraftsNavigation_LinkNavigatesToDrafts(t *testing.T) {
 	// Setup test server with mock stores
 	userStore := NewMockUserStore()
-	draftStore := NewMockDraftStore()
-	router := NewRouterWithDraftStore(userStore, draftStore)
+	draftStore := NewMockBrowserDraftStore()
+	router := NewRouterWithBrowserDraftStore(userStore, draftStore)
 
 	ts := httptest.NewServer(router)
 	defer ts.Close()
@@ -1990,8 +1998,8 @@ func TestBrowser_DraftsNavigation_LinkNavigatesToDrafts(t *testing.T) {
 func TestBrowser_DraftsNavigation_BadgeHiddenWhenZero(t *testing.T) {
 	// Setup test server with mock stores (no drafts)
 	userStore := NewMockUserStore()
-	draftStore := NewMockDraftStore()
-	router := NewRouterWithDraftStore(userStore, draftStore)
+	draftStore := NewMockBrowserDraftStore()
+	router := NewRouterWithBrowserDraftStore(userStore, draftStore)
 
 	ts := httptest.NewServer(router)
 	defer ts.Close()
@@ -2044,40 +2052,29 @@ func TestBrowser_DraftsNavigation_BadgeHiddenWhenZero(t *testing.T) {
 // Mock Draft Store for Tests
 // =============================================================================
 
-// Draft represents a post draft
-type Draft struct {
-	ID        string
-	UserID    string
-	Title     string
-	Content   string
-	Platform  string
-	CreatedAt string
-	UpdatedAt string
-}
-
-// MockDraftStore implements DraftStore for tests
-type MockDraftStore struct {
+// MockBrowserDraftStore implements DraftLister and DraftCounter for browser tests
+// Uses DraftItem from router.go
+type MockBrowserDraftStore struct {
 	mu     sync.Mutex
-	drafts map[string][]*Draft // userID -> drafts
+	drafts map[string][]*DraftItem // userID -> drafts
 }
 
-// NewMockDraftStore creates a new mock draft store
-func NewMockDraftStore() *MockDraftStore {
-	return &MockDraftStore{
-		drafts: make(map[string][]*Draft),
+// NewMockBrowserDraftStore creates a new mock draft store for browser tests
+func NewMockBrowserDraftStore() *MockBrowserDraftStore {
+	return &MockBrowserDraftStore{
+		drafts: make(map[string][]*DraftItem),
 	}
 }
 
 // AddDraft adds a draft for a user
-func (s *MockDraftStore) AddDraft(userID string, draft *Draft) {
+func (s *MockBrowserDraftStore) AddDraft(userID string, draft *DraftItem) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	draft.UserID = userID
 	s.drafts[userID] = append(s.drafts[userID], draft)
 }
 
-// CountDraftsByUser returns the number of drafts for a user
-func (s *MockDraftStore) CountDraftsByUser(ctx context.Context, userID string) (int, error) {
+// CountDraftsByUser returns the number of drafts for a user (implements DraftCounter)
+func (s *MockBrowserDraftStore) CountDraftsByUser(ctx context.Context, userID string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if drafts, ok := s.drafts[userID]; ok {
@@ -2086,23 +2083,23 @@ func (s *MockDraftStore) CountDraftsByUser(ctx context.Context, userID string) (
 	return 0, nil
 }
 
-// ListDraftsByUser returns all drafts for a user
-func (s *MockDraftStore) ListDraftsByUser(ctx context.Context, userID string) ([]*Draft, error) {
+// ListDraftsByUser returns all drafts for a user (implements DraftLister)
+func (s *MockBrowserDraftStore) ListDraftsByUser(ctx context.Context, userID string) ([]*DraftItem, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if drafts, ok := s.drafts[userID]; ok {
 		return drafts, nil
 	}
-	return []*Draft{}, nil
+	return []*DraftItem{}, nil
 }
 
-// NewRouterWithDraftStore creates a new web router with draft store support
-// NOTE: This function needs to be implemented in router.go
-func NewRouterWithDraftStore(userStore UserStore, draftStore *MockDraftStore) *Router {
+// NewRouterWithBrowserDraftStore creates a router with draft support for browser tests
+func NewRouterWithBrowserDraftStore(userStore UserStore, draftStore *MockBrowserDraftStore) *Router {
 	r := &Router{
-		mux:       http.NewServeMux(),
-		userStore: userStore,
-		// draftStore: draftStore, // This field needs to be added to Router
+		mux:          http.NewServeMux(),
+		userStore:    userStore,
+		draftLister:  draftStore,
+		draftCounter: draftStore,
 	}
 	r.setupRoutes()
 	return r
