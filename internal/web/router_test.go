@@ -3959,66 +3959,43 @@ func NewRouterWithRouterDraftStore(userStore UserStore, draftStore DraftStoreInt
 // empty state, pagination
 // =============================================================================
 
-// DraftListItem represents a draft for the list page display
-type DraftListItem struct {
-	ID             string
-	RepositoryID   string
-	RepositoryName string // Display name (owner/repo)
-	ContentPreview string // First ~100 chars of content
-	Status         string // draft, posted, partial, failed, error
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-}
+// TDD DraftListItem type removed - using DraftItem from router.go
 
-// DraftLister interface for listing drafts - to be implemented
-type DraftLister interface {
-	ListDraftsByUser(ctx context.Context, userID string, page, pageSize int) ([]*DraftListItem, int, error)
-}
+// TDD DraftLister interface removed - real DraftLister is in router.go
 
-// MockDraftLister implements DraftLister for testing
+// MockDraftLister implements DraftLister for testing (matches router.go interface)
 type MockDraftLister struct {
 	mu       sync.Mutex
-	drafts   map[string][]*DraftListItem // userID -> drafts
-	total    map[string]int              // userID -> total count
+	drafts   map[string][]*DraftItem // userID -> drafts
 	errOnGet error
 }
 
 func NewMockDraftLister() *MockDraftLister {
 	return &MockDraftLister{
-		drafts: make(map[string][]*DraftListItem),
-		total:  make(map[string]int),
+		drafts: make(map[string][]*DraftItem),
 	}
 }
 
-func (m *MockDraftLister) AddDraft(userID string, draft *DraftListItem) {
+func (m *MockDraftLister) AddDraft(userID string, draft *DraftItem) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.drafts[userID] = append(m.drafts[userID], draft)
-	m.total[userID] = len(m.drafts[userID])
 }
 
-func (m *MockDraftLister) ListDraftsByUser(ctx context.Context, userID string, page, pageSize int) ([]*DraftListItem, int, error) {
+func (m *MockDraftLister) ListDraftsByUser(ctx context.Context, userID string) ([]*DraftItem, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if m.errOnGet != nil {
-		return nil, 0, m.errOnGet
+		return nil, m.errOnGet
 	}
 
 	drafts := m.drafts[userID]
-	total := m.total[userID]
-
-	// Apply pagination
-	start := (page - 1) * pageSize
-	if start >= len(drafts) {
-		return []*DraftListItem{}, total, nil
-	}
-	end := start + pageSize
-	if end > len(drafts) {
-		end = len(drafts)
+	if drafts == nil {
+		return []*DraftItem{}, nil
 	}
 
-	return drafts[start:end], total, nil
+	return drafts, nil
 }
 
 func (m *MockDraftLister) SetError(err error) {
@@ -4119,23 +4096,19 @@ func TestRouter_GetDrafts_WithDrafts_DisplaysDraftList(t *testing.T) {
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
 	// Add test drafts
-	draftLister.AddDraft(user.ID, &DraftListItem{
-		ID:             "draft-1",
-		RepositoryID:   "repo-1",
-		RepositoryName: "acme/awesome-project",
-		ContentPreview: "Exciting update! We just shipped a new feature...",
-		Status:         "draft",
-		CreatedAt:      time.Now().Add(-1 * time.Hour),
-		UpdatedAt:      time.Now(),
+	draftLister.AddDraft(user.ID, &DraftItem{
+		ID:          "draft-1",
+		RepoName:    "acme/awesome-project",
+		PreviewText: "Exciting update! We just shipped a new feature...",
+		Platform:    "threads",
+		CreatedAt:   time.Now().Add(-1 * time.Hour),
 	})
-	draftLister.AddDraft(user.ID, &DraftListItem{
-		ID:             "draft-2",
-		RepositoryID:   "repo-2",
-		RepositoryName: "acme/another-repo",
-		ContentPreview: "Bug fix: resolved issue with authentication...",
-		Status:         "draft",
-		CreatedAt:      time.Now().Add(-2 * time.Hour),
-		UpdatedAt:      time.Now().Add(-30 * time.Minute),
+	draftLister.AddDraft(user.ID, &DraftItem{
+		ID:          "draft-2",
+		RepoName:    "acme/another-repo",
+		PreviewText: "Bug fix: resolved issue with authentication...",
+		Platform:    "threads",
+		CreatedAt:   time.Now().Add(-2 * time.Hour),
 	})
 
 	token, _ := generateToken(user.ID, user.Email)
@@ -4171,14 +4144,12 @@ func TestRouter_GetDrafts_ShowsRepoNamePreviewTime(t *testing.T) {
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
 	// Add a draft with specific content to verify display
-	draftLister.AddDraft(user.ID, &DraftListItem{
-		ID:             "draft-123",
-		RepositoryID:   "repo-456",
-		RepositoryName: "testorg/testrepo",
-		ContentPreview: "This is a preview of the generated post content",
-		Status:         "draft",
-		CreatedAt:      time.Date(2026, 1, 20, 10, 30, 0, 0, time.UTC),
-		UpdatedAt:      time.Date(2026, 1, 20, 11, 45, 0, 0, time.UTC),
+	draftLister.AddDraft(user.ID, &DraftItem{
+		ID:          "draft-123",
+		RepoName:    "testorg/testrepo",
+		PreviewText: "This is a preview of the generated post content",
+		Platform:    "threads",
+		CreatedAt:   time.Date(2026, 1, 20, 10, 30, 0, 0, time.UTC),
 	})
 
 	token, _ := generateToken(user.ID, user.Email)
@@ -4223,14 +4194,12 @@ func TestRouter_GetDrafts_Pagination_FirstPage(t *testing.T) {
 
 	// Add many drafts to test pagination
 	for i := 0; i < 25; i++ {
-		draftLister.AddDraft(user.ID, &DraftListItem{
-			ID:             fmt.Sprintf("draft-%d", i),
-			RepositoryID:   "repo-1",
-			RepositoryName: fmt.Sprintf("repo/project-%d", i),
-			ContentPreview: fmt.Sprintf("Draft content for item %d", i),
-			Status:         "draft",
-			CreatedAt:      time.Now().Add(-time.Duration(i) * time.Hour),
-			UpdatedAt:      time.Now(),
+		draftLister.AddDraft(user.ID, &DraftItem{
+			ID:          fmt.Sprintf("draft-%d", i),
+			RepoName:    fmt.Sprintf("repo/project-%d", i),
+			PreviewText: fmt.Sprintf("Draft content for item %d", i),
+			Platform:    "threads",
+			CreatedAt:   time.Now().Add(-time.Duration(i) * time.Hour),
 		})
 	}
 
@@ -4270,11 +4239,11 @@ func TestRouter_GetDrafts_Pagination_SecondPage(t *testing.T) {
 
 	// Add many drafts to test pagination (assuming page size of 10)
 	for i := 0; i < 25; i++ {
-		draftLister.AddDraft(user.ID, &DraftListItem{
+		draftLister.AddDraft(user.ID, &DraftItem{
 			ID:             fmt.Sprintf("draft-%d", i),
 			RepositoryID:   "repo-1",
-			RepositoryName: fmt.Sprintf("repo/project-%d", i),
-			ContentPreview: fmt.Sprintf("Draft content for item %d", i),
+			RepoName: fmt.Sprintf("repo/project-%d", i),
+			PreviewText: fmt.Sprintf("Draft content for item %d", i),
 			Status:         "draft",
 			CreatedAt:      time.Now().Add(-time.Duration(i) * time.Hour),
 			UpdatedAt:      time.Now(),
@@ -4311,26 +4280,26 @@ func TestRouter_GetDrafts_ShowsDraftStatus(t *testing.T) {
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
 	// Add drafts with different statuses
-	draftLister.AddDraft(user.ID, &DraftListItem{
+	draftLister.AddDraft(user.ID, &DraftItem{
 		ID:             "draft-1",
-		RepositoryName: "repo/pending",
-		ContentPreview: "Pending draft",
+		RepoName: "repo/pending",
+		PreviewText: "Pending draft",
 		Status:         "draft",
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
 	})
-	draftLister.AddDraft(user.ID, &DraftListItem{
+	draftLister.AddDraft(user.ID, &DraftItem{
 		ID:             "draft-2",
-		RepositoryName: "repo/posted",
-		ContentPreview: "Posted draft",
+		RepoName: "repo/posted",
+		PreviewText: "Posted draft",
 		Status:         "posted",
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
 	})
-	draftLister.AddDraft(user.ID, &DraftListItem{
+	draftLister.AddDraft(user.ID, &DraftItem{
 		ID:             "draft-3",
-		RepositoryName: "repo/failed",
-		ContentPreview: "Failed draft",
+		RepoName: "repo/failed",
+		PreviewText: "Failed draft",
 		Status:         "failed",
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
@@ -4361,14 +4330,4 @@ func TestRouter_GetDrafts_ShowsDraftStatus(t *testing.T) {
 	}
 }
 
-// NewRouterWithDraftLister creates a router with draft lister for testing
-// This function needs to be added to router.go when implementing the feature
-func NewRouterWithDraftLister(userStore UserStore, draftLister DraftLister) *Router {
-	r := &Router{
-		mux:       http.NewServeMux(),
-		userStore: userStore,
-		// draftLister: draftLister, // This field needs to be added to Router struct
-	}
-	r.setupRoutes()
-	return r
-}
+// TDD stub removed - real NewRouterWithDraftLister is in router.go
