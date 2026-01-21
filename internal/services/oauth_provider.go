@@ -444,6 +444,233 @@ func (p *LinkedInOAuthProvider) GetRequiredScopes() []string {
 	}
 }
 
+// GitHubOAuthProvider handles GitHub OAuth 2.0 authentication.
+// Used for repository access and webhook management.
+type GitHubOAuthProvider struct {
+	ClientID     string
+	ClientSecret string
+	HTTPClient   *http.Client
+	BaseURL      string // For testing; defaults to https://github.com
+	APIURL       string // For testing; defaults to https://api.github.com
+}
+
+// Default GitHub URLs
+const (
+	DefaultGitHubBaseURL = "https://github.com"
+	DefaultGitHubAPIURL  = "https://api.github.com"
+)
+
+func (p *GitHubOAuthProvider) Platform() string {
+	return PlatformGitHub
+}
+
+func (p *GitHubOAuthProvider) GetAuthURL(state, redirectURL string) string {
+	// GitHub OAuth 2.0
+	// See: https://docs.github.com/en/developers/apps/building-oauth-apps/authorizing-oauth-apps
+	baseURL := p.BaseURL
+	if baseURL == "" {
+		baseURL = DefaultGitHubBaseURL
+	}
+	scopes := p.GetRequiredScopes()
+	return baseURL + "/login/oauth/authorize?client_id=" + p.ClientID +
+		"&redirect_uri=" + redirectURL +
+		"&scope=" + joinScopes(scopes) +
+		"&state=" + state
+}
+
+func (p *GitHubOAuthProvider) ExchangeCode(ctx context.Context, code, redirectURL string) (*OAuthTokens, error) {
+	baseURL := p.BaseURL
+	if baseURL == "" {
+		baseURL = DefaultGitHubBaseURL
+	}
+
+	client := p.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+
+	// Build token exchange request
+	reqBody := fmt.Sprintf(
+		"client_id=%s&client_secret=%s&code=%s&redirect_uri=%s",
+		p.ClientID, p.ClientSecret, code, redirectURL,
+	)
+
+	url := baseURL + "/login/oauth/access_token"
+	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to exchange code: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%w: %d - %s", ErrCodeExchangeFailed, resp.StatusCode, string(body))
+	}
+
+	var tokenResp githubTokenResponse
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if tokenResp.Error != "" {
+		return nil, fmt.Errorf("%w: %s - %s", ErrCodeExchangeFailed, tokenResp.Error, tokenResp.ErrorDescription)
+	}
+
+	// Get user info to populate PlatformUserID
+	userID, err := p.getUserID(ctx, client, tokenResp.AccessToken)
+	if err != nil {
+		// Don't fail the exchange, just use empty user ID
+		userID = ""
+	}
+
+	return &OAuthTokens{
+		AccessToken:    tokenResp.AccessToken,
+		RefreshToken:   tokenResp.RefreshToken,
+		PlatformUserID: userID,
+		Scopes:         tokenResp.Scope,
+		// GitHub tokens don't expire by default, but if expiration is enabled:
+		ExpiresAt: githubExpiryFromResponse(tokenResp.ExpiresIn),
+	}, nil
+}
+
+func (p *GitHubOAuthProvider) RefreshTokens(ctx context.Context, refreshToken string) (*OAuthTokens, error) {
+	// GitHub doesn't support refresh tokens for standard OAuth apps by default
+	// When token expiration is enabled, use the refresh_token grant type
+	if refreshToken == "" {
+		return nil, ErrTokenRefreshFailed
+	}
+
+	baseURL := p.BaseURL
+	if baseURL == "" {
+		baseURL = DefaultGitHubBaseURL
+	}
+
+	client := p.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+
+	reqBody := fmt.Sprintf(
+		"client_id=%s&client_secret=%s&grant_type=refresh_token&refresh_token=%s",
+		p.ClientID, p.ClientSecret, refreshToken,
+	)
+
+	url := baseURL + "/login/oauth/access_token"
+	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to refresh token: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%w: %d - %s", ErrTokenRefreshFailed, resp.StatusCode, string(body))
+	}
+
+	var tokenResp githubTokenResponse
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if tokenResp.Error != "" {
+		return nil, fmt.Errorf("%w: %s - %s", ErrTokenRefreshFailed, tokenResp.Error, tokenResp.ErrorDescription)
+	}
+
+	return &OAuthTokens{
+		AccessToken:  tokenResp.AccessToken,
+		RefreshToken: tokenResp.RefreshToken,
+		Scopes:       tokenResp.Scope,
+		ExpiresAt:    githubExpiryFromResponse(tokenResp.ExpiresIn),
+	}, nil
+}
+
+func (p *GitHubOAuthProvider) GetRequiredScopes() []string {
+	return []string{
+		"repo",            // Full control of private repositories
+		"admin:repo_hook", // Full control of repository hooks
+	}
+}
+
+// getUserID fetches the authenticated user's ID from GitHub API
+func (p *GitHubOAuthProvider) getUserID(ctx context.Context, client *http.Client, accessToken string) (string, error) {
+	apiURL := p.APIURL
+	if apiURL == "" {
+		apiURL = DefaultGitHubAPIURL
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL+"/user", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to get user: %d", resp.StatusCode)
+	}
+
+	var user githubUserResponse
+	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
+		return "", err
+	}
+
+	return user.Login, nil
+}
+
+// githubTokenResponse is the response from GitHub's token endpoint
+type githubTokenResponse struct {
+	AccessToken      string `json:"access_token"`
+	RefreshToken     string `json:"refresh_token"`
+	TokenType        string `json:"token_type"`
+	Scope            string `json:"scope"`
+	ExpiresIn        int    `json:"expires_in"` // seconds until expiry (if expiration enabled)
+	Error            string `json:"error"`
+	ErrorDescription string `json:"error_description"`
+}
+
+// githubUserResponse is the response from GitHub's user endpoint
+type githubUserResponse struct {
+	Login string `json:"login"`
+	ID    int64  `json:"id"`
+}
+
+// githubExpiryFromResponse calculates expiry time from seconds
+func githubExpiryFromResponse(expiresIn int) *time.Time {
+	if expiresIn <= 0 {
+		return nil // Token doesn't expire
+	}
+	expiry := time.Now().Add(time.Duration(expiresIn) * time.Second)
+	return &expiry
+}
+
 // =============================================================================
 // Helper functions
 // =============================================================================
@@ -466,4 +693,5 @@ var (
 	_ OAuthProvider = (*BlueskyAuthProvider)(nil)
 	_ OAuthProvider = (*TwitterOAuthProvider)(nil)
 	_ OAuthProvider = (*LinkedInOAuthProvider)(nil)
+	_ OAuthProvider = (*GitHubOAuthProvider)(nil)
 )
