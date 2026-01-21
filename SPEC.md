@@ -82,12 +82,16 @@ Roxas automatically generates social media content when users push to their main
 ```
 
 **GitHub OAuth Scopes Required:**
-- `repo` - Access to repositories
-- `admin:repo_hook` - Create/manage webhooks
-- *Post-MVP: Add `read:org` for organization repository access*
+
+*MVP Scopes:*
+- `repo` - Access to user's personal repositories
+- `admin:repo_hook` - Create/manage webhooks on personal repos
+
+*Post-MVP Scopes (for organization support):*
+- `read:org` - List organization memberships and access org repositories
 
 **Repo Selection Page:**
-- Show user's personal repos they have push access to (org repos post-MVP)
+- **MVP:** Show user's personal repos they have admin access to (required for webhook installation)
 - Checkboxes to select which to track
 - Already-connected repos shown with disabled checkbox and "Connected" label
 - "Select All" / "Deselect All" options (skips already-connected)
@@ -100,7 +104,7 @@ Roxas automatically generates social media content when users push to their main
 
 **Webhook Installation:**
 - Automatically install webhook via GitHub API
-- Webhook URL: `https://roxas.ai/webhooks/github/{repo_id}`
+- Webhook URL: `https://roxas.ai/webhooks/github/:repo_id`
 - Events: `push`
 - Secret: Auto-generated per repo
 - **Partial success**: If webhook fails for some repos, continue with others and show "4 of 5 connected" with option to retry failed ones
@@ -168,11 +172,11 @@ Roxas automatically generates social media content when users push to their main
 │  1. User pushes/merges to main branch                            │
 │     └─> GitHub sends webhook to Roxas                            │
 │         └─> Validate webhook signature                           │
-│             └─> Identify repository + user                       │
-│                 └─> Extract commit info (message, author, URL)   │
+│             └─> Identify repository + all subscribed users       │
+│                 └─> Extract push info (ref, SHAs, commit count)  │
 │                     └─> Fetch commit diffs via GitHub API        │
-│                         └─> Generate post content via GPT-5.2      │
-│                             └─> Create draft record              │
+│                         └─> Generate post content via GPT-5.2    │
+│                             └─> Create draft record per user     │
 │                                 └─> Create activity feed item    │
 │                                                                  │
 │  Note: One draft per push event, not per commit                  │
@@ -214,20 +218,26 @@ Roxas automatically generates social media content when users push to their main
   id: uuid,
   user_id: uuid,
   repository_id: uuid,
-  commit_sha: string,
-  commit_message: string,
-  commit_url: string,
-  generated_content: string,
+  ref: string,                          // e.g., "refs/heads/main"
+  before_sha: string | null,            // Push before SHA (NULL for new branches)
+  after_sha: string,                    // Push after SHA (head of push)
+  commit_shas: string[],                // All commit SHAs in the push
+  commit_count: number,                 // Number of commits in push
+  generated_content: string | null,     // NULL if generation failed
+  edited_content: string | null,        // User's edited version (NULL if not edited)
   generated_image_url: string | null,   // Post-MVP: S3 URL with 30-day expiration
-  status: "draft" | "posted" | "failed" | "error",
+  status: "draft" | "posted" | "partial" | "failed" | "error",
+  error_message: string | null,         // Error details if status is 'error' or 'failed'
   created_at: timestamp,
-  posted_at: timestamp | null
+  updated_at: timestamp,
+  posted_at: timestamp | null           // When first successfully posted
 }
 ```
 
 **Draft Status Values:**
 - `draft` - Ready for review/posting
-- `posted` - Successfully published
+- `posted` - Successfully published to all selected platforms
+- `partial` - Posted to some platforms, failed on others (can retry failed)
 - `failed` - Posting to platform failed (can retry)
 - `error` - AI generation failed (can retry generation)
 
@@ -315,13 +325,19 @@ Roxas automatically generates social media content when users push to their main
 │             └─> Create post with text                            │
 │                 └─> Record result (success/failure)              │
 │                                                                  │
-│  2. On Success:                                                  │
+│  2. On Full Success (all platforms):                             │
 │     └─> Update draft status to "posted"                          │
 │         └─> Create activity feed item "Posted to Threads"        │
 │             └─> Show success toast                               │
 │                 └─> Redirect to activity feed                    │
 │                                                                  │
-│  3. On Failure:                                                  │
+│  3. On Partial Success (some platforms fail, post-MVP):          │
+│     └─> Update draft status to "partial"                         │
+│         └─> Create activity items for each platform result       │
+│             └─> Show mixed result message                        │
+│                 └─> User can retry failed platforms              │
+│                                                                  │
+│  4. On Full Failure (all platforms fail):                        │
 │     └─> Keep draft status as "draft"                             │
 │         └─> Show error message with details                      │
 │             └─> User can retry                                   │
@@ -345,6 +361,11 @@ Roxas automatically generates social media content when users push to their main
 **Activity Feed Items Created (MVP):**
 - "Posted to Threads" (with link to post)
 - "Failed to post to Threads" (with retry option)
+
+**Activity Feed Items (Post-MVP, multi-platform):**
+- "Posted to Threads and LinkedIn" (with links to each post)
+- "Partially posted - succeeded on Threads, failed on LinkedIn" (with retry for failed)
+- "Failed to post to all platforms" (with retry option)
 
 ---
 
@@ -441,7 +462,7 @@ Roxas automatically generates social media content when users push to their main
 > Drafts appear here when you push to main on a connected repository.
 
 **Draft Card Shows:**
-- Commit message (title)
+- Commit message as title (fetched from GitHub API using first commit SHA)
 - Repository name
 - Time since creation
 - Generated content preview (truncated)
@@ -581,6 +602,9 @@ CREATE TABLE repositories (
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     CONSTRAINT unique_user_github_repo UNIQUE(user_id, github_repo_id)
 );
+
+-- Index for listing user's repositories
+CREATE INDEX idx_repositories_user ON repositories(user_id);
 ```
 
 ### Platform Credentials
@@ -607,18 +631,26 @@ CREATE TABLE drafts (
     id UUID PRIMARY KEY,
     user_id UUID NOT NULL REFERENCES users(id),
     repository_id UUID NOT NULL REFERENCES repositories(id),
-    commit_sha VARCHAR(40) NOT NULL,
-    commit_message TEXT NOT NULL,
-    commit_url VARCHAR(512) NOT NULL,
-    commit_author VARCHAR(255),
+    ref VARCHAR(255) NOT NULL,                 -- e.g., 'refs/heads/main'
+    before_sha VARCHAR(40),                    -- Push before SHA (NULL for new branches)
+    after_sha VARCHAR(40) NOT NULL,            -- Push after SHA (head of push)
+    commit_shas JSONB NOT NULL,                -- Array of commit SHAs in the push
+    commit_count INT NOT NULL DEFAULT 1,       -- Number of commits in push
     generated_content TEXT,                    -- NULL if generation failed
     generated_image_url VARCHAR(512),          -- Post-MVP: S3 URL with 30-day lifecycle
     edited_content TEXT,                       -- NULL if not edited
-    status VARCHAR(20) NOT NULL DEFAULT 'draft',  -- draft, posted, failed, error
+    status VARCHAR(20) NOT NULL DEFAULT 'draft',  -- draft, posted, partial, failed, error
     error_message TEXT,                        -- Error details if status is 'error' or 'failed'
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    posted_at TIMESTAMP,                       -- When draft was first successfully posted
+    CONSTRAINT unique_user_push UNIQUE(user_id, repository_id, ref, after_sha)
 );
+
+-- Index for drafts page (pending drafts by user)
+CREATE INDEX idx_drafts_user_status ON drafts(user_id, status);
+-- Index for drafts sorted by creation time
+CREATE INDEX idx_drafts_user_created ON drafts(user_id, created_at DESC);
 ```
 
 ### Post (Published)
@@ -635,6 +667,9 @@ CREATE TABLE posts (
     posted_at TIMESTAMP,
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+-- Index for looking up posts by draft
+CREATE INDEX idx_posts_draft ON posts(draft_id);
 ```
 
 ### Activity
@@ -650,6 +685,9 @@ CREATE TABLE activities (
     metadata JSONB,
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+-- Index for activity feed queries (newest first per user)
+CREATE INDEX idx_activities_user_created ON activities(user_id, created_at DESC);
 ```
 
 ### Webhook Deliveries (Observability)
@@ -669,6 +707,9 @@ CREATE TABLE webhook_deliveries (
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     CONSTRAINT unique_delivery UNIQUE(repository_id, delivery_id)
 );
+
+-- Index for listing deliveries by repository
+CREATE INDEX idx_webhook_deliveries_repo ON webhook_deliveries(repository_id, created_at DESC);
 ```
 
 ---
@@ -676,6 +717,8 @@ CREATE TABLE webhook_deliveries (
 ## API Endpoints (Internal - Web UI Only)
 
 All API endpoints use the `/api/v1/` prefix for versioning.
+
+**Pagination:** List endpoints support `?limit=20&offset=0` query parameters. Default limit is 20, max is 100.
 
 ### Auth
 - `POST /api/v1/auth/register` - Create account
@@ -818,7 +861,7 @@ All API endpoints use the `/api/v1/` prefix for versioning.
 - Idempotent: Don't create duplicate draft
 - **Dual idempotency check**:
   1. Store `X-GitHub-Delivery` header per webhook delivery
-  2. Dedupe drafts by `(repo_id, ref, after_sha)` tuple
+  2. Dedupe drafts by `(user_id, repository_id, ref, after_sha)` tuple (enforced by DB constraint)
 - This handles both exact redeliveries (same delivery ID) and GitHub retries with new delivery IDs
 
 ### User Disconnects Threads with Pending Drafts
@@ -900,3 +943,6 @@ All API endpoints use the `/api/v1/` prefix for versioning.
 | 1.8 | 2026-01-19 | Alice (Roxas Crew) | Dual idempotency (X-GitHub-Delivery + repo/ref/sha tuple); API versioning with /api/v1/ prefix |
 | 1.9 | 2026-01-19 | Alice (Roxas Crew) | Added webhook_deliveries table for observability and debugging |
 | 2.0 | 2026-01-19 | Alice (Roxas Crew) | Added async generation (Goroutine/fire-and-forget); GitHub App + org repos + per-user branch selection to post-MVP |
+| 2.1 | 2026-01-20 | Alice (Roxas Crew) | Fixed draft schema for multi-commit push handling (commit_shas array, before/after SHA, ref field); clarified MVP vs post-MVP OAuth scopes; added activity feed index |
+| 2.2 | 2026-01-20 | Alice (Roxas Crew) | Added 'partial' draft status for multi-platform partial failures; clarified commit message fetched from GitHub API; updated draft creation flow for multi-user fan-out; added indexes for repositories, drafts, and posts tables |
+| 2.3 | 2026-01-20 | Alice (Roxas Crew) | Added posted_at to drafts schema; aligned JSON record with SQL (edited_content, error_message, updated_at); updated posting flow for partial success; added post-MVP activity types; fixed idempotency constraint to include ref; added API pagination docs; added webhook_deliveries index |
