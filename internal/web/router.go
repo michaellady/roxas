@@ -238,6 +238,7 @@ type ConnectionData struct {
 	Status      string
 	DisplayName string
 	IsHealthy   bool
+	ExpiresSoon bool
 	RateLimit   *RateLimitData
 }
 

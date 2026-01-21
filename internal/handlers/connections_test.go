@@ -961,3 +961,219 @@ func TestConnectionHandler_E2E_FullConnectionFlow(t *testing.T) {
 	// Test with OAuth URL from step 2
 	_ = oauthURL
 }
+
+// =============================================================================
+// Token Expiration UI Tests (alice-94: TDD Red Phase)
+// These tests verify the API provides data needed for token expiration UI:
+// 1. "Expiring soon" warning when token expires within 7 days
+// 2. Proper status for "Reconnect" button on expired tokens
+// 3. Posting blocked when token is expired
+// =============================================================================
+
+// TestConnectionHandler_ListConnections_ExpiringSoon tests that connections
+// expiring within 7 days include an ExpiresSoon indicator for UI warning.
+func TestConnectionHandler_ListConnections_ExpiringSoon(t *testing.T) {
+	svc := NewMockConnectionService()
+	handler := NewConnectionHandler(svc, "https://app.example.com")
+
+	userID := "user-123"
+	now := time.Now()
+	// Token expires in 5 days - should trigger "expiring soon" warning
+	expiresIn5Days := now.Add(5 * 24 * time.Hour)
+
+	svc.AddConnection(&services.Connection{
+		UserID:      userID,
+		Platform:    "linkedin",
+		Status:      services.ConnectionStatusConnected,
+		DisplayName: "John Doe",
+		ConnectedAt: &now,
+		ExpiresAt:   &expiresIn5Days,
+	})
+
+	token := generateTestToken(userID, "test@example.com")
+	req := httptest.NewRequest(http.MethodGet, "/api/connections", nil)
+	addAuthCookie(req, token)
+	rr := httptest.NewRecorder()
+
+	handler.ListConnections(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Parse response to check for ExpiresSoon field
+	var rawResp map[string][]map[string]interface{}
+	if err := json.NewDecoder(rr.Body).Decode(&rawResp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	connections := rawResp["connections"]
+	if len(connections) != 1 {
+		t.Fatalf("Expected 1 connection, got %d", len(connections))
+	}
+
+	conn := connections[0]
+
+	// TDD RED: This test should FAIL because ExpiresSoon is not implemented
+	expiresSoon, ok := conn["expires_soon"]
+	if !ok {
+		t.Fatal("Expected expires_soon field in response - UI needs this to show warning")
+	}
+	if expiresSoon != true {
+		t.Errorf("Expected expires_soon=true for token expiring in 5 days, got %v", expiresSoon)
+	}
+}
+
+// TestConnectionHandler_ListConnections_NotExpiringSoon tests that connections
+// with plenty of time remaining do NOT have ExpiresSoon set.
+func TestConnectionHandler_ListConnections_NotExpiringSoon(t *testing.T) {
+	svc := NewMockConnectionService()
+	handler := NewConnectionHandler(svc, "https://app.example.com")
+
+	userID := "user-123"
+	now := time.Now()
+	// Token expires in 30 days - should NOT trigger warning
+	expiresIn30Days := now.Add(30 * 24 * time.Hour)
+
+	svc.AddConnection(&services.Connection{
+		UserID:      userID,
+		Platform:    "linkedin",
+		Status:      services.ConnectionStatusConnected,
+		DisplayName: "John Doe",
+		ConnectedAt: &now,
+		ExpiresAt:   &expiresIn30Days,
+	})
+
+	token := generateTestToken(userID, "test@example.com")
+	req := httptest.NewRequest(http.MethodGet, "/api/connections", nil)
+	addAuthCookie(req, token)
+	rr := httptest.NewRecorder()
+
+	handler.ListConnections(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var rawResp map[string][]map[string]interface{}
+	if err := json.NewDecoder(rr.Body).Decode(&rawResp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	connections := rawResp["connections"]
+	if len(connections) != 1 {
+		t.Fatalf("Expected 1 connection, got %d", len(connections))
+	}
+
+	conn := connections[0]
+
+	// TDD RED: This test should FAIL because ExpiresSoon is not implemented
+	expiresSoon, ok := conn["expires_soon"]
+	if !ok {
+		t.Fatal("Expected expires_soon field in response - UI needs this for consistency")
+	}
+	if expiresSoon != false {
+		t.Errorf("Expected expires_soon=false for token expiring in 30 days, got %v", expiresSoon)
+	}
+}
+
+// TestConnectionHandler_GetConnection_ExpiredShowsReconnect tests that an
+// expired connection returns proper data for the UI to show a Reconnect button.
+func TestConnectionHandler_GetConnection_ExpiredShowsReconnect(t *testing.T) {
+	svc := NewMockConnectionService()
+	handler := NewConnectionHandler(svc, "https://app.example.com")
+
+	userID := "user-123"
+	now := time.Now()
+	// Token expired yesterday
+	expiredYesterday := now.Add(-24 * time.Hour)
+
+	svc.AddConnection(&services.Connection{
+		UserID:      userID,
+		Platform:    "linkedin",
+		Status:      services.ConnectionStatusExpired,
+		DisplayName: "John Doe",
+		ConnectedAt: &now,
+		ExpiresAt:   &expiredYesterday,
+	})
+
+	token := generateTestToken(userID, "test@example.com")
+	req := httptest.NewRequest(http.MethodGet, "/api/connections/linkedin", nil)
+	addAuthCookie(req, token)
+	rr := httptest.NewRecorder()
+
+	handler.GetConnection(rr, req, "linkedin")
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp ConnectionDetailResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	// Verify fields needed for "Reconnect" button UI
+	if resp.Connection.Status != services.ConnectionStatusExpired {
+		t.Errorf("Expected status 'expired', got '%s'", resp.Connection.Status)
+	}
+	if resp.Connection.IsHealthy {
+		t.Error("Expected IsHealthy=false for expired connection")
+	}
+	if resp.Connection.ExpiresAt == nil {
+		t.Error("Expected ExpiresAt to be set for expired connection")
+	}
+}
+
+// TestConnectionHandler_ListConnections_ExpiredHasReconnectData tests that
+// listing connections returns all data needed to show Reconnect for expired tokens.
+func TestConnectionHandler_ListConnections_ExpiredHasReconnectData(t *testing.T) {
+	svc := NewMockConnectionService()
+	handler := NewConnectionHandler(svc, "https://app.example.com")
+
+	userID := "user-123"
+	now := time.Now()
+	expiredYesterday := now.Add(-24 * time.Hour)
+
+	svc.AddConnection(&services.Connection{
+		UserID:      userID,
+		Platform:    "threads",
+		Status:      services.ConnectionStatusExpired,
+		DisplayName: "Expired Account",
+		ConnectedAt: &now,
+		ExpiresAt:   &expiredYesterday,
+	})
+
+	token := generateTestToken(userID, "test@example.com")
+	req := httptest.NewRequest(http.MethodGet, "/api/connections", nil)
+	addAuthCookie(req, token)
+	rr := httptest.NewRecorder()
+
+	handler.ListConnections(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp ConnectionListResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if len(resp.Connections) != 1 {
+		t.Fatalf("Expected 1 connection, got %d", len(resp.Connections))
+	}
+
+	conn := resp.Connections[0]
+
+	// UI needs these fields to show "Reconnect" button
+	if conn.Status != services.ConnectionStatusExpired {
+		t.Errorf("Expected status 'expired', got '%s'", conn.Status)
+	}
+	if conn.IsHealthy {
+		t.Error("Expected IsHealthy=false for expired connection - UI uses this to show warning")
+	}
+	if conn.Platform != "threads" {
+		t.Errorf("Expected platform 'threads', got '%s'", conn.Platform)
+	}
+}
