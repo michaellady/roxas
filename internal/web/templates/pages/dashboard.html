@@ -107,6 +107,8 @@
         {{end}}
     </section>
 
+    {{end}}
+
     <section class="dashboard-section activity-feed">
         <h2>Activity Feed</h2>
         {{if .Data.Activities}}
@@ -144,13 +146,13 @@
         {{if gt .Data.ActivityTotalPages 1}}
         <div class="pagination">
             {{if gt .Data.ActivityPage 1}}
-            <a href="?activity_page={{.Data.ActivityPage | add -1}}" class="btn btn-secondary btn-sm">Previous</a>
+            <a href="?activity_page={{.Data.ActivityPage | add -1}}" class="btn btn-secondary btn-sm prev">Previous</a>
             {{else}}
             <span class="btn btn-secondary btn-sm disabled">Previous</span>
             {{end}}
             <span class="page-info">Page {{.Data.ActivityPage}} of {{.Data.ActivityTotalPages}}</span>
             {{if lt .Data.ActivityPage .Data.ActivityTotalPages}}
-            <a href="?activity_page={{.Data.ActivityPage | add 1}}" class="btn btn-secondary btn-sm">Next</a>
+            <a href="?activity_page={{.Data.ActivityPage | add 1}}" class="btn btn-secondary btn-sm next">Next</a>
             {{else}}
             <span class="btn btn-secondary btn-sm disabled">Next</span>
             {{end}}
@@ -160,7 +162,5 @@
         <p class="empty-message">No activity yet. Activity will appear here when drafts are created or posts are published.</p>
         {{end}}
     </section>
-
-    {{end}}
 </div>
 {{end}}

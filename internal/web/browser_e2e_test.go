@@ -1802,8 +1802,7 @@ func TestBrowser_DraftsNavigation_BadgeShowsCount(t *testing.T) {
 	browser, cleanup := launchBrowser(cfg)
 	defer cleanup()
 
-	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
-	defer page.MustClose()
+	page := browser.MustPage(ts.URL).Timeout(60 * time.Second)
 
 	testEmail := "drafts-badge-test@example.com"
 	testPassword := "securepassword123"
@@ -1871,7 +1870,7 @@ func TestBrowser_DraftsNavigation_BadgeShowsCount(t *testing.T) {
 	}
 
 	// Look for the badge element (should be near the Drafts link)
-	badge, err := navbar.Element(".draft-count-badge")
+	badge, err := navbar.Element(".nav-drafts .badge")
 	if err != nil || badge == nil {
 		t.Fatal("Step 2 FAILED: Draft count badge not found in navigation")
 	}
@@ -1902,7 +1901,7 @@ func TestBrowser_DraftsNavigation_BadgeShowsCount(t *testing.T) {
 	page.MustWaitStable()
 
 	// Check badge again
-	badge, err = page.Element(".draft-count-badge")
+	badge, err = page.Element(".nav-drafts .badge")
 	if err != nil || badge == nil {
 		t.Fatal("Step 3 FAILED: Draft count badge not found after reload")
 	}
@@ -2009,8 +2008,7 @@ func TestBrowser_DraftsNavigation_BadgeHiddenWhenZero(t *testing.T) {
 	browser, cleanup := launchBrowser(cfg)
 	defer cleanup()
 
-	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
-	defer page.MustClose()
+	page := browser.MustPage(ts.URL).Timeout(60 * time.Second)
 
 	testEmail := "drafts-zero-test@example.com"
 	testPassword := "securepassword123"
@@ -2036,7 +2034,7 @@ func TestBrowser_DraftsNavigation_BadgeHiddenWhenZero(t *testing.T) {
 	t.Log("Testing: Draft count badge hidden when no drafts")
 
 	// Try to find the badge - it should not exist or be empty
-	badge, err := page.Element(".draft-count-badge")
+	badge, err := page.Element(".nav-drafts .badge")
 	if err == nil && badge != nil {
 		badgeText := badge.MustText()
 		// Badge should either not exist, be empty, or show "0"

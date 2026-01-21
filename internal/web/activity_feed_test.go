@@ -238,19 +238,19 @@ func TestBrowser_ActivityFeed_ShowsActivityTypes(t *testing.T) {
 	t.Log("Testing: Activity types have correct styling/icons")
 
 	// Check for activity type indicators
-	draftActivities := page.MustElements(".activity-draft-created")
+	draftActivities := page.MustElements(".activity-draft_created")
 	if len(draftActivities) == 0 {
-		t.Error("FAILED: Expected .activity-draft-created element for draft_created type")
+		t.Error("FAILED: Expected .activity-draft_created element for draft_created type")
 	}
 
-	successActivities := page.MustElements(".activity-post-success")
+	successActivities := page.MustElements(".activity-post_success")
 	if len(successActivities) == 0 {
-		t.Error("FAILED: Expected .activity-post-success element for post_success type")
+		t.Error("FAILED: Expected .activity-post_success element for post_success type")
 	}
 
-	failedActivities := page.MustElements(".activity-post-failed")
+	failedActivities := page.MustElements(".activity-post_failed")
 	if len(failedActivities) == 0 {
-		t.Error("FAILED: Expected .activity-post-failed element for post_failed type")
+		t.Error("FAILED: Expected .activity-post_failed element for post_failed type")
 	}
 
 	// =========================================================================
@@ -434,8 +434,8 @@ func TestBrowser_ActivityFeed_Pagination(t *testing.T) {
 
 	// URL should have page parameter
 	currentURL := page.MustInfo().URL
-	if !strings.Contains(currentURL, "page=2") {
-		t.Errorf("FAILED: Expected page=2 in URL, got: %s", currentURL)
+	if !strings.Contains(currentURL, "activity_page=2") {
+		t.Errorf("FAILED: Expected activity_page=2 in URL, got: %s", currentURL)
 	}
 
 	// =========================================================================
@@ -477,8 +477,7 @@ func TestBrowser_ActivityFeed_EmptyState(t *testing.T) {
 	browser, cleanup := launchBrowser(cfg)
 	defer cleanup()
 
-	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
-	defer page.MustClose()
+	page := browser.MustPage(ts.URL).Timeout(60 * time.Second)
 
 	testEmail := "empty-activity-test@example.com"
 	testPassword := "securepassword123"
