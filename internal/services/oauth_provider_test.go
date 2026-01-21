@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -786,6 +787,411 @@ func newBlueskyMockServer(t *testing.T, config blueskyMockConfig) *httptest.Serv
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
+}
+
+// =============================================================================
+// GitHub OAuth Provider Tests
+// =============================================================================
+
+func TestGitHubOAuthProvider_ImplementsContract(t *testing.T) {
+	provider := &GitHubOAuthProvider{
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+	}
+	OAuthProviderTestSuite(t, provider)
+}
+
+func TestGitHubOAuthProvider_Platform(t *testing.T) {
+	provider := &GitHubOAuthProvider{}
+	if got := provider.Platform(); got != PlatformGitHub {
+		t.Errorf("Platform() = %q, want %q", got, PlatformGitHub)
+	}
+}
+
+func TestGitHubOAuthProvider_GetAuthURL(t *testing.T) {
+	provider := &GitHubOAuthProvider{
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+	}
+
+	state := "random-state-123"
+	redirectURL := "https://example.com/callback"
+
+	authURL := provider.GetAuthURL(state, redirectURL)
+
+	// Check that URL contains expected components
+	if !strings.Contains(authURL, "github.com/login/oauth/authorize") {
+		t.Errorf("GetAuthURL() should point to GitHub OAuth authorize, got %s", authURL)
+	}
+	if !strings.Contains(authURL, "client_id=test-client-id") {
+		t.Error("GetAuthURL() should include client_id")
+	}
+	if !strings.Contains(authURL, "state="+state) {
+		t.Errorf("GetAuthURL() should include state=%s", state)
+	}
+	if !strings.Contains(authURL, "redirect_uri=") {
+		t.Error("GetAuthURL() should include redirect_uri")
+	}
+	if !strings.Contains(authURL, "scope=") {
+		t.Error("GetAuthURL() should include scope")
+	}
+}
+
+func TestGitHubOAuthProvider_GetAuthURL_CustomBaseURL(t *testing.T) {
+	provider := &GitHubOAuthProvider{
+		ClientID: "test-client",
+		BaseURL:  "https://github.enterprise.com",
+	}
+
+	authURL := provider.GetAuthURL("state", "https://example.com/callback")
+
+	if !strings.Contains(authURL, "github.enterprise.com") {
+		t.Errorf("GetAuthURL() should use custom BaseURL, got %s", authURL)
+	}
+}
+
+func TestGitHubOAuthProvider_Scopes(t *testing.T) {
+	provider := &GitHubOAuthProvider{}
+	scopes := provider.GetRequiredScopes()
+
+	// GitHub OAuth for repo access needs these scopes
+	expectedScopes := map[string]bool{
+		"repo":            false,
+		"admin:repo_hook": false,
+	}
+
+	for _, s := range scopes {
+		if _, ok := expectedScopes[s]; ok {
+			expectedScopes[s] = true
+		}
+	}
+
+	for scope, found := range expectedScopes {
+		if !found {
+			t.Errorf("Expected scope %q not found in %v", scope, scopes)
+		}
+	}
+}
+
+func TestGitHubOAuthProvider_ExchangeCode_Success(t *testing.T) {
+	server := newGitHubMockServer(t, githubMockConfig{
+		tokenResponse: &githubTokenResponse{
+			AccessToken:  "gho_test_access_token",
+			RefreshToken: "ghr_test_refresh_token",
+			TokenType:    "bearer",
+			Scope:        "repo,admin:repo_hook",
+			ExpiresIn:    28800, // 8 hours
+		},
+		userResponse: &githubUserResponse{
+			Login: "testuser",
+			ID:    12345,
+		},
+	})
+	defer server.Close()
+
+	provider := &GitHubOAuthProvider{
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		BaseURL:      server.URL,
+		APIURL:       server.URL,
+		HTTPClient:   server.Client(),
+	}
+
+	tokens, err := provider.ExchangeCode(context.Background(), "test-auth-code", "https://example.com/callback")
+	if err != nil {
+		t.Fatalf("ExchangeCode() returned error: %v", err)
+	}
+
+	if tokens.AccessToken != "gho_test_access_token" {
+		t.Errorf("Expected AccessToken 'gho_test_access_token', got '%s'", tokens.AccessToken)
+	}
+	if tokens.RefreshToken != "ghr_test_refresh_token" {
+		t.Errorf("Expected RefreshToken 'ghr_test_refresh_token', got '%s'", tokens.RefreshToken)
+	}
+	if tokens.PlatformUserID != "testuser" {
+		t.Errorf("Expected PlatformUserID 'testuser', got '%s'", tokens.PlatformUserID)
+	}
+	if tokens.Scopes != "repo,admin:repo_hook" {
+		t.Errorf("Expected Scopes 'repo,admin:repo_hook', got '%s'", tokens.Scopes)
+	}
+	if tokens.ExpiresAt == nil {
+		t.Error("Expected ExpiresAt to be set")
+	}
+}
+
+func TestGitHubOAuthProvider_ExchangeCode_NoExpiry(t *testing.T) {
+	server := newGitHubMockServer(t, githubMockConfig{
+		tokenResponse: &githubTokenResponse{
+			AccessToken: "gho_non_expiring_token",
+			TokenType:   "bearer",
+			Scope:       "repo",
+			ExpiresIn:   0, // No expiry
+		},
+		userResponse: &githubUserResponse{
+			Login: "testuser",
+			ID:    12345,
+		},
+	})
+	defer server.Close()
+
+	provider := &GitHubOAuthProvider{
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		BaseURL:      server.URL,
+		APIURL:       server.URL,
+		HTTPClient:   server.Client(),
+	}
+
+	tokens, err := provider.ExchangeCode(context.Background(), "test-code", "https://example.com/callback")
+	if err != nil {
+		t.Fatalf("ExchangeCode() returned error: %v", err)
+	}
+
+	if tokens.ExpiresAt != nil {
+		t.Error("Expected ExpiresAt to be nil for non-expiring tokens")
+	}
+}
+
+func TestGitHubOAuthProvider_ExchangeCode_InvalidCode(t *testing.T) {
+	server := newGitHubMockServer(t, githubMockConfig{
+		tokenError: true,
+	})
+	defer server.Close()
+
+	provider := &GitHubOAuthProvider{
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		BaseURL:      server.URL,
+		APIURL:       server.URL,
+		HTTPClient:   server.Client(),
+	}
+
+	_, err := provider.ExchangeCode(context.Background(), "invalid-code", "https://example.com/callback")
+	if err == nil {
+		t.Fatal("Expected error for invalid code")
+	}
+	if !strings.Contains(err.Error(), "bad_verification_code") && !strings.Contains(err.Error(), "failed") {
+		t.Errorf("Expected error about bad code, got: %v", err)
+	}
+}
+
+func TestGitHubOAuthProvider_ExchangeCode_UserFetchFailure(t *testing.T) {
+	// Test that exchange succeeds even if user fetch fails
+	server := newGitHubMockServer(t, githubMockConfig{
+		tokenResponse: &githubTokenResponse{
+			AccessToken: "gho_test_token",
+			TokenType:   "bearer",
+			Scope:       "repo",
+		},
+		userError: true,
+	})
+	defer server.Close()
+
+	provider := &GitHubOAuthProvider{
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		BaseURL:      server.URL,
+		APIURL:       server.URL,
+		HTTPClient:   server.Client(),
+	}
+
+	tokens, err := provider.ExchangeCode(context.Background(), "test-code", "https://example.com/callback")
+	if err != nil {
+		t.Fatalf("ExchangeCode() should succeed even if user fetch fails: %v", err)
+	}
+
+	if tokens.AccessToken != "gho_test_token" {
+		t.Errorf("Expected AccessToken 'gho_test_token', got '%s'", tokens.AccessToken)
+	}
+	// PlatformUserID should be empty since user fetch failed
+	if tokens.PlatformUserID != "" {
+		t.Errorf("Expected empty PlatformUserID, got '%s'", tokens.PlatformUserID)
+	}
+}
+
+func TestGitHubOAuthProvider_RefreshTokens_Success(t *testing.T) {
+	server := newGitHubMockServer(t, githubMockConfig{
+		refreshResponse: &githubTokenResponse{
+			AccessToken:  "gho_new_access_token",
+			RefreshToken: "ghr_new_refresh_token",
+			TokenType:    "bearer",
+			Scope:        "repo,admin:repo_hook",
+			ExpiresIn:    28800,
+		},
+	})
+	defer server.Close()
+
+	provider := &GitHubOAuthProvider{
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		BaseURL:      server.URL,
+		HTTPClient:   server.Client(),
+	}
+
+	tokens, err := provider.RefreshTokens(context.Background(), "ghr_old_refresh_token")
+	if err != nil {
+		t.Fatalf("RefreshTokens() returned error: %v", err)
+	}
+
+	if tokens.AccessToken != "gho_new_access_token" {
+		t.Errorf("Expected AccessToken 'gho_new_access_token', got '%s'", tokens.AccessToken)
+	}
+	if tokens.RefreshToken != "ghr_new_refresh_token" {
+		t.Errorf("Expected RefreshToken 'ghr_new_refresh_token', got '%s'", tokens.RefreshToken)
+	}
+}
+
+func TestGitHubOAuthProvider_RefreshTokens_EmptyToken(t *testing.T) {
+	provider := &GitHubOAuthProvider{
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+	}
+
+	_, err := provider.RefreshTokens(context.Background(), "")
+	if err == nil {
+		t.Fatal("Expected error for empty refresh token")
+	}
+	if err != ErrTokenRefreshFailed {
+		t.Errorf("Expected ErrTokenRefreshFailed, got: %v", err)
+	}
+}
+
+func TestGitHubOAuthProvider_RefreshTokens_Failure(t *testing.T) {
+	server := newGitHubMockServer(t, githubMockConfig{
+		refreshError: true,
+	})
+	defer server.Close()
+
+	provider := &GitHubOAuthProvider{
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		BaseURL:      server.URL,
+		HTTPClient:   server.Client(),
+	}
+
+	_, err := provider.RefreshTokens(context.Background(), "invalid-refresh-token")
+	if err == nil {
+		t.Fatal("Expected error for invalid refresh token")
+	}
+}
+
+// =============================================================================
+// GitHub Mock Server
+// =============================================================================
+
+type githubMockConfig struct {
+	tokenResponse   *githubTokenResponse
+	tokenError      bool
+	refreshResponse *githubTokenResponse
+	refreshError    bool
+	userResponse    *githubUserResponse
+	userError       bool
+}
+
+func newGitHubMockServer(t *testing.T, config githubMockConfig) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/login/oauth/access_token":
+			// Check if this is a refresh request
+			if r.Method == "POST" {
+				body, _ := io.ReadAll(r.Body)
+				bodyStr := string(body)
+
+				if strings.Contains(bodyStr, "grant_type=refresh_token") {
+					// Refresh token request
+					if config.refreshError {
+						w.Header().Set("Content-Type", "application/json")
+						json.NewEncoder(w).Encode(map[string]string{
+							"error":             "bad_refresh_token",
+							"error_description": "The refresh token is invalid",
+						})
+						return
+					}
+					if config.refreshResponse != nil {
+						w.Header().Set("Content-Type", "application/json")
+						json.NewEncoder(w).Encode(config.refreshResponse)
+						return
+					}
+				} else {
+					// Code exchange request
+					if config.tokenError {
+						w.Header().Set("Content-Type", "application/json")
+						json.NewEncoder(w).Encode(map[string]string{
+							"error":             "bad_verification_code",
+							"error_description": "The code passed is incorrect or expired",
+						})
+						return
+					}
+					if config.tokenResponse != nil {
+						w.Header().Set("Content-Type", "application/json")
+						json.NewEncoder(w).Encode(config.tokenResponse)
+						return
+					}
+				}
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+
+		case "/user":
+			if config.userError {
+				w.WriteHeader(http.StatusUnauthorized)
+				json.NewEncoder(w).Encode(map[string]string{
+					"message": "Bad credentials",
+				})
+				return
+			}
+			if config.userResponse != nil {
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(config.userResponse)
+				return
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
+func TestGitHubExpiryFromResponse(t *testing.T) {
+	tests := []struct {
+		name      string
+		expiresIn int
+		wantNil   bool
+	}{
+		{
+			name:      "zero expires_in returns nil",
+			expiresIn: 0,
+			wantNil:   true,
+		},
+		{
+			name:      "negative expires_in returns nil",
+			expiresIn: -1,
+			wantNil:   true,
+		},
+		{
+			name:      "positive expires_in returns future time",
+			expiresIn: 3600,
+			wantNil:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := githubExpiryFromResponse(tt.expiresIn)
+			if tt.wantNil {
+				if result != nil {
+					t.Errorf("Expected nil, got %v", result)
+				}
+			} else {
+				if result == nil {
+					t.Error("Expected non-nil time")
+				} else if result.Before(time.Now()) {
+					t.Error("Expected future time")
+				}
+			}
+		})
+	}
 }
 
 // =============================================================================
