@@ -4,9 +4,11 @@ package web
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1691,4 +1693,416 @@ func TestBrowser_DeleteRepositoryFlow(t *testing.T) {
 	t.Log("Step 8 PASSED: Repository no longer appears in list")
 
 	t.Log("=== DELETE REPOSITORY BROWSER E2E TEST PASSED ===")
+}
+
+// =============================================================================
+// Drafts Navigation Tests (TDD - RED PHASE)
+//
+// These tests verify the drafts navigation functionality:
+// - Drafts link appears in navigation for authenticated users
+// - Draft count badge shows correct number
+// - Clicking Drafts link navigates to /drafts
+//
+// These tests are expected to FAIL initially as the functionality
+// does not yet exist. This is the "red" phase of TDD.
+// =============================================================================
+
+// TestBrowser_DraftsNavigation_LinkAppearsInNav tests that the Drafts link
+// appears in the navigation bar for authenticated users.
+func TestBrowser_DraftsNavigation_LinkAppearsInNav(t *testing.T) {
+	// Setup test server with mock stores
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, nil, "")
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Launch browser
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	testEmail := "drafts-nav-test@example.com"
+	testPassword := "securepassword123"
+
+	// =========================================================================
+	// Step 1: Sign up and log in
+	// =========================================================================
+	t.Log("Step 1: Sign up and log in")
+
+	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	inputText(t, page, "#confirm_password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Login
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	currentURL := page.MustInfo().URL
+	if !strings.HasSuffix(currentURL, "/dashboard") {
+		t.Fatalf("Step 1 FAILED: Expected /dashboard, got: %s", currentURL)
+	}
+	t.Log("Step 1 PASSED: Logged in successfully")
+
+	// =========================================================================
+	// Step 2: Verify Drafts link appears in navigation
+	// =========================================================================
+	t.Log("Step 2: Verify Drafts link appears in navigation")
+
+	// Find the navigation bar
+	navbar := page.MustElement("nav.navbar")
+	if navbar == nil {
+		t.Fatal("Step 2 FAILED: Navigation bar not found")
+	}
+
+	// Look for Drafts link in nav-links
+	navLinks := navbar.MustElement(".nav-links")
+	navLinksText := navLinks.MustText()
+
+	if !strings.Contains(navLinksText, "Drafts") {
+		t.Fatalf("Step 2 FAILED: Expected 'Drafts' link in navigation, got: %s", navLinksText)
+	}
+
+	// Verify the link exists and has correct href
+	draftsLink, err := navLinks.Element("a[href='/drafts']")
+	if err != nil || draftsLink == nil {
+		t.Fatal("Step 2 FAILED: Drafts link with href='/drafts' not found in navigation")
+	}
+
+	t.Log("Step 2 PASSED: Drafts link appears in navigation")
+
+	t.Log("=== DRAFTS NAVIGATION LINK TEST PASSED ===")
+}
+
+// TestBrowser_DraftsNavigation_BadgeShowsCount tests that the draft count badge
+// displays the correct number of drafts.
+func TestBrowser_DraftsNavigation_BadgeShowsCount(t *testing.T) {
+	// Setup test server with mock stores including draft store
+	userStore := NewMockUserStore()
+	draftStore := NewMockDraftStore()
+	router := NewRouterWithDraftStore(userStore, draftStore)
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Launch browser
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	testEmail := "drafts-badge-test@example.com"
+	testPassword := "securepassword123"
+
+	// =========================================================================
+	// Step 1: Sign up and log in
+	// =========================================================================
+	t.Log("Step 1: Sign up and log in")
+
+	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	inputText(t, page, "#confirm_password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Get user and add drafts
+	user, err := userStore.GetUserByEmail(context.Background(), testEmail)
+	if err != nil || user == nil {
+		t.Fatalf("Step 1 FAILED: Could not get user: %v", err)
+	}
+
+	// Add 3 drafts for this user
+	draftStore.AddDraft(user.ID, &Draft{
+		ID:      "draft-1",
+		Title:   "Draft Post 1",
+		Content: "Content for draft 1",
+	})
+	draftStore.AddDraft(user.ID, &Draft{
+		ID:      "draft-2",
+		Title:   "Draft Post 2",
+		Content: "Content for draft 2",
+	})
+	draftStore.AddDraft(user.ID, &Draft{
+		ID:      "draft-3",
+		Title:   "Draft Post 3",
+		Content: "Content for draft 3",
+	})
+
+	// Login
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	t.Log("Step 1 PASSED: Logged in with 3 drafts")
+
+	// =========================================================================
+	// Step 2: Verify draft count badge shows "3"
+	// =========================================================================
+	t.Log("Step 2: Verify draft count badge shows correct count")
+
+	// Find the draft count badge in navigation
+	navbar := page.MustElement("nav.navbar")
+	if navbar == nil {
+		t.Fatal("Step 2 FAILED: Navigation bar not found")
+	}
+
+	// Look for the badge element (should be near the Drafts link)
+	badge, err := navbar.Element(".draft-count-badge")
+	if err != nil || badge == nil {
+		t.Fatal("Step 2 FAILED: Draft count badge not found in navigation")
+	}
+
+	badgeText := badge.MustText()
+	if badgeText != "3" {
+		t.Fatalf("Step 2 FAILED: Expected badge to show '3', got: %s", badgeText)
+	}
+
+	t.Log("Step 2 PASSED: Draft count badge shows correct count (3)")
+
+	// =========================================================================
+	// Step 3: Verify badge updates when draft count changes
+	// =========================================================================
+	t.Log("Step 3: Verify badge updates when draft count changes")
+
+	// Add another draft
+	draftStore.AddDraft(user.ID, &Draft{
+		ID:      "draft-4",
+		Title:   "Draft Post 4",
+		Content: "Content for draft 4",
+	})
+
+	// Reload the page
+	page.MustReload().MustWaitLoad()
+	page.MustWaitStable()
+
+	// Check badge again
+	badge, err = page.Element(".draft-count-badge")
+	if err != nil || badge == nil {
+		t.Fatal("Step 3 FAILED: Draft count badge not found after reload")
+	}
+
+	badgeText = badge.MustText()
+	if badgeText != "4" {
+		t.Fatalf("Step 3 FAILED: Expected badge to show '4' after adding draft, got: %s", badgeText)
+	}
+
+	t.Log("Step 3 PASSED: Draft count badge updates correctly")
+
+	t.Log("=== DRAFTS BADGE COUNT TEST PASSED ===")
+}
+
+// TestBrowser_DraftsNavigation_LinkNavigatesToDrafts tests that clicking the
+// Drafts link navigates to the /drafts page.
+func TestBrowser_DraftsNavigation_LinkNavigatesToDrafts(t *testing.T) {
+	// Setup test server with mock stores
+	userStore := NewMockUserStore()
+	draftStore := NewMockDraftStore()
+	router := NewRouterWithDraftStore(userStore, draftStore)
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Launch browser
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	testEmail := "drafts-link-test@example.com"
+	testPassword := "securepassword123"
+
+	// =========================================================================
+	// Step 1: Sign up and log in
+	// =========================================================================
+	t.Log("Step 1: Sign up and log in")
+
+	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	inputText(t, page, "#confirm_password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Login
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	t.Log("Step 1 PASSED: Logged in successfully")
+
+	// =========================================================================
+	// Step 2: Click Drafts link and verify navigation
+	// =========================================================================
+	t.Log("Step 2: Click Drafts link and verify navigation")
+
+	// Find and click the Drafts link
+	draftsLink := page.MustElement("a[href='/drafts']")
+	if draftsLink == nil {
+		t.Fatal("Step 2 FAILED: Drafts link not found")
+	}
+
+	draftsLink.MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Verify we're on the /drafts page
+	currentURL := page.MustInfo().URL
+	if !strings.HasSuffix(currentURL, "/drafts") {
+		t.Fatalf("Step 2 FAILED: Expected to be on /drafts page, got: %s", currentURL)
+	}
+
+	// Verify page title or heading indicates Drafts page
+	h1 := page.MustElement("h1").MustText()
+	if h1 != "Drafts" {
+		t.Fatalf("Step 2 FAILED: Expected h1 'Drafts', got: %s", h1)
+	}
+
+	t.Log("Step 2 PASSED: Drafts link navigates to /drafts page")
+
+	t.Log("=== DRAFTS NAVIGATION LINK CLICK TEST PASSED ===")
+}
+
+// TestBrowser_DraftsNavigation_BadgeHiddenWhenZero tests that the draft count
+// badge is hidden when there are no drafts.
+func TestBrowser_DraftsNavigation_BadgeHiddenWhenZero(t *testing.T) {
+	// Setup test server with mock stores (no drafts)
+	userStore := NewMockUserStore()
+	draftStore := NewMockDraftStore()
+	router := NewRouterWithDraftStore(userStore, draftStore)
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Launch browser
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	testEmail := "drafts-zero-test@example.com"
+	testPassword := "securepassword123"
+
+	// Sign up and log in
+	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	inputText(t, page, "#confirm_password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// =========================================================================
+	// Test: Badge should be hidden or show 0 when no drafts exist
+	// =========================================================================
+	t.Log("Testing: Draft count badge hidden when no drafts")
+
+	// Try to find the badge - it should not exist or be empty
+	badge, err := page.Element(".draft-count-badge")
+	if err == nil && badge != nil {
+		badgeText := badge.MustText()
+		// Badge should either not exist, be empty, or show "0"
+		if badgeText != "" && badgeText != "0" {
+			t.Fatalf("FAILED: Expected badge to be hidden or show '0' when no drafts, got: %s", badgeText)
+		}
+	}
+
+	t.Log("PASSED: Draft count badge is appropriately hidden or shows 0")
+}
+
+// =============================================================================
+// Mock Draft Store for Tests
+// =============================================================================
+
+// Draft represents a post draft
+type Draft struct {
+	ID        string
+	UserID    string
+	Title     string
+	Content   string
+	Platform  string
+	CreatedAt string
+	UpdatedAt string
+}
+
+// MockDraftStore implements DraftStore for tests
+type MockDraftStore struct {
+	mu     sync.Mutex
+	drafts map[string][]*Draft // userID -> drafts
+}
+
+// NewMockDraftStore creates a new mock draft store
+func NewMockDraftStore() *MockDraftStore {
+	return &MockDraftStore{
+		drafts: make(map[string][]*Draft),
+	}
+}
+
+// AddDraft adds a draft for a user
+func (s *MockDraftStore) AddDraft(userID string, draft *Draft) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	draft.UserID = userID
+	s.drafts[userID] = append(s.drafts[userID], draft)
+}
+
+// CountDraftsByUser returns the number of drafts for a user
+func (s *MockDraftStore) CountDraftsByUser(ctx context.Context, userID string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if drafts, ok := s.drafts[userID]; ok {
+		return len(drafts), nil
+	}
+	return 0, nil
+}
+
+// ListDraftsByUser returns all drafts for a user
+func (s *MockDraftStore) ListDraftsByUser(ctx context.Context, userID string) ([]*Draft, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if drafts, ok := s.drafts[userID]; ok {
+		return drafts, nil
+	}
+	return []*Draft{}, nil
+}
+
+// NewRouterWithDraftStore creates a new web router with draft store support
+// NOTE: This function needs to be implemented in router.go
+func NewRouterWithDraftStore(userStore UserStore, draftStore *MockDraftStore) *Router {
+	r := &Router{
+		mux:       http.NewServeMux(),
+		userStore: userStore,
+		// draftStore: draftStore, // This field needs to be added to Router
+	}
+	r.setupRoutes()
+	return r
 }
