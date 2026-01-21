@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
@@ -248,6 +249,37 @@ type RateLimitData struct {
 	ResetAt   time.Time
 }
 
+// GitHubOAuthProvider handles GitHub OAuth flow
+type GitHubOAuthProvider interface {
+	GetAuthURL(state, redirectURL string) string
+	ExchangeCode(ctx context.Context, code, redirectURL string) (*OAuthTokens, error)
+}
+
+// OAuthTokens represents the tokens returned from OAuth authentication
+type OAuthTokens struct {
+	AccessToken    string
+	RefreshToken   string
+	ExpiresAt      *time.Time
+	PlatformUserID string
+	Scopes         string
+}
+
+// CredentialStore interface for storing platform credentials
+type CredentialStore interface {
+	SaveCredentials(ctx context.Context, creds *PlatformCredentials) error
+}
+
+// PlatformCredentials represents OAuth credentials for a platform
+type PlatformCredentials struct {
+	UserID         string
+	Platform       string
+	AccessToken    string
+	RefreshToken   string
+	TokenExpiresAt *time.Time
+	PlatformUserID string
+	Scopes         string
+}
+
 // Router is the main HTTP router for the web UI
 type Router struct {
 	mux                  *http.ServeMux
@@ -262,6 +294,9 @@ type Router struct {
 	connectionLister     ConnectionLister
 	connectionService    ConnectionService
 	blueskyConnector     BlueskyConnector
+	githubOAuthProvider  GitHubOAuthProvider
+	credentialStore      CredentialStore
+	baseURL              string // Base URL for constructing redirect URIs
 }
 
 // NewRouter creates a new web router with all routes configured (no user store)
@@ -363,6 +398,19 @@ func NewRouterWithBlueskyConnector(userStore UserStore, blueskyConnector Bluesky
 	return r
 }
 
+// NewRouterWithGitHubOAuth creates a new web router with GitHub OAuth support
+func NewRouterWithGitHubOAuth(userStore UserStore, githubOAuth GitHubOAuthProvider, credStore CredentialStore, baseURL string) *Router {
+	r := &Router{
+		mux:                 http.NewServeMux(),
+		userStore:           userStore,
+		githubOAuthProvider: githubOAuth,
+		credentialStore:     credStore,
+		baseURL:             baseURL,
+	}
+	r.setupRoutes()
+	return r
+}
+
 // NewRouterWithWebhookTesterAndDeliveries creates a new web router with both webhook tester and delivery store
 func NewRouterWithWebhookTesterAndDeliveries(userStore UserStore, repoStore RepositoryStore, commitLister CommitLister, postLister PostLister, secretGen SecretGenerator, webhookURL string, webhookTester WebhookTester, webhookDeliveryStore WebhookDeliveryStore) *Router {
 	r := &Router{
@@ -415,6 +463,10 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("POST /connections/bluesky/connect", r.handleBlueskyConnectPost)
 	r.mux.HandleFunc("GET /connections/{platform}/disconnect", r.handleConnectionDisconnect)
 	r.mux.HandleFunc("POST /connections/{platform}/disconnect", r.handleConnectionDisconnectPost)
+
+	// GitHub OAuth routes
+	r.mux.HandleFunc("GET /oauth/github", r.handleGitHubOAuthInitiate)
+	r.mux.HandleFunc("GET /oauth/github/callback", r.handleGitHubOAuthCallback)
 }
 
 func (r *Router) handleHome(w http.ResponseWriter, req *http.Request) {
@@ -1965,4 +2017,151 @@ func (r *Router) handleConnectionDisconnectPost(w http.ResponseWriter, req *http
 	// Redirect to dashboard with success message
 	// Using query param for flash message since we don't have session-based flash
 	http.Redirect(w, req, "/dashboard?disconnected="+platform, http.StatusSeeOther)
+}
+
+// =============================================================================
+// GitHub OAuth Routes (alice-58)
+// =============================================================================
+
+// handleGitHubOAuthInitiate initiates the GitHub OAuth flow.
+// GET /oauth/github
+// Redirects to GitHub authorization page.
+func (r *Router) handleGitHubOAuthInitiate(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	_, err = auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Check if GitHub OAuth provider is configured
+	if r.githubOAuthProvider == nil {
+		http.Error(w, "GitHub OAuth not configured", http.StatusInternalServerError)
+		return
+	}
+
+	// Generate state parameter for CSRF protection
+	// Store the state in a cookie for validation on callback
+	state := generateOAuthState()
+	stateCookie := &http.Cookie{
+		Name:     "github_oauth_state",
+		Value:    state,
+		Path:     "/",
+		MaxAge:   600, // 10 minutes
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	}
+	http.SetCookie(w, stateCookie)
+
+	// Build redirect URL
+	redirectURL := r.baseURL + "/oauth/github/callback"
+	authURL := r.githubOAuthProvider.GetAuthURL(state, redirectURL)
+
+	// Redirect to GitHub authorization page
+	http.Redirect(w, req, authURL, http.StatusTemporaryRedirect)
+}
+
+// handleGitHubOAuthCallback handles the OAuth callback from GitHub.
+// GET /oauth/github/callback
+// Exchanges code for token, stores credentials, redirects to repo selection.
+func (r *Router) handleGitHubOAuthCallback(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Check for error from GitHub
+	if errParam := req.URL.Query().Get("error"); errParam != "" {
+		errDesc := req.URL.Query().Get("error_description")
+		http.Error(w, fmt.Sprintf("GitHub OAuth error: %s - %s", errParam, errDesc), http.StatusBadRequest)
+		return
+	}
+
+	// Validate state parameter
+	stateCookie, err := req.Cookie("github_oauth_state")
+	if err != nil {
+		http.Error(w, "Missing OAuth state", http.StatusBadRequest)
+		return
+	}
+
+	state := req.URL.Query().Get("state")
+	if state == "" || state != stateCookie.Value {
+		http.Error(w, "Invalid OAuth state", http.StatusBadRequest)
+		return
+	}
+
+	// Clear the state cookie
+	clearStateCookie := &http.Cookie{
+		Name:     "github_oauth_state",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+	}
+	http.SetCookie(w, clearStateCookie)
+
+	// Get authorization code
+	code := req.URL.Query().Get("code")
+	if code == "" {
+		http.Error(w, "Missing authorization code", http.StatusBadRequest)
+		return
+	}
+
+	// Check if GitHub OAuth provider is configured
+	if r.githubOAuthProvider == nil {
+		http.Error(w, "GitHub OAuth not configured", http.StatusInternalServerError)
+		return
+	}
+
+	// Exchange code for tokens
+	redirectURL := r.baseURL + "/oauth/github/callback"
+	tokens, err := r.githubOAuthProvider.ExchangeCode(req.Context(), code, redirectURL)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to exchange code: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Store credentials
+	if r.credentialStore != nil {
+		creds := &PlatformCredentials{
+			UserID:         claims.UserID,
+			Platform:       "github",
+			AccessToken:    tokens.AccessToken,
+			RefreshToken:   tokens.RefreshToken,
+			TokenExpiresAt: tokens.ExpiresAt,
+			PlatformUserID: tokens.PlatformUserID,
+			Scopes:         tokens.Scopes,
+		}
+		if err := r.credentialStore.SaveCredentials(req.Context(), creds); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to store credentials: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Redirect to repo selection page
+	http.Redirect(w, req, "/repositories/new", http.StatusSeeOther)
+}
+
+// generateOAuthState generates a random state string for CSRF protection.
+func generateOAuthState() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }
