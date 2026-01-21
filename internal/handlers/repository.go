@@ -23,6 +23,9 @@ type Repository struct {
 	WebhookSecret string    `json:"webhook_secret,omitempty"`
 	Name          string    `json:"name"`
 	IsActive      bool      `json:"is_active"`
+	GitHubRepoID  *int64    `json:"github_repo_id,omitempty"`
+	WebhookID     *int64    `json:"webhook_id,omitempty"`
+	IsPrivate     bool      `json:"is_private"`
 	CreatedAt     time.Time `json:"created_at"`
 }
 

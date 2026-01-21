@@ -188,6 +188,27 @@ type BlueskyConnector interface {
 	Connect(ctx context.Context, userID, handle, appPassword string) (*BlueskyConnectResult, error)
 }
 
+// WebhookInstallResult represents the result of webhook auto-installation
+type WebhookInstallResult struct {
+	WebhookID    int64  // GitHub's webhook ID if successful
+	Success      bool   // Whether auto-install succeeded
+	ErrorMessage string // Error message if failed (non-blocking)
+}
+
+// WebhookInstaller handles automatic webhook installation via GitHub API
+type WebhookInstaller interface {
+	// InstallWebhookForRepo attempts to auto-install a webhook for a repository
+	// Returns the result; errors are non-blocking (manual setup is the fallback)
+	InstallWebhookForRepo(ctx context.Context, userID, repoID, githubURL, webhookURL, webhookSecret string) (*WebhookInstallResult, error)
+}
+
+// GitHubCredentialStore retrieves GitHub OAuth credentials for a user
+type GitHubCredentialStore interface {
+	// GetGitHubAccessToken returns the GitHub access token for a user
+	// Returns empty string if not connected or token expired
+	GetGitHubAccessToken(ctx context.Context, userID string) (string, error)
+}
+
 // BlueskyConnectResult contains the result of connecting a Bluesky account
 type BlueskyConnectResult struct {
 	Handle      string
@@ -250,18 +271,20 @@ type RateLimitData struct {
 
 // Router is the main HTTP router for the web UI
 type Router struct {
-	mux                  *http.ServeMux
-	userStore            UserStore
-	repoStore            RepositoryStore
-	commitLister         CommitLister
-	postLister           PostLister
-	secretGen            SecretGenerator
-	webhookURL           string
-	webhookTester        WebhookTester
-	webhookDeliveryStore WebhookDeliveryStore
-	connectionLister     ConnectionLister
-	connectionService    ConnectionService
-	blueskyConnector     BlueskyConnector
+	mux                   *http.ServeMux
+	userStore             UserStore
+	repoStore             RepositoryStore
+	commitLister          CommitLister
+	postLister            PostLister
+	secretGen             SecretGenerator
+	webhookURL            string
+	webhookTester         WebhookTester
+	webhookDeliveryStore  WebhookDeliveryStore
+	connectionLister      ConnectionLister
+	connectionService     ConnectionService
+	blueskyConnector      BlueskyConnector
+	webhookInstaller      WebhookInstaller
+	gitHubCredentialStore GitHubCredentialStore
 }
 
 // NewRouter creates a new web router with all routes configured (no user store)
@@ -375,6 +398,21 @@ func NewRouterWithWebhookTesterAndDeliveries(userStore UserStore, repoStore Repo
 		webhookURL:           webhookURL,
 		webhookTester:        webhookTester,
 		webhookDeliveryStore: webhookDeliveryStore,
+	}
+	r.setupRoutes()
+	return r
+}
+
+// NewRouterWithWebhookInstaller creates a new web router with webhook auto-installation support (alice-61)
+func NewRouterWithWebhookInstaller(userStore UserStore, repoStore RepositoryStore, secretGen SecretGenerator, webhookURL string, webhookInstaller WebhookInstaller, gitHubCredentialStore GitHubCredentialStore) *Router {
+	r := &Router{
+		mux:                   http.NewServeMux(),
+		userStore:             userStore,
+		repoStore:             repoStore,
+		secretGen:             secretGen,
+		webhookURL:            webhookURL,
+		webhookInstaller:      webhookInstaller,
+		gitHubCredentialStore: gitHubCredentialStore,
 	}
 	r.setupRoutes()
 	return r
@@ -997,10 +1035,34 @@ func (r *Router) handleRepositoriesNewPost(w http.ResponseWriter, req *http.Requ
 	// Build webhook URL
 	webhookURL := fmt.Sprintf("%s/webhook/%s", r.webhookURL, repo.ID)
 
+	// Try to auto-install webhook if GitHub OAuth is connected (alice-61)
+	webhookAutoInstalled := false
+	if r.webhookInstaller != nil {
+		result, err := r.webhookInstaller.InstallWebhookForRepo(
+			req.Context(),
+			claims.UserID,
+			repo.ID,
+			githubURL,
+			webhookURL,
+			secret,
+		)
+		if err == nil && result != nil && result.Success {
+			webhookAutoInstalled = true
+		}
+		// Auto-install failure is non-blocking - user can still set up manually
+	}
+
 	// Redirect to success page with query params
-	http.Redirect(w, req, fmt.Sprintf("/repositories/success?webhook_url=%s&webhook_secret=%s",
+	redirectURL := fmt.Sprintf("/repositories/success?webhook_url=%s&webhook_secret=%s",
 		url.QueryEscape(webhookURL),
-		url.QueryEscape(secret)), http.StatusSeeOther)
+		url.QueryEscape(secret))
+
+	// Add auto_installed flag to show appropriate message
+	if webhookAutoInstalled {
+		redirectURL += "&auto_installed=true"
+	}
+
+	http.Redirect(w, req, redirectURL, http.StatusSeeOther)
 }
 
 // validateGitHubURL validates that the URL is a valid GitHub repository URL

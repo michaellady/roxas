@@ -16,6 +16,7 @@ const (
 	PlatformTwitter   = "twitter"
 	PlatformInstagram = "instagram"
 	PlatformYouTube   = "youtube"
+	PlatformGitHub    = "github" // For GitHub OAuth/API credentials
 )
 
 // GeneratedPost represents a generated social media post

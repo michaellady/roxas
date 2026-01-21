@@ -36,12 +36,40 @@ func (s *RepositoryStore) CreateRepository(ctx context.Context, userID, githubUR
 	err := s.pool.QueryRow(ctx,
 		`INSERT INTO repositories (user_id, github_url, webhook_secret)
 		 VALUES ($1, $2, $3)
-		 RETURNING id, user_id, github_url, webhook_secret, name, is_active, created_at`,
+		 RETURNING id, user_id, github_url, webhook_secret, name, is_active, github_repo_id, webhook_id, is_private, created_at`,
 		userID, githubURL, webhookSecret,
-	).Scan(&repo.ID, &repo.UserID, &repo.GitHubURL, &repo.WebhookSecret, &name, &repo.IsActive, &createdAt)
+	).Scan(&repo.ID, &repo.UserID, &repo.GitHubURL, &repo.WebhookSecret, &name, &repo.IsActive, &repo.GitHubRepoID, &repo.WebhookID, &repo.IsPrivate, &createdAt)
 
 	if err != nil {
 		// Check for unique constraint violation (duplicate repo for user)
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return nil, handlers.ErrDuplicateRepository
+		}
+		return nil, err
+	}
+
+	if name != nil {
+		repo.Name = *name
+	}
+	repo.CreatedAt = createdAt
+	return &repo, nil
+}
+
+// CreateRepositoryWithGitHub creates a new repository with GitHub metadata (for OAuth flow)
+func (s *RepositoryStore) CreateRepositoryWithGitHub(ctx context.Context, userID, githubURL, webhookSecret string, githubRepoID int64, isPrivate bool) (*handlers.Repository, error) {
+	var repo handlers.Repository
+	var createdAt time.Time
+	var name *string
+
+	err := s.pool.QueryRow(ctx,
+		`INSERT INTO repositories (user_id, github_url, webhook_secret, github_repo_id, is_private)
+		 VALUES ($1, $2, $3, $4, $5)
+		 RETURNING id, user_id, github_url, webhook_secret, name, is_active, github_repo_id, webhook_id, is_private, created_at`,
+		userID, githubURL, webhookSecret, githubRepoID, isPrivate,
+	).Scan(&repo.ID, &repo.UserID, &repo.GitHubURL, &repo.WebhookSecret, &name, &repo.IsActive, &repo.GitHubRepoID, &repo.WebhookID, &repo.IsPrivate, &createdAt)
+
+	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return nil, handlers.ErrDuplicateRepository
@@ -63,11 +91,11 @@ func (s *RepositoryStore) GetRepositoryByUserAndURL(ctx context.Context, userID,
 	var name *string
 
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, user_id, github_url, webhook_secret, name, is_active, created_at
+		`SELECT id, user_id, github_url, webhook_secret, name, is_active, github_repo_id, webhook_id, is_private, created_at
 		 FROM repositories
 		 WHERE user_id = $1 AND github_url = $2`,
 		userID, githubURL,
-	).Scan(&repo.ID, &repo.UserID, &repo.GitHubURL, &repo.WebhookSecret, &name, &repo.IsActive, &createdAt)
+	).Scan(&repo.ID, &repo.UserID, &repo.GitHubURL, &repo.WebhookSecret, &name, &repo.IsActive, &repo.GitHubRepoID, &repo.WebhookID, &repo.IsPrivate, &createdAt)
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -86,7 +114,7 @@ func (s *RepositoryStore) GetRepositoryByUserAndURL(ctx context.Context, userID,
 // ListRepositoriesByUser retrieves all repositories for a user
 func (s *RepositoryStore) ListRepositoriesByUser(ctx context.Context, userID string) ([]*handlers.Repository, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, user_id, github_url, webhook_secret, name, is_active, created_at
+		`SELECT id, user_id, github_url, webhook_secret, name, is_active, github_repo_id, webhook_id, is_private, created_at
 		 FROM repositories
 		 WHERE user_id = $1
 		 ORDER BY created_at DESC`,
@@ -102,7 +130,7 @@ func (s *RepositoryStore) ListRepositoriesByUser(ctx context.Context, userID str
 		var repo handlers.Repository
 		var createdAt time.Time
 		var name *string
-		if err := rows.Scan(&repo.ID, &repo.UserID, &repo.GitHubURL, &repo.WebhookSecret, &name, &repo.IsActive, &createdAt); err != nil {
+		if err := rows.Scan(&repo.ID, &repo.UserID, &repo.GitHubURL, &repo.WebhookSecret, &name, &repo.IsActive, &repo.GitHubRepoID, &repo.WebhookID, &repo.IsPrivate, &createdAt); err != nil {
 			return nil, err
 		}
 		if name != nil {
@@ -126,11 +154,11 @@ func (s *RepositoryStore) GetRepositoryByID(ctx context.Context, repoID string) 
 	var name *string
 
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, user_id, github_url, webhook_secret, name, is_active, created_at
+		`SELECT id, user_id, github_url, webhook_secret, name, is_active, github_repo_id, webhook_id, is_private, created_at
 		 FROM repositories
 		 WHERE id = $1`,
 		repoID,
-	).Scan(&repo.ID, &repo.UserID, &repo.GitHubURL, &repo.WebhookSecret, &name, &repo.IsActive, &createdAt)
+	).Scan(&repo.ID, &repo.UserID, &repo.GitHubURL, &repo.WebhookSecret, &name, &repo.IsActive, &repo.GitHubRepoID, &repo.WebhookID, &repo.IsPrivate, &createdAt)
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -156,9 +184,9 @@ func (s *RepositoryStore) UpdateRepository(ctx context.Context, repoID, name str
 		`UPDATE repositories
 		 SET name = $2, is_active = $3
 		 WHERE id = $1
-		 RETURNING id, user_id, github_url, webhook_secret, name, is_active, created_at`,
+		 RETURNING id, user_id, github_url, webhook_secret, name, is_active, github_repo_id, webhook_id, is_private, created_at`,
 		repoID, name, isActive,
-	).Scan(&repo.ID, &repo.UserID, &repo.GitHubURL, &repo.WebhookSecret, &namePtr, &repo.IsActive, &createdAt)
+	).Scan(&repo.ID, &repo.UserID, &repo.GitHubURL, &repo.WebhookSecret, &namePtr, &repo.IsActive, &repo.GitHubRepoID, &repo.WebhookID, &repo.IsPrivate, &createdAt)
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -179,6 +207,40 @@ func (s *RepositoryStore) UpdateWebhookSecret(ctx context.Context, repoID, newSe
 	result, err := s.pool.Exec(ctx,
 		`UPDATE repositories SET webhook_secret = $1 WHERE id = $2`,
 		newSecret, repoID,
+	)
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+
+	return nil
+}
+
+// UpdateWebhookID updates the webhook_id for a repository after auto-installation
+func (s *RepositoryStore) UpdateWebhookID(ctx context.Context, repoID string, webhookID int64) error {
+	result, err := s.pool.Exec(ctx,
+		`UPDATE repositories SET webhook_id = $1 WHERE id = $2`,
+		webhookID, repoID,
+	)
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+
+	return nil
+}
+
+// ClearWebhookID clears the webhook_id for a repository (used when webhook is deleted)
+func (s *RepositoryStore) ClearWebhookID(ctx context.Context, repoID string) error {
+	result, err := s.pool.Exec(ctx,
+		`UPDATE repositories SET webhook_id = NULL WHERE id = $1`,
+		repoID,
 	)
 	if err != nil {
 		return err
