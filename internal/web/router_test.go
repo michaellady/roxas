@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/mikelady/roxas/internal/auth"
 	"github.com/mikelady/roxas/internal/handlers"
+	"github.com/mikelady/roxas/internal/services"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -3392,5 +3393,381 @@ func TestRouter_PostConnectionDisconnect_OtherUserConnection_Returns404(t *testi
 	conn, err := connService.GetConnection(context.Background(), user1.ID, "twitter")
 	if err != nil || conn == nil {
 		t.Errorf("User1's connection should NOT have been deleted by user2")
+	}
+}
+
+// =============================================================================
+// Threads OAuth Routes Tests (alice-69)
+// =============================================================================
+
+// MockThreadsOAuthConnector implements ThreadsOAuthConnector for testing
+type MockThreadsOAuthConnector struct {
+	authURL         string
+	exchangeResult  *mockExchangeResult
+	exchangeError   error
+	lastState       string
+	lastRedirectURL string
+	lastCode        string
+}
+
+type mockExchangeResult struct {
+	accessToken    string
+	refreshToken   string
+	expiresAt      *time.Time
+	platformUserID string
+	scopes         string
+}
+
+func (m *MockThreadsOAuthConnector) GetAuthURL(state, redirectURL string) string {
+	m.lastState = state
+	m.lastRedirectURL = redirectURL
+	return m.authURL + "?state=" + state + "&redirect_uri=" + url.QueryEscape(redirectURL)
+}
+
+func (m *MockThreadsOAuthConnector) ExchangeCode(ctx context.Context, code, redirectURL string) (*services.OAuthTokens, error) {
+	m.lastCode = code
+	m.lastRedirectURL = redirectURL
+	if m.exchangeError != nil {
+		return nil, m.exchangeError
+	}
+	if m.exchangeResult == nil {
+		return nil, errors.New("exchange not configured")
+	}
+	return &services.OAuthTokens{
+		AccessToken:    m.exchangeResult.accessToken,
+		RefreshToken:   m.exchangeResult.refreshToken,
+		ExpiresAt:      m.exchangeResult.expiresAt,
+		PlatformUserID: m.exchangeResult.platformUserID,
+		Scopes:         m.exchangeResult.scopes,
+	}, nil
+}
+
+// MockOAuthCredentialStore implements OAuthCredentialStore for testing
+type MockOAuthCredentialStore struct {
+	mu          sync.Mutex
+	credentials map[string]*services.PlatformCredentials // key: userID:platform
+	saveError   error
+}
+
+func NewMockOAuthCredentialStore() *MockOAuthCredentialStore {
+	return &MockOAuthCredentialStore{
+		credentials: make(map[string]*services.PlatformCredentials),
+	}
+}
+
+func (m *MockOAuthCredentialStore) SaveCredentials(ctx context.Context, creds *services.PlatformCredentials) error {
+	if m.saveError != nil {
+		return m.saveError
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := creds.UserID + ":" + creds.Platform
+	m.credentials[key] = creds
+	return nil
+}
+
+func (m *MockOAuthCredentialStore) GetCredentials(userID, platform string) *services.PlatformCredentials {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.credentials[userID+":"+platform]
+}
+
+func TestRouter_GetOAuthThreads_WithoutAuth_RedirectsToLogin(t *testing.T) {
+	userStore := NewMockUserStore()
+	connector := &MockThreadsOAuthConnector{authURL: "https://threads.net/oauth/authorize"}
+	credStore := NewMockOAuthCredentialStore()
+	router := NewRouterWithThreadsOAuthConnector(userStore, connector, credStore, "https://example.com")
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/threads", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected redirect 303, got %d", rr.Code)
+	}
+	if loc := rr.Header().Get("Location"); loc != "/login" {
+		t.Errorf("Expected redirect to /login, got %s", loc)
+	}
+}
+
+func TestRouter_GetOAuthThreads_WithAuth_RedirectsToThreads(t *testing.T) {
+	userStore := NewMockUserStore()
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	connector := &MockThreadsOAuthConnector{authURL: "https://threads.net/oauth/authorize"}
+	credStore := NewMockOAuthCredentialStore()
+	router := NewRouterWithThreadsOAuthConnector(userStore, connector, credStore, "https://example.com")
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/threads", nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should redirect to Threads OAuth URL
+	if rr.Code != http.StatusTemporaryRedirect {
+		t.Errorf("Expected redirect 307, got %d", rr.Code)
+	}
+
+	loc := rr.Header().Get("Location")
+	if !strings.HasPrefix(loc, "https://threads.net/oauth/authorize") {
+		t.Errorf("Expected redirect to Threads OAuth, got %s", loc)
+	}
+
+	// Should have set state cookie
+	cookies := rr.Result().Cookies()
+	var stateCookie *http.Cookie
+	for _, c := range cookies {
+		if c.Name == "oauth_state" {
+			stateCookie = c
+			break
+		}
+	}
+	if stateCookie == nil {
+		t.Error("Expected oauth_state cookie to be set")
+	} else if stateCookie.Value == "" {
+		t.Error("Expected oauth_state cookie to have a value")
+	}
+
+	// Verify state in URL matches cookie
+	parsedURL, _ := url.Parse(loc)
+	stateParam := parsedURL.Query().Get("state")
+	if stateParam != stateCookie.Value {
+		t.Errorf("State mismatch: URL has %s, cookie has %s", stateParam, stateCookie.Value)
+	}
+}
+
+func TestRouter_GetOAuthThreads_WithoutConnector_RedirectsWithError(t *testing.T) {
+	userStore := NewMockUserStore()
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	// Router without threads connector
+	router := NewRouterWithStores(userStore)
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/threads", nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected redirect 303, got %d", rr.Code)
+	}
+
+	loc := rr.Header().Get("Location")
+	if !strings.Contains(loc, "error=threads_not_configured") {
+		t.Errorf("Expected error in redirect, got %s", loc)
+	}
+}
+
+func TestRouter_GetOAuthThreadsCallback_WithoutAuth_RedirectsToLogin(t *testing.T) {
+	userStore := NewMockUserStore()
+	connector := &MockThreadsOAuthConnector{authURL: "https://threads.net/oauth/authorize"}
+	credStore := NewMockOAuthCredentialStore()
+	router := NewRouterWithThreadsOAuthConnector(userStore, connector, credStore, "https://example.com")
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/threads/callback?code=test_code&state=test_state", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected redirect 303, got %d", rr.Code)
+	}
+	if loc := rr.Header().Get("Location"); loc != "/login" {
+		t.Errorf("Expected redirect to /login, got %s", loc)
+	}
+}
+
+func TestRouter_GetOAuthThreadsCallback_MissingCode_RedirectsWithError(t *testing.T) {
+	userStore := NewMockUserStore()
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	connector := &MockThreadsOAuthConnector{authURL: "https://threads.net/oauth/authorize"}
+	credStore := NewMockOAuthCredentialStore()
+	router := NewRouterWithThreadsOAuthConnector(userStore, connector, credStore, "https://example.com")
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	// Request without code parameter
+	req := httptest.NewRequest(http.MethodGet, "/oauth/threads/callback?state=test_state", nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	req.AddCookie(&http.Cookie{Name: "oauth_state", Value: "test_state"})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected redirect 303, got %d", rr.Code)
+	}
+
+	loc := rr.Header().Get("Location")
+	if !strings.Contains(loc, "error=missing_code") {
+		t.Errorf("Expected missing_code error, got %s", loc)
+	}
+}
+
+func TestRouter_GetOAuthThreadsCallback_MissingState_RedirectsWithError(t *testing.T) {
+	userStore := NewMockUserStore()
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	connector := &MockThreadsOAuthConnector{authURL: "https://threads.net/oauth/authorize"}
+	credStore := NewMockOAuthCredentialStore()
+	router := NewRouterWithThreadsOAuthConnector(userStore, connector, credStore, "https://example.com")
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	// Request without state cookie
+	req := httptest.NewRequest(http.MethodGet, "/oauth/threads/callback?code=test_code&state=test_state", nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	// No oauth_state cookie
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected redirect 303, got %d", rr.Code)
+	}
+
+	loc := rr.Header().Get("Location")
+	if !strings.Contains(loc, "error=missing_state") {
+		t.Errorf("Expected missing_state error, got %s", loc)
+	}
+}
+
+func TestRouter_GetOAuthThreadsCallback_InvalidState_RedirectsWithError(t *testing.T) {
+	userStore := NewMockUserStore()
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	connector := &MockThreadsOAuthConnector{authURL: "https://threads.net/oauth/authorize"}
+	credStore := NewMockOAuthCredentialStore()
+	router := NewRouterWithThreadsOAuthConnector(userStore, connector, credStore, "https://example.com")
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	// State mismatch between URL and cookie
+	req := httptest.NewRequest(http.MethodGet, "/oauth/threads/callback?code=test_code&state=wrong_state", nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	req.AddCookie(&http.Cookie{Name: "oauth_state", Value: "correct_state"})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected redirect 303, got %d", rr.Code)
+	}
+
+	loc := rr.Header().Get("Location")
+	if !strings.Contains(loc, "error=invalid_state") {
+		t.Errorf("Expected invalid_state error, got %s", loc)
+	}
+}
+
+func TestRouter_GetOAuthThreadsCallback_ExchangeError_RedirectsWithError(t *testing.T) {
+	userStore := NewMockUserStore()
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	connector := &MockThreadsOAuthConnector{
+		authURL:       "https://threads.net/oauth/authorize",
+		exchangeError: errors.New("invalid_grant"),
+	}
+	credStore := NewMockOAuthCredentialStore()
+	router := NewRouterWithThreadsOAuthConnector(userStore, connector, credStore, "https://example.com")
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/threads/callback?code=invalid_code&state=test_state", nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	req.AddCookie(&http.Cookie{Name: "oauth_state", Value: "test_state"})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected redirect 303, got %d", rr.Code)
+	}
+
+	loc := rr.Header().Get("Location")
+	if !strings.Contains(loc, "error=") {
+		t.Errorf("Expected error in redirect, got %s", loc)
+	}
+}
+
+func TestRouter_GetOAuthThreadsCallback_Success_StoresCredentials(t *testing.T) {
+	userStore := NewMockUserStore()
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+
+	expiresAt := time.Now().Add(60 * 24 * time.Hour)
+	connector := &MockThreadsOAuthConnector{
+		authURL: "https://threads.net/oauth/authorize",
+		exchangeResult: &mockExchangeResult{
+			accessToken:    "threads_access_token_123",
+			refreshToken:   "",
+			expiresAt:      &expiresAt,
+			platformUserID: "12345678",
+			scopes:         "threads_basic threads_content_publish",
+		},
+	}
+	credStore := NewMockOAuthCredentialStore()
+	router := NewRouterWithThreadsOAuthConnector(userStore, connector, credStore, "https://example.com")
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/threads/callback?code=valid_code&state=test_state", nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	req.AddCookie(&http.Cookie{Name: "oauth_state", Value: "test_state"})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should redirect to connections with success
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected redirect 303, got %d", rr.Code)
+	}
+
+	loc := rr.Header().Get("Location")
+	if !strings.Contains(loc, "connected=threads") {
+		t.Errorf("Expected connected=threads in redirect, got %s", loc)
+	}
+
+	// Verify credentials were stored
+	creds := credStore.GetCredentials(user.ID, "threads")
+	if creds == nil {
+		t.Fatal("Expected credentials to be stored")
+	}
+	if creds.AccessToken != "threads_access_token_123" {
+		t.Errorf("Expected access token 'threads_access_token_123', got '%s'", creds.AccessToken)
+	}
+	if creds.PlatformUserID != "12345678" {
+		t.Errorf("Expected platform user ID '12345678', got '%s'", creds.PlatformUserID)
+	}
+	if creds.Scopes != "threads_basic threads_content_publish" {
+		t.Errorf("Expected scopes 'threads_basic threads_content_publish', got '%s'", creds.Scopes)
+	}
+}
+
+func TestRouter_GetOAuthThreadsCallback_ThreadsError_RedirectsWithError(t *testing.T) {
+	userStore := NewMockUserStore()
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	connector := &MockThreadsOAuthConnector{authURL: "https://threads.net/oauth/authorize"}
+	credStore := NewMockOAuthCredentialStore()
+	router := NewRouterWithThreadsOAuthConnector(userStore, connector, credStore, "https://example.com")
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	// Threads returns error in callback
+	req := httptest.NewRequest(http.MethodGet, "/oauth/threads/callback?error=access_denied&error_description=User+denied+access", nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	req.AddCookie(&http.Cookie{Name: "oauth_state", Value: "test_state"})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected redirect 303, got %d", rr.Code)
+	}
+
+	loc := rr.Header().Get("Location")
+	if !strings.Contains(loc, "error=") {
+		t.Errorf("Expected error in redirect, got %s", loc)
 	}
 }
