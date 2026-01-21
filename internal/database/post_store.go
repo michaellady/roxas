@@ -28,6 +28,7 @@ var validPostStatuses = map[string]bool{
 var (
 	_ web.PostLister     = (*PostStore)(nil)
 	_ handlers.PostStore = (*PostStore)(nil)
+	_ web.DraftCounter   = (*PostStore)(nil)
 )
 
 // PostStore implements web.PostLister using PostgreSQL
@@ -218,4 +219,21 @@ func (s *PostStore) UpdatePostStatus(ctx context.Context, postID, status string)
 	}
 
 	return nil
+}
+
+// CountDraftsByUser returns the number of draft posts for a user
+func (s *PostStore) CountDraftsByUser(ctx context.Context, userID string) (int, error) {
+	var count int
+	err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*)
+		 FROM posts p
+		 JOIN commits c ON p.commit_id = c.id
+		 JOIN repositories r ON c.repository_id = r.id
+		 WHERE r.user_id = $1 AND p.status = 'draft'`,
+		userID,
+	).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
 }

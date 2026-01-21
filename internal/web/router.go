@@ -57,11 +57,12 @@ func init() {
 
 // PageData holds data passed to templates
 type PageData struct {
-	Title string
-	User  *UserData
-	Flash *FlashMessage
-	Error string
-	Data  interface{}
+	Title      string
+	User       *UserData
+	Flash      *FlashMessage
+	Error      string
+	Data       interface{}
+	DraftCount int // Number of pending drafts (for navigation badge)
 }
 
 // UserData represents authenticated user info for templates
@@ -105,6 +106,11 @@ type CommitLister interface {
 // PostLister interface for listing posts
 type PostLister interface {
 	ListPostsByUser(ctx context.Context, userID string) ([]*DashboardPost, error)
+}
+
+// DraftCounter interface for counting draft posts
+type DraftCounter interface {
+	CountDraftsByUser(ctx context.Context, userID string) (int, error)
 }
 
 // WebhookTester interface for testing webhook connectivity
@@ -263,6 +269,7 @@ type Router struct {
 	connectionLister     ConnectionLister
 	connectionService    ConnectionService
 	blueskyConnector     BlueskyConnector
+	draftCounter         DraftCounter
 }
 
 // NewRouter creates a new web router with all routes configured (no user store)
@@ -692,7 +699,8 @@ func (r *Router) handleDashboard(w http.ResponseWriter, req *http.Request) {
 			ID:    claims.UserID,
 			Email: claims.Email,
 		},
-		Data: dashData,
+		Data:       dashData,
+		DraftCount: r.getDraftCount(req.Context(), claims.UserID),
 	})
 }
 
@@ -744,9 +752,10 @@ func (r *Router) handleConnections(w http.ResponseWriter, req *http.Request) {
 	}
 
 	r.renderPage(w, "connections.html", PageData{
-		Title: "Connections",
-		User:  &UserData{ID: claims.UserID, Email: claims.Email},
-		Data:  ConnectionsPageData{Connections: connections},
+		Title:      "Connections",
+		User:       &UserData{ID: claims.UserID, Email: claims.Email},
+		Data:       ConnectionsPageData{Connections: connections},
+		DraftCount: r.getDraftCount(req.Context(), claims.UserID),
 	})
 }
 
@@ -910,7 +919,8 @@ func (r *Router) handleRepositories(w http.ResponseWriter, req *http.Request) {
 			ID:    claims.UserID,
 			Email: claims.Email,
 		},
-		Data: listData,
+		Data:       listData,
+		DraftCount: r.getDraftCount(req.Context(), claims.UserID),
 	})
 }
 
@@ -1757,6 +1767,18 @@ func (r *Router) renderPage(w http.ResponseWriter, page string, data PageData) {
 		http.Error(w, "Template error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+}
+
+// getDraftCount returns the draft count for a user, or 0 if not available
+func (r *Router) getDraftCount(ctx context.Context, userID string) int {
+	if r.draftCounter == nil {
+		return 0
+	}
+	count, err := r.draftCounter.CountDraftsByUser(ctx, userID)
+	if err != nil {
+		return 0
+	}
+	return count
 }
 
 // WebhookDeliveriesData holds data for the webhook deliveries page
