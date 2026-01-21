@@ -1,0 +1,211 @@
+{{define "content"}}
+<div class="draft-preview-container">
+    <div class="page-header">
+        <div class="header-back">
+            <a href="/dashboard" class="btn btn-small">&larr; Back to Dashboard</a>
+        </div>
+        <h1>Draft Preview</h1>
+    </div>
+
+    {{if .Error}}
+    <div class="alert alert-error">{{.Error}}</div>
+    {{end}}
+
+    {{if .Data}}
+    <div class="card">
+        <section class="draft-details">
+            <h2>Preview</h2>
+            {{if .Data.Draft.RepoName}}
+            <p class="draft-meta">Repository: <strong>{{.Data.Draft.RepoName}}</strong></p>
+            {{end}}
+
+            <!-- Mock Social Media Card -->
+            <div class="social-preview-card">
+                <div class="social-preview-header">
+                    <span class="platform-badge">Threads</span>
+                    <span class="status-badge status-{{.Data.Draft.Status}}">{{.Data.Draft.Status}}</span>
+                </div>
+                <div class="social-preview-content" id="preview-content">{{.Data.Content}}</div>
+            </div>
+        </section>
+
+        <section class="draft-edit">
+            <h2>Edit Content</h2>
+            <form action="/drafts/{{.Data.Draft.ID}}/edit" method="POST" id="edit-form">
+                <div class="form-group">
+                    <textarea
+                        name="content"
+                        id="draft-content"
+                        class="form-textarea"
+                        rows="6"
+                        maxlength="{{.Data.CharLimit}}"
+                        oninput="updateCharCount()"
+                    >{{.Data.Content}}</textarea>
+                    <div class="char-counter" id="char-counter">
+                        <span id="char-count">{{.Data.CharCount}}</span> / {{.Data.CharLimit}} characters
+                        <span id="char-warning" class="char-warning" style="display: none;">Character limit reached!</span>
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-secondary">Save Draft</button>
+                </div>
+            </form>
+        </section>
+
+        <section class="draft-actions">
+            <h2>Actions</h2>
+            <div class="action-buttons">
+                <form action="/drafts/{{.Data.Draft.ID}}/regenerate" method="POST" class="inline-form">
+                    <button type="submit" class="btn btn-secondary" onclick="return confirm('Regenerate content? This will replace your current text.')">Regenerate</button>
+                </form>
+                <form action="/drafts/{{.Data.Draft.ID}}/delete" method="POST" class="inline-form">
+                    <button type="submit" class="btn btn-danger" onclick="return confirm('Delete this draft? This cannot be undone.')">Delete Draft</button>
+                </form>
+                <form action="/drafts/{{.Data.Draft.ID}}/post" method="POST" class="inline-form">
+                    <button type="submit" class="btn btn-primary" id="post-btn">Post It</button>
+                </form>
+            </div>
+        </section>
+    </div>
+    {{else}}
+    <div class="empty-state">
+        <p>Draft not found or you don't have permission to view it.</p>
+        <a href="/dashboard" class="btn btn-primary">Back to Dashboard</a>
+    </div>
+    {{end}}
+</div>
+
+<style>
+.draft-preview-container {
+    max-width: 800px;
+    margin: 0 auto;
+}
+
+.draft-meta {
+    color: #666;
+    margin-bottom: 1rem;
+}
+
+.social-preview-card {
+    background: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin: 1rem 0;
+}
+
+.social-preview-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+
+.social-preview-content {
+    font-size: 1rem;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+.form-textarea {
+    width: 100%;
+    padding: 0.75rem;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 1rem;
+    resize: vertical;
+    min-height: 150px;
+}
+
+.form-textarea:focus {
+    outline: none;
+    border-color: #007bff;
+    box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
+}
+
+.char-counter {
+    margin-top: 0.5rem;
+    font-size: 0.875rem;
+    color: #666;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.char-counter.warning #char-count {
+    color: #dc3545;
+    font-weight: bold;
+}
+
+.char-warning {
+    color: #dc3545;
+    font-weight: bold;
+}
+
+.form-actions {
+    margin-top: 1rem;
+}
+
+.action-buttons {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.inline-form {
+    display: inline;
+}
+
+.draft-actions {
+    margin-top: 2rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid #eee;
+}
+
+section {
+    margin-bottom: 2rem;
+}
+
+section h2 {
+    margin-bottom: 1rem;
+    font-size: 1.25rem;
+}
+</style>
+
+<script>
+const charLimit = {{.Data.CharLimit}};
+
+function updateCharCount() {
+    const textarea = document.getElementById('draft-content');
+    const charCount = document.getElementById('char-count');
+    const charCounter = document.getElementById('char-counter');
+    const charWarning = document.getElementById('char-warning');
+    const previewContent = document.getElementById('preview-content');
+
+    const count = textarea.value.length;
+    charCount.textContent = count;
+
+    // Update live preview
+    previewContent.textContent = textarea.value;
+
+    // Show warning if at or near limit
+    if (count >= charLimit) {
+        charCounter.classList.add('warning');
+        charWarning.style.display = 'inline';
+    } else if (count >= charLimit * 0.9) {
+        charCounter.classList.add('warning');
+        charWarning.style.display = 'none';
+    } else {
+        charCounter.classList.remove('warning');
+        charWarning.style.display = 'none';
+    }
+}
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', function() {
+    updateCharCount();
+});
+</script>
+{{end}}

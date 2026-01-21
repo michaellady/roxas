@@ -43,7 +43,7 @@ var templateFuncs = template.FuncMap{
 
 func init() {
 	pageTemplates = make(map[string]*template.Template)
-	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "connections.html", "connections_new.html", "bluesky_connect.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "repository_delete.html", "webhook_regenerate.html", "webhook_deliveries.html", "connection_disconnect.html"}
+	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "connections.html", "connections_new.html", "bluesky_connect.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "repository_delete.html", "webhook_regenerate.html", "webhook_deliveries.html", "connection_disconnect.html", "draft_preview.html"}
 
 	for _, page := range pages {
 		// Clone the base template and parse the page with functions
@@ -188,6 +188,36 @@ type BlueskyConnector interface {
 	Connect(ctx context.Context, userID, handle, appPassword string) (*BlueskyConnectResult, error)
 }
 
+// Draft represents a draft post for the preview page
+type Draft struct {
+	ID               string
+	UserID           string
+	RepositoryID     string
+	GeneratedContent string
+	EditedContent    string
+	Status           string
+	RepoName         string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+// DraftPreviewStore provides draft operations for the preview page
+type DraftPreviewStore interface {
+	GetDraftByID(ctx context.Context, draftID string) (*Draft, error)
+	UpdateDraftContent(ctx context.Context, draftID, content string) error
+	DeleteDraft(ctx context.Context, draftID string) error
+}
+
+// DraftRegenerator regenerates draft content
+type DraftRegenerator interface {
+	RegenerateDraft(ctx context.Context, draftID string) (*Draft, error)
+}
+
+// DraftPoster publishes a draft to social media
+type DraftPoster interface {
+	PostDraft(ctx context.Context, draftID string) error
+}
+
 // BlueskyConnectResult contains the result of connecting a Bluesky account
 type BlueskyConnectResult struct {
 	Handle      string
@@ -262,6 +292,9 @@ type Router struct {
 	connectionLister     ConnectionLister
 	connectionService    ConnectionService
 	blueskyConnector     BlueskyConnector
+	draftStore           DraftPreviewStore
+	draftRegenerator     DraftRegenerator
+	draftPoster          DraftPoster
 }
 
 // NewRouter creates a new web router with all routes configured (no user store)
@@ -380,6 +413,19 @@ func NewRouterWithWebhookTesterAndDeliveries(userStore UserStore, repoStore Repo
 	return r
 }
 
+// NewRouterWithDraftStores creates a new web router with draft-related stores for preview/edit functionality
+func NewRouterWithDraftStores(userStore UserStore, draftStore DraftPreviewStore, draftRegenerator DraftRegenerator, draftPoster DraftPoster) *Router {
+	r := &Router{
+		mux:              http.NewServeMux(),
+		userStore:        userStore,
+		draftStore:       draftStore,
+		draftRegenerator: draftRegenerator,
+		draftPoster:      draftPoster,
+	}
+	r.setupRoutes()
+	return r
+}
+
 // ServeHTTP implements http.Handler
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.mux.ServeHTTP(w, req)
@@ -415,6 +461,13 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("POST /connections/bluesky/connect", r.handleBlueskyConnectPost)
 	r.mux.HandleFunc("GET /connections/{platform}/disconnect", r.handleConnectionDisconnect)
 	r.mux.HandleFunc("POST /connections/{platform}/disconnect", r.handleConnectionDisconnectPost)
+
+	// Draft preview page
+	r.mux.HandleFunc("GET /drafts/{id}", r.handleDraftPreview)
+	r.mux.HandleFunc("POST /drafts/{id}/edit", r.handleDraftEditPost)
+	r.mux.HandleFunc("POST /drafts/{id}/regenerate", r.handleDraftRegenerate)
+	r.mux.HandleFunc("POST /drafts/{id}/delete", r.handleDraftDelete)
+	r.mux.HandleFunc("POST /drafts/{id}/post", r.handleDraftPost)
 }
 
 func (r *Router) handleHome(w http.ResponseWriter, req *http.Request) {
@@ -1965,4 +2018,379 @@ func (r *Router) handleConnectionDisconnectPost(w http.ResponseWriter, req *http
 	// Redirect to dashboard with success message
 	// Using query param for flash message since we don't have session-based flash
 	http.Redirect(w, req, "/dashboard?disconnected="+platform, http.StatusSeeOther)
+}
+
+// =============================================================================
+// Draft Preview Page (alice-66)
+// =============================================================================
+
+// CharLimit is the character limit for Threads posts (MVP)
+const CharLimit = 500
+
+// DraftPreviewData holds data for the draft preview page
+type DraftPreviewData struct {
+	Draft     *Draft
+	Content   string
+	CharCount int
+	CharLimit int
+}
+
+func (r *Router) handleDraftPreview(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get draft ID from path
+	draftID := req.PathValue("id")
+	if draftID == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Check if draft store is available
+	if r.draftStore == nil {
+		r.renderPage(w, "draft_preview.html", PageData{
+			Title: "Draft Preview",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Draft store not configured",
+		})
+		return
+	}
+
+	// Get draft
+	draft, err := r.draftStore.GetDraftByID(req.Context(), draftID)
+	if err != nil {
+		r.renderPage(w, "draft_preview.html", PageData{
+			Title: "Draft Preview",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Failed to load draft",
+		})
+		return
+	}
+
+	// Draft not found
+	if draft == nil {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Verify the draft belongs to the current user
+	if draft.UserID != claims.UserID {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Use edited content if available, otherwise use generated content
+	content := draft.EditedContent
+	if content == "" {
+		content = draft.GeneratedContent
+	}
+
+	r.renderPage(w, "draft_preview.html", PageData{
+		Title: "Draft Preview",
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+		Data: &DraftPreviewData{
+			Draft:     draft,
+			Content:   content,
+			CharCount: len(content),
+			CharLimit: CharLimit,
+		},
+	})
+}
+
+func (r *Router) handleDraftEditPost(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get draft ID from path
+	draftID := req.PathValue("id")
+	if draftID == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Check if draft store is available
+	if r.draftStore == nil {
+		http.Error(w, "Draft store not configured", http.StatusInternalServerError)
+		return
+	}
+
+	// Get draft to verify ownership
+	draft, err := r.draftStore.GetDraftByID(req.Context(), draftID)
+	if err != nil {
+		http.Error(w, "Failed to load draft", http.StatusInternalServerError)
+		return
+	}
+	if draft == nil {
+		http.NotFound(w, req)
+		return
+	}
+	if draft.UserID != claims.UserID {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Parse form
+	if err := req.ParseForm(); err != nil {
+		r.renderPage(w, "draft_preview.html", PageData{
+			Title: "Draft Preview",
+			User:  &UserData{ID: claims.UserID, Email: claims.Email},
+			Error: "Invalid form data",
+			Data: &DraftPreviewData{
+				Draft:     draft,
+				Content:   draft.EditedContent,
+				CharCount: len(draft.EditedContent),
+				CharLimit: CharLimit,
+			},
+		})
+		return
+	}
+
+	content := req.FormValue("content")
+
+	// Update draft content
+	err = r.draftStore.UpdateDraftContent(req.Context(), draftID, content)
+	if err != nil {
+		r.renderPage(w, "draft_preview.html", PageData{
+			Title: "Draft Preview",
+			User:  &UserData{ID: claims.UserID, Email: claims.Email},
+			Error: "Failed to save draft",
+			Data: &DraftPreviewData{
+				Draft:     draft,
+				Content:   content,
+				CharCount: len(content),
+				CharLimit: CharLimit,
+			},
+		})
+		return
+	}
+
+	// Redirect back to preview page
+	http.Redirect(w, req, "/drafts/"+draftID, http.StatusSeeOther)
+}
+
+func (r *Router) handleDraftRegenerate(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get draft ID from path
+	draftID := req.PathValue("id")
+	if draftID == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Check if draft store and regenerator are available
+	if r.draftStore == nil || r.draftRegenerator == nil {
+		http.Error(w, "Draft regeneration not configured", http.StatusInternalServerError)
+		return
+	}
+
+	// Get draft to verify ownership
+	draft, err := r.draftStore.GetDraftByID(req.Context(), draftID)
+	if err != nil {
+		http.Error(w, "Failed to load draft", http.StatusInternalServerError)
+		return
+	}
+	if draft == nil {
+		http.NotFound(w, req)
+		return
+	}
+	if draft.UserID != claims.UserID {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Regenerate draft content
+	_, err = r.draftRegenerator.RegenerateDraft(req.Context(), draftID)
+	if err != nil {
+		r.renderPage(w, "draft_preview.html", PageData{
+			Title: "Draft Preview",
+			User:  &UserData{ID: claims.UserID, Email: claims.Email},
+			Error: "Failed to regenerate draft: " + err.Error(),
+			Data: &DraftPreviewData{
+				Draft:     draft,
+				Content:   draft.EditedContent,
+				CharCount: len(draft.EditedContent),
+				CharLimit: CharLimit,
+			},
+		})
+		return
+	}
+
+	// Redirect back to preview page
+	http.Redirect(w, req, "/drafts/"+draftID, http.StatusSeeOther)
+}
+
+func (r *Router) handleDraftDelete(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get draft ID from path
+	draftID := req.PathValue("id")
+	if draftID == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Check if draft store is available
+	if r.draftStore == nil {
+		http.Error(w, "Draft store not configured", http.StatusInternalServerError)
+		return
+	}
+
+	// Get draft to verify ownership
+	draft, err := r.draftStore.GetDraftByID(req.Context(), draftID)
+	if err != nil {
+		http.Error(w, "Failed to load draft", http.StatusInternalServerError)
+		return
+	}
+	if draft == nil {
+		http.NotFound(w, req)
+		return
+	}
+	if draft.UserID != claims.UserID {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Delete draft
+	err = r.draftStore.DeleteDraft(req.Context(), draftID)
+	if err != nil {
+		r.renderPage(w, "draft_preview.html", PageData{
+			Title: "Draft Preview",
+			User:  &UserData{ID: claims.UserID, Email: claims.Email},
+			Error: "Failed to delete draft",
+			Data: &DraftPreviewData{
+				Draft:     draft,
+				Content:   draft.EditedContent,
+				CharCount: len(draft.EditedContent),
+				CharLimit: CharLimit,
+			},
+		})
+		return
+	}
+
+	// Redirect to dashboard with success message
+	http.Redirect(w, req, "/dashboard?deleted=draft", http.StatusSeeOther)
+}
+
+func (r *Router) handleDraftPost(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get draft ID from path
+	draftID := req.PathValue("id")
+	if draftID == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Check if draft store and poster are available
+	if r.draftStore == nil || r.draftPoster == nil {
+		http.Error(w, "Draft posting not configured", http.StatusInternalServerError)
+		return
+	}
+
+	// Get draft to verify ownership
+	draft, err := r.draftStore.GetDraftByID(req.Context(), draftID)
+	if err != nil {
+		http.Error(w, "Failed to load draft", http.StatusInternalServerError)
+		return
+	}
+	if draft == nil {
+		http.NotFound(w, req)
+		return
+	}
+	if draft.UserID != claims.UserID {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Post draft to social media
+	err = r.draftPoster.PostDraft(req.Context(), draftID)
+	if err != nil {
+		content := draft.EditedContent
+		if content == "" {
+			content = draft.GeneratedContent
+		}
+		r.renderPage(w, "draft_preview.html", PageData{
+			Title: "Draft Preview",
+			User:  &UserData{ID: claims.UserID, Email: claims.Email},
+			Error: "Failed to post: " + err.Error(),
+			Data: &DraftPreviewData{
+				Draft:     draft,
+				Content:   content,
+				CharCount: len(content),
+				CharLimit: CharLimit,
+			},
+		})
+		return
+	}
+
+	// Redirect to dashboard with success message
+	http.Redirect(w, req, "/dashboard?posted=true", http.StatusSeeOther)
 }
