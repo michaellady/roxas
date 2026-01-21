@@ -157,8 +157,9 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 		repoStore := database.NewRepositoryStore(dbPool)
 		commitStore := database.NewCommitStore(dbPool)
 		postStore := database.NewPostStore(dbPool)
+		activityStore := database.NewActivityStore(dbPool)
 		secretGen := handlers.NewCryptoSecretGenerator()
-		webRouter = web.NewRouterWithAllStores(userStore, repoStore, commitStore, postStore, secretGen, config.WebhookBaseURL)
+		webRouter = web.NewRouterWithActivityLister(userStore, repoStore, commitStore, postStore, activityStore, secretGen, config.WebhookBaseURL)
 	} else {
 		// No database - use router without stores (auth will show "not configured")
 		log.Println("WARNING: Database unavailable - web authentication disabled")

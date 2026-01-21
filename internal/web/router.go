@@ -39,6 +39,15 @@ var templateFuncs = template.FuncMap{
 	"le": func(a, b int) bool {
 		return a <= b
 	},
+	"add": func(a, b int) int {
+		return a + b
+	},
+	"gt": func(a, b int) bool {
+		return a > b
+	},
+	"lt": func(a, b int) bool {
+		return a < b
+	},
 }
 
 func init() {
@@ -233,6 +242,23 @@ type DashboardPost struct {
 	Status   string
 }
 
+// DashboardActivity represents an activity for the dashboard
+type DashboardActivity struct {
+	ID        string
+	Type      string
+	DraftID   *string
+	PostID    *string
+	Platform  *string
+	Message   *string
+	CreatedAt time.Time
+}
+
+// ActivityLister interface for listing activities
+type ActivityLister interface {
+	ListActivitiesByUser(ctx context.Context, userID string, limit, offset int) ([]*DashboardActivity, error)
+	CountActivitiesByUser(ctx context.Context, userID string) (int, error)
+}
+
 // ConnectionLister retrieves connections with rate limits for a user
 type ConnectionLister interface {
 	ListConnectionsWithRateLimits(ctx context.Context, userID string) ([]*ConnectionData, error)
@@ -262,6 +288,7 @@ type Router struct {
 	repoStore            RepositoryStore
 	commitLister         CommitLister
 	postLister           PostLister
+	activityLister       ActivityLister
 	secretGen            SecretGenerator
 	webhookURL           string
 	webhookTester        WebhookTester
@@ -301,6 +328,22 @@ func NewRouterWithAllStores(userStore UserStore, repoStore RepositoryStore, comm
 		postLister:   postLister,
 		secretGen:    secretGen,
 		webhookURL:   webhookURL,
+	}
+	r.setupRoutes()
+	return r
+}
+
+// NewRouterWithActivityLister creates a new web router with activity lister support
+func NewRouterWithActivityLister(userStore UserStore, repoStore RepositoryStore, commitLister CommitLister, postLister PostLister, activityLister ActivityLister, secretGen SecretGenerator, webhookURL string) *Router {
+	r := &Router{
+		mux:            http.NewServeMux(),
+		userStore:      userStore,
+		repoStore:      repoStore,
+		commitLister:   commitLister,
+		postLister:     postLister,
+		activityLister: activityLister,
+		secretGen:      secretGen,
+		webhookURL:     webhookURL,
 	}
 	r.setupRoutes()
 	return r
@@ -643,7 +686,13 @@ type DashboardData struct {
 	Repositories []*handlers.Repository
 	Commits      []*DashboardCommit
 	Posts        []*DashboardPost
+	Activities   []*DashboardActivity
 	IsEmpty      bool
+	// Pagination for activities
+	ActivityPage       int
+	ActivityTotalPages int
+	ActivityTotal      int
+	ActivityPageSize   int
 }
 
 func (r *Router) handleDashboard(w http.ResponseWriter, req *http.Request) {
@@ -663,8 +712,20 @@ func (r *Router) handleDashboard(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Parse activity pagination params
+	const activityPageSize = 10
+	activityPage := 1
+	if pageStr := req.URL.Query().Get("activity_page"); pageStr != "" {
+		if p, err := parsePageNumber(pageStr); err == nil && p > 0 {
+			activityPage = p
+		}
+	}
+
 	// Fetch dashboard data
-	dashData := &DashboardData{}
+	dashData := &DashboardData{
+		ActivityPage:     activityPage,
+		ActivityPageSize: activityPageSize,
+	}
 
 	// Get repositories if store is available
 	if r.repoStore != nil {
@@ -690,6 +751,24 @@ func (r *Router) handleDashboard(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
+	// Get activities if lister is available
+	if r.activityLister != nil {
+		offset := (activityPage - 1) * activityPageSize
+		activities, err := r.activityLister.ListActivitiesByUser(req.Context(), claims.UserID, activityPageSize, offset)
+		if err == nil {
+			dashData.Activities = activities
+		}
+		// Get total count for pagination
+		total, err := r.activityLister.CountActivitiesByUser(req.Context(), claims.UserID)
+		if err == nil {
+			dashData.ActivityTotal = total
+			dashData.ActivityTotalPages = (total + activityPageSize - 1) / activityPageSize
+			if dashData.ActivityTotalPages == 0 {
+				dashData.ActivityTotalPages = 1
+			}
+		}
+	}
+
 	// Check if dashboard is empty (no repos)
 	dashData.IsEmpty = len(dashData.Repositories) == 0
 
@@ -702,6 +781,13 @@ func (r *Router) handleDashboard(w http.ResponseWriter, req *http.Request) {
 		Data:       dashData,
 		DraftCount: r.getDraftCount(req.Context(), claims.UserID),
 	})
+}
+
+// parsePageNumber parses a page number from a string, returning 1 if invalid
+func parsePageNumber(s string) (int, error) {
+	var page int
+	_, err := fmt.Sscanf(s, "%d", &page)
+	return page, err
 }
 
 func (r *Router) handleLogout(w http.ResponseWriter, req *http.Request) {

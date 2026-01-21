@@ -107,6 +107,60 @@
         {{end}}
     </section>
 
+    <section class="dashboard-section">
+        <h2>Activity Feed</h2>
+        {{if .Data.Activities}}
+        <div class="activity-list">
+            {{range .Data.Activities}}
+            <div class="activity-item activity-{{.Type}}">
+                <div class="activity-icon">
+                    {{if eq .Type "draft_created"}}
+                    <span class="icon-draft">&#x1F4DD;</span>
+                    {{else if eq .Type "post_success"}}
+                    <span class="icon-success">&#x2705;</span>
+                    {{else if eq .Type "post_failed"}}
+                    <span class="icon-failed">&#x274C;</span>
+                    {{end}}
+                </div>
+                <div class="activity-content">
+                    <div class="activity-type">
+                        {{if eq .Type "draft_created"}}
+                        <strong>Draft Created</strong>
+                        {{else if eq .Type "post_success"}}
+                        <strong>Post Published</strong>
+                        {{else if eq .Type "post_failed"}}
+                        <strong>Post Failed</strong>
+                        {{end}}
+                        {{if .Platform}}<span class="activity-platform">on {{.Platform}}</span>{{end}}
+                    </div>
+                    {{if .Message}}
+                    <p class="activity-message">{{.Message}}</p>
+                    {{end}}
+                    <span class="activity-time">{{.CreatedAt.Format "Jan 02, 2006 3:04 PM"}}</span>
+                </div>
+            </div>
+            {{end}}
+        </div>
+        {{if gt .Data.ActivityTotalPages 1}}
+        <div class="pagination">
+            {{if gt .Data.ActivityPage 1}}
+            <a href="?activity_page={{.Data.ActivityPage | add -1}}" class="btn btn-secondary btn-sm">Previous</a>
+            {{else}}
+            <span class="btn btn-secondary btn-sm disabled">Previous</span>
+            {{end}}
+            <span class="page-info">Page {{.Data.ActivityPage}} of {{.Data.ActivityTotalPages}}</span>
+            {{if lt .Data.ActivityPage .Data.ActivityTotalPages}}
+            <a href="?activity_page={{.Data.ActivityPage | add 1}}" class="btn btn-secondary btn-sm">Next</a>
+            {{else}}
+            <span class="btn btn-secondary btn-sm disabled">Next</span>
+            {{end}}
+        </div>
+        {{end}}
+        {{else}}
+        <p class="empty-message">No activity yet. Activity will appear here when drafts are created or posts are published.</p>
+        {{end}}
+    </section>
+
     {{end}}
 </div>
 {{end}}
