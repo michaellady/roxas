@@ -3399,17 +3399,6 @@ func TestRouter_PostConnectionDisconnect_OtherUserConnection_Returns404(t *testi
 // TB-DRAFT-01: Draft Preview Page Tests (TDD - RED)
 // =============================================================================
 
-// Draft represents a draft social media post for web tests
-type Draft struct {
-	ID           string
-	UserID       string
-	RepositoryID string
-	Content      string
-	Status       string
-	CharLimit    int
-	CreatedAt    time.Time
-}
-
 // MockDraftStore implements draft storage for web tests
 type MockDraftStore struct {
 	mu     sync.Mutex
@@ -3937,19 +3926,3 @@ func TestRouter_PostDraftPost_PublishesDraft(t *testing.T) {
 // =============================================================================
 
 // DraftStore interface for draft operations
-type DraftStoreInterface interface {
-	GetDraftByID(ctx context.Context, draftID string) (*Draft, error)
-	UpdateDraftContent(ctx context.Context, draftID, content string) (*Draft, error)
-	DeleteDraft(ctx context.Context, draftID string) error
-	UpdateDraftStatus(ctx context.Context, draftID, status string) (*Draft, error)
-}
-
-// NewRouterWithDraftStore creates a router with user and draft stores for testing
-func NewRouterWithDraftStore(userStore UserStore, draftStore DraftStoreInterface) *Router {
-	// For TDD red phase, this will need to be implemented in the Router
-	// For now, return basic router - tests will fail as expected
-	r := NewRouter()
-	r.userStore = userStore
-	// r.draftStore = draftStore // TODO: Add draft store to Router struct
-	return r
-}
