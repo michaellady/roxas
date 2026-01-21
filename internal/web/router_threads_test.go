@@ -189,9 +189,9 @@ func TestRouter_GetOAuthThreads_RedirectsToThreadsAuth(t *testing.T) {
 
 	router.ServeHTTP(rr, req)
 
-	// Should redirect to Threads OAuth URL
-	if rr.Code != http.StatusFound && rr.Code != http.StatusSeeOther {
-		t.Errorf("Expected redirect status (302/303), got %d", rr.Code)
+	// Should redirect to Threads OAuth URL (302, 303, or 307 are all valid)
+	if rr.Code != http.StatusFound && rr.Code != http.StatusSeeOther && rr.Code != http.StatusTemporaryRedirect {
+		t.Errorf("Expected redirect status (302/303/307), got %d", rr.Code)
 	}
 
 	location := rr.Header().Get("Location")
@@ -264,7 +264,7 @@ func TestRouter_GetOAuthThreadsCallback_ExchangesCodeForTokens(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/oauth/threads/callback?code=auth-code-123&state=valid-state", nil)
 	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
 	// Also set the state cookie that would have been set during the initial redirect
-	req.AddCookie(&http.Cookie{Name: "threads_oauth_state", Value: "valid-state"})
+	req.AddCookie(&http.Cookie{Name: "oauth_state", Value: "valid-state"})
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)
@@ -309,7 +309,7 @@ func TestRouter_GetOAuthThreadsCallback_ValidatesState(t *testing.T) {
 	// Simulate callback with mismatched state
 	req := httptest.NewRequest(http.MethodGet, "/oauth/threads/callback?code=auth-code&state=wrong-state", nil)
 	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
-	req.AddCookie(&http.Cookie{Name: "threads_oauth_state", Value: "correct-state"})
+	req.AddCookie(&http.Cookie{Name: "oauth_state", Value: "correct-state"})
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)
@@ -337,7 +337,7 @@ func TestRouter_GetOAuthThreadsCallback_HandlesExchangeError(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/oauth/threads/callback?code=bad-code&state=valid-state", nil)
 	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
-	req.AddCookie(&http.Cookie{Name: "threads_oauth_state", Value: "valid-state"})
+	req.AddCookie(&http.Cookie{Name: "oauth_state", Value: "valid-state"})
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)
@@ -359,7 +359,7 @@ func TestRouter_GetOAuthThreadsCallback_HandlesMissingCode(t *testing.T) {
 	// Missing code parameter
 	req := httptest.NewRequest(http.MethodGet, "/oauth/threads/callback?state=valid-state", nil)
 	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
-	req.AddCookie(&http.Cookie{Name: "threads_oauth_state", Value: "valid-state"})
+	req.AddCookie(&http.Cookie{Name: "oauth_state", Value: "valid-state"})
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)
@@ -406,7 +406,7 @@ func TestRouter_GetOAuthThreadsCallback_StoresCredentials(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/oauth/threads/callback?code=auth-code-123&state=valid-state", nil)
 	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
-	req.AddCookie(&http.Cookie{Name: "threads_oauth_state", Value: "valid-state"})
+	req.AddCookie(&http.Cookie{Name: "oauth_state", Value: "valid-state"})
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)
@@ -449,7 +449,7 @@ func TestRouter_GetOAuthThreadsCallback_StoresUsername(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/oauth/threads/callback?code=auth-code-123&state=valid-state", nil)
 	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
-	req.AddCookie(&http.Cookie{Name: "threads_oauth_state", Value: "valid-state"})
+	req.AddCookie(&http.Cookie{Name: "oauth_state", Value: "valid-state"})
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)
@@ -476,7 +476,7 @@ func TestRouter_GetOAuthThreadsCallback_RedirectsToConnectionsOnSuccess(t *testi
 
 	req := httptest.NewRequest(http.MethodGet, "/oauth/threads/callback?code=auth-code-123&state=valid-state", nil)
 	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
-	req.AddCookie(&http.Cookie{Name: "threads_oauth_state", Value: "valid-state"})
+	req.AddCookie(&http.Cookie{Name: "oauth_state", Value: "valid-state"})
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)
@@ -509,7 +509,7 @@ func TestRouter_GetOAuthThreadsCallback_HandlesCredentialStoreError(t *testing.T
 
 	req := httptest.NewRequest(http.MethodGet, "/oauth/threads/callback?code=auth-code-123&state=valid-state", nil)
 	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
-	req.AddCookie(&http.Cookie{Name: "threads_oauth_state", Value: "valid-state"})
+	req.AddCookie(&http.Cookie{Name: "oauth_state", Value: "valid-state"})
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)
