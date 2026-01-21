@@ -3400,7 +3400,7 @@ func TestRouter_PostConnectionDisconnect_OtherUserConnection_Returns404(t *testi
 // =============================================================================
 
 // Draft represents a draft social media post for web tests
-type Draft struct {
+type RouterDraft struct {
 	ID           string
 	UserID       string
 	RepositoryID string
@@ -3411,16 +3411,16 @@ type Draft struct {
 }
 
 // MockDraftStore implements draft storage for web tests
-type MockDraftStore struct {
+type MockRouterDraftStore struct {
 	mu     sync.Mutex
-	drafts map[string]*Draft
+	drafts map[string]*RouterDraft
 }
 
-func NewMockDraftStore() *MockDraftStore {
-	return &MockDraftStore{drafts: make(map[string]*Draft)}
+func NewMockRouterDraftStore() *MockRouterDraftStore {
+	return &MockDraftStore{drafts: make(map[string]*RouterDraft)}
 }
 
-func (s *MockDraftStore) CreateDraft(ctx context.Context, userID, repoID, content string) (*Draft, error) {
+func (s *MockRouterDraftStore) CreateDraft(ctx context.Context, userID, repoID, content string) (*RouterDraft, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	draft := &Draft{
@@ -3436,7 +3436,7 @@ func (s *MockDraftStore) CreateDraft(ctx context.Context, userID, repoID, conten
 	return draft, nil
 }
 
-func (s *MockDraftStore) GetDraftByID(ctx context.Context, draftID string) (*Draft, error) {
+func (s *MockRouterDraftStore) GetDraftByID(ctx context.Context, draftID string) (*RouterDraft, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if draft, ok := s.drafts[draftID]; ok {
@@ -3445,7 +3445,7 @@ func (s *MockDraftStore) GetDraftByID(ctx context.Context, draftID string) (*Dra
 	return nil, nil
 }
 
-func (s *MockDraftStore) UpdateDraftContent(ctx context.Context, draftID, content string) (*Draft, error) {
+func (s *MockRouterDraftStore) UpdateDraftContent(ctx context.Context, draftID, content string) (*RouterDraft, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if draft, ok := s.drafts[draftID]; ok {
@@ -3455,14 +3455,14 @@ func (s *MockDraftStore) UpdateDraftContent(ctx context.Context, draftID, conten
 	return nil, nil
 }
 
-func (s *MockDraftStore) DeleteDraft(ctx context.Context, draftID string) error {
+func (s *MockRouterDraftStore) DeleteDraft(ctx context.Context, draftID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.drafts, draftID)
 	return nil
 }
 
-func (s *MockDraftStore) UpdateDraftStatus(ctx context.Context, draftID, status string) (*Draft, error) {
+func (s *MockRouterDraftStore) UpdateDraftStatus(ctx context.Context, draftID, status string) (*RouterDraft, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if draft, ok := s.drafts[draftID]; ok {
@@ -3473,7 +3473,7 @@ func (s *MockDraftStore) UpdateDraftStatus(ctx context.Context, draftID, status 
 }
 
 // AddDraft adds a draft directly for testing
-func (s *MockDraftStore) AddDraft(draft *Draft) {
+func (s *MockRouterDraftStore) AddDraft(draft *RouterDraft) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.drafts[draft.ID] = draft
@@ -3485,8 +3485,8 @@ func (s *MockDraftStore) AddDraft(draft *Draft) {
 
 func TestRouter_GetDraftPreview_WithoutAuth_RedirectsToLogin(t *testing.T) {
 	userStore := NewMockUserStore()
-	draftStore := NewMockDraftStore()
-	router := NewRouterWithDraftStore(userStore, draftStore)
+	draftStore := NewMockRouterDraftStore()
+	router := NewRouterWithRouterDraftStore(userStore, draftStore)
 
 	// Create a draft
 	draft := &Draft{
@@ -3517,8 +3517,8 @@ func TestRouter_GetDraftPreview_WithoutAuth_RedirectsToLogin(t *testing.T) {
 
 func TestRouter_GetDraftPreview_WithAuth_ReturnsHTML(t *testing.T) {
 	userStore := NewMockUserStore()
-	draftStore := NewMockDraftStore()
-	router := NewRouterWithDraftStore(userStore, draftStore)
+	draftStore := NewMockRouterDraftStore()
+	router := NewRouterWithRouterDraftStore(userStore, draftStore)
 
 	// Create a test user
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
@@ -3558,8 +3558,8 @@ func TestRouter_GetDraftPreview_WithAuth_ReturnsHTML(t *testing.T) {
 
 func TestRouter_GetDraftPreview_NotFound_Returns404(t *testing.T) {
 	userStore := NewMockUserStore()
-	draftStore := NewMockDraftStore()
-	router := NewRouterWithDraftStore(userStore, draftStore)
+	draftStore := NewMockRouterDraftStore()
+	router := NewRouterWithRouterDraftStore(userStore, draftStore)
 
 	// Create a test user
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
@@ -3581,8 +3581,8 @@ func TestRouter_GetDraftPreview_NotFound_Returns404(t *testing.T) {
 
 func TestRouter_GetDraftPreview_OtherUserDraft_Returns404(t *testing.T) {
 	userStore := NewMockUserStore()
-	draftStore := NewMockDraftStore()
-	router := NewRouterWithDraftStore(userStore, draftStore)
+	draftStore := NewMockRouterDraftStore()
+	router := NewRouterWithRouterDraftStore(userStore, draftStore)
 
 	// Create two users
 	user1, _ := userStore.CreateUser(context.Background(), "user1@example.com", hashPassword("password123"))
@@ -3620,8 +3620,8 @@ func TestRouter_GetDraftPreview_OtherUserDraft_Returns404(t *testing.T) {
 
 func TestRouter_GetDraftPreview_DisplaysDraftContent(t *testing.T) {
 	userStore := NewMockUserStore()
-	draftStore := NewMockDraftStore()
-	router := NewRouterWithDraftStore(userStore, draftStore)
+	draftStore := NewMockRouterDraftStore()
+	router := NewRouterWithRouterDraftStore(userStore, draftStore)
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
@@ -3652,8 +3652,8 @@ func TestRouter_GetDraftPreview_DisplaysDraftContent(t *testing.T) {
 
 func TestRouter_GetDraftPreview_HasEditableTextarea(t *testing.T) {
 	userStore := NewMockUserStore()
-	draftStore := NewMockDraftStore()
-	router := NewRouterWithDraftStore(userStore, draftStore)
+	draftStore := NewMockRouterDraftStore()
+	router := NewRouterWithRouterDraftStore(userStore, draftStore)
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
@@ -3688,8 +3688,8 @@ func TestRouter_GetDraftPreview_HasEditableTextarea(t *testing.T) {
 
 func TestRouter_GetDraftPreview_ShowsCharacterCount(t *testing.T) {
 	userStore := NewMockUserStore()
-	draftStore := NewMockDraftStore()
-	router := NewRouterWithDraftStore(userStore, draftStore)
+	draftStore := NewMockRouterDraftStore()
+	router := NewRouterWithRouterDraftStore(userStore, draftStore)
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
@@ -3731,8 +3731,8 @@ func TestRouter_GetDraftPreview_ShowsCharacterCount(t *testing.T) {
 
 func TestRouter_GetDraftPreview_HasRegenerateButton(t *testing.T) {
 	userStore := NewMockUserStore()
-	draftStore := NewMockDraftStore()
-	router := NewRouterWithDraftStore(userStore, draftStore)
+	draftStore := NewMockRouterDraftStore()
+	router := NewRouterWithRouterDraftStore(userStore, draftStore)
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
@@ -3766,8 +3766,8 @@ func TestRouter_GetDraftPreview_HasRegenerateButton(t *testing.T) {
 
 func TestRouter_GetDraftPreview_HasDeleteButton(t *testing.T) {
 	userStore := NewMockUserStore()
-	draftStore := NewMockDraftStore()
-	router := NewRouterWithDraftStore(userStore, draftStore)
+	draftStore := NewMockRouterDraftStore()
+	router := NewRouterWithRouterDraftStore(userStore, draftStore)
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
@@ -3802,8 +3802,8 @@ func TestRouter_GetDraftPreview_HasDeleteButton(t *testing.T) {
 
 func TestRouter_GetDraftPreview_HasPostButton(t *testing.T) {
 	userStore := NewMockUserStore()
-	draftStore := NewMockDraftStore()
-	router := NewRouterWithDraftStore(userStore, draftStore)
+	draftStore := NewMockRouterDraftStore()
+	router := NewRouterWithRouterDraftStore(userStore, draftStore)
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
@@ -3841,8 +3841,8 @@ func TestRouter_GetDraftPreview_HasPostButton(t *testing.T) {
 
 func TestRouter_PostDraftRegenerate_RegeneratesContent(t *testing.T) {
 	userStore := NewMockUserStore()
-	draftStore := NewMockDraftStore()
-	router := NewRouterWithDraftStore(userStore, draftStore)
+	draftStore := NewMockRouterDraftStore()
+	router := NewRouterWithRouterDraftStore(userStore, draftStore)
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
@@ -3872,8 +3872,8 @@ func TestRouter_PostDraftRegenerate_RegeneratesContent(t *testing.T) {
 
 func TestRouter_PostDraftDelete_DeletesDraft(t *testing.T) {
 	userStore := NewMockUserStore()
-	draftStore := NewMockDraftStore()
-	router := NewRouterWithDraftStore(userStore, draftStore)
+	draftStore := NewMockRouterDraftStore()
+	router := NewRouterWithRouterDraftStore(userStore, draftStore)
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
@@ -3903,8 +3903,8 @@ func TestRouter_PostDraftDelete_DeletesDraft(t *testing.T) {
 
 func TestRouter_PostDraftPost_PublishesDraft(t *testing.T) {
 	userStore := NewMockUserStore()
-	draftStore := NewMockDraftStore()
-	router := NewRouterWithDraftStore(userStore, draftStore)
+	draftStore := NewMockRouterDraftStore()
+	router := NewRouterWithRouterDraftStore(userStore, draftStore)
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
@@ -3938,14 +3938,14 @@ func TestRouter_PostDraftPost_PublishesDraft(t *testing.T) {
 
 // DraftStore interface for draft operations
 type DraftStoreInterface interface {
-	GetDraftByID(ctx context.Context, draftID string) (*Draft, error)
-	UpdateDraftContent(ctx context.Context, draftID, content string) (*Draft, error)
+	GetDraftByID(ctx context.Context, draftID string) (*RouterDraft, error)
+	UpdateDraftContent(ctx context.Context, draftID, content string) (*RouterDraft, error)
 	DeleteDraft(ctx context.Context, draftID string) error
-	UpdateDraftStatus(ctx context.Context, draftID, status string) (*Draft, error)
+	UpdateDraftStatus(ctx context.Context, draftID, status string) (*RouterDraft, error)
 }
 
 // NewRouterWithDraftStore creates a router with user and draft stores for testing
-func NewRouterWithDraftStore(userStore UserStore, draftStore DraftStoreInterface) *Router {
+func NewRouterWithRouterDraftStore(userStore UserStore, draftStore DraftStoreInterface) *Router {
 	// For TDD red phase, this will need to be implemented in the Router
 	// For now, return basic router - tests will fail as expected
 	r := NewRouter()
@@ -3972,32 +3972,32 @@ type DraftListItem struct {
 
 // DraftLister interface for listing drafts - to be implemented
 type DraftLister interface {
-	ListDraftsByUser(ctx context.Context, userID string, page, pageSize int) ([]*DraftListItem, int, error)
+	ListDraftsByUser(ctx context.Context, userID string, page, pageSize int) ([]*RouterDraftListItem, int, error)
 }
 
 // MockDraftLister implements DraftLister for testing
 type MockDraftLister struct {
 	mu       sync.Mutex
-	drafts   map[string][]*DraftListItem // userID -> drafts
+	drafts   map[string][]*RouterDraftListItem // userID -> drafts
 	total    map[string]int              // userID -> total count
 	errOnGet error
 }
 
 func NewMockDraftLister() *MockDraftLister {
 	return &MockDraftLister{
-		drafts: make(map[string][]*DraftListItem),
+		drafts: make(map[string][]*RouterDraftListItem),
 		total:  make(map[string]int),
 	}
 }
 
-func (m *MockDraftLister) AddDraft(userID string, draft *DraftListItem) {
+func (m *MockDraftLister) AddDraft(userID string, draft *RouterDraftListItem) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.drafts[userID] = append(m.drafts[userID], draft)
 	m.total[userID] = len(m.drafts[userID])
 }
 
-func (m *MockDraftLister) ListDraftsByUser(ctx context.Context, userID string, page, pageSize int) ([]*DraftListItem, int, error) {
+func (m *MockDraftLister) ListDraftsByUser(ctx context.Context, userID string, page, pageSize int) ([]*RouterDraftListItem, int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -4011,7 +4011,7 @@ func (m *MockDraftLister) ListDraftsByUser(ctx context.Context, userID string, p
 	// Apply pagination
 	start := (page - 1) * pageSize
 	if start >= len(drafts) {
-		return []*DraftListItem{}, total, nil
+		return []*RouterDraftListItem{}, total, nil
 	}
 	end := start + pageSize
 	if end > len(drafts) {
