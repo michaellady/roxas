@@ -3,8 +3,10 @@ package web
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"embed"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"html/template"
@@ -188,6 +190,18 @@ type BlueskyConnector interface {
 	Connect(ctx context.Context, userID, handle, appPassword string) (*BlueskyConnectResult, error)
 }
 
+// ThreadsOAuthConnector handles Threads OAuth flow
+type ThreadsOAuthConnector interface {
+	// GetAuthURL generates the OAuth authorization URL for Threads
+	// state: Random string for CSRF protection
+	// redirectURL: Where Threads will redirect after authorization
+	GetAuthURL(state, redirectURL string) string
+
+	// ExchangeCode exchanges the authorization code for tokens and stores credentials
+	// Returns the platform username for display
+	ExchangeCode(ctx context.Context, userID, code, redirectURL string) (platformUsername string, err error)
+}
+
 // BlueskyConnectResult contains the result of connecting a Bluesky account
 type BlueskyConnectResult struct {
 	Handle      string
@@ -262,6 +276,8 @@ type Router struct {
 	connectionLister     ConnectionLister
 	connectionService    ConnectionService
 	blueskyConnector     BlueskyConnector
+	threadsOAuth         ThreadsOAuthConnector
+	oauthCallbackURL     string // Base URL for OAuth callbacks (e.g., "https://app.example.com")
 }
 
 // NewRouter creates a new web router with all routes configured (no user store)
@@ -363,6 +379,18 @@ func NewRouterWithBlueskyConnector(userStore UserStore, blueskyConnector Bluesky
 	return r
 }
 
+// NewRouterWithThreadsOAuth creates a new web router with Threads OAuth support
+func NewRouterWithThreadsOAuth(userStore UserStore, threadsOAuth ThreadsOAuthConnector, callbackURL string) *Router {
+	r := &Router{
+		mux:              http.NewServeMux(),
+		userStore:        userStore,
+		threadsOAuth:     threadsOAuth,
+		oauthCallbackURL: callbackURL,
+	}
+	r.setupRoutes()
+	return r
+}
+
 // NewRouterWithWebhookTesterAndDeliveries creates a new web router with both webhook tester and delivery store
 func NewRouterWithWebhookTesterAndDeliveries(userStore UserStore, repoStore RepositoryStore, commitLister CommitLister, postLister PostLister, secretGen SecretGenerator, webhookURL string, webhookTester WebhookTester, webhookDeliveryStore WebhookDeliveryStore) *Router {
 	r := &Router{
@@ -415,6 +443,10 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("POST /connections/bluesky/connect", r.handleBlueskyConnectPost)
 	r.mux.HandleFunc("GET /connections/{platform}/disconnect", r.handleConnectionDisconnect)
 	r.mux.HandleFunc("POST /connections/{platform}/disconnect", r.handleConnectionDisconnectPost)
+
+	// OAuth routes
+	r.mux.HandleFunc("GET /oauth/threads", r.handleThreadsOAuth)
+	r.mux.HandleFunc("GET /oauth/threads/callback", r.handleThreadsOAuthCallback)
 }
 
 func (r *Router) handleHome(w http.ResponseWriter, req *http.Request) {
@@ -1716,6 +1748,153 @@ func (r *Router) handleWebhookRegenerate(w http.ResponseWriter, req *http.Reques
 			RepoName:      repoName,
 		},
 	})
+}
+
+// =============================================================================
+// Threads OAuth Handlers (alice-69)
+// =============================================================================
+
+// oauthStateCookieName is the cookie name for storing OAuth state
+const oauthStateCookieName = "oauth_state"
+
+// generateOAuthState generates a cryptographically secure random state string
+func generateOAuthState() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.URLEncoding.EncodeToString(b), nil
+}
+
+// handleThreadsOAuth initiates the Threads OAuth flow
+// GET /oauth/threads
+func (r *Router) handleThreadsOAuth(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie - user must be logged in
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	_, err = auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Check if Threads OAuth is configured
+	if r.threadsOAuth == nil {
+		http.Redirect(w, req, "/connections?error=threads_not_configured", http.StatusSeeOther)
+		return
+	}
+
+	// Generate state for CSRF protection
+	state, err := generateOAuthState()
+	if err != nil {
+		http.Redirect(w, req, "/connections?error=state_generation_failed", http.StatusSeeOther)
+		return
+	}
+
+	// Store state in a cookie (expires in 10 minutes)
+	stateCookie := &http.Cookie{
+		Name:     oauthStateCookieName,
+		Value:    state,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   600, // 10 minutes
+	}
+	http.SetCookie(w, stateCookie)
+
+	// Build callback URL
+	callbackURL := r.oauthCallbackURL + "/oauth/threads/callback"
+
+	// Get auth URL from provider and redirect
+	authURL := r.threadsOAuth.GetAuthURL(state, callbackURL)
+	http.Redirect(w, req, authURL, http.StatusTemporaryRedirect)
+}
+
+// handleThreadsOAuthCallback handles the Threads OAuth callback
+// GET /oauth/threads/callback
+func (r *Router) handleThreadsOAuthCallback(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie - user must be logged in
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login?error=unauthorized", http.StatusSeeOther)
+		return
+	}
+
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login?error=unauthorized", http.StatusSeeOther)
+		return
+	}
+
+	// Check if Threads OAuth is configured
+	if r.threadsOAuth == nil {
+		http.Redirect(w, req, "/connections?error=threads_not_configured", http.StatusSeeOther)
+		return
+	}
+
+	// Check for OAuth error from provider
+	if oauthError := req.URL.Query().Get("error"); oauthError != "" {
+		errorDesc := req.URL.Query().Get("error_description")
+		if errorDesc == "" {
+			errorDesc = oauthError
+		}
+		http.Redirect(w, req, "/connections?error="+url.QueryEscape(errorDesc), http.StatusSeeOther)
+		return
+	}
+
+	// Get the authorization code
+	code := req.URL.Query().Get("code")
+	if code == "" {
+		http.Redirect(w, req, "/connections?error=missing_code", http.StatusSeeOther)
+		return
+	}
+
+	// Get and validate state
+	state := req.URL.Query().Get("state")
+	if state == "" {
+		http.Redirect(w, req, "/connections?error=missing_state", http.StatusSeeOther)
+		return
+	}
+
+	// Verify state matches the cookie
+	stateCookie, err := req.Cookie(oauthStateCookieName)
+	if err != nil || stateCookie.Value == "" {
+		http.Redirect(w, req, "/connections?error=state_cookie_missing", http.StatusSeeOther)
+		return
+	}
+
+	if state != stateCookie.Value {
+		http.Redirect(w, req, "/connections?error=invalid_state", http.StatusSeeOther)
+		return
+	}
+
+	// Clear the state cookie
+	clearStateCookie := &http.Cookie{
+		Name:     oauthStateCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		MaxAge:   -1, // Delete the cookie
+	}
+	http.SetCookie(w, clearStateCookie)
+
+	// Build callback URL (same as used in initiation)
+	callbackURL := r.oauthCallbackURL + "/oauth/threads/callback"
+
+	// Exchange code for tokens and store credentials
+	_, err = r.threadsOAuth.ExchangeCode(req.Context(), claims.UserID, code, callbackURL)
+	if err != nil {
+		http.Redirect(w, req, "/connections?error="+url.QueryEscape("Failed to connect Threads: "+err.Error()), http.StatusSeeOther)
+		return
+	}
+
+	// Success - redirect to connections page
+	http.Redirect(w, req, "/connections?connected=threads", http.StatusSeeOther)
 }
 
 func (r *Router) renderPage(w http.ResponseWriter, page string, data PageData) {
