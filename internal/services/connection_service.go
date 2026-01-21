@@ -54,6 +54,16 @@ func (c *Connection) IsHealthy() bool {
 	return true
 }
 
+// ExpiresSoon returns true if the token expires within 7 days
+func (c *Connection) ExpiresSoon() bool {
+	if c.ExpiresAt == nil {
+		return false
+	}
+	// Token is considered "expiring soon" if it expires within 7 days
+	warningThreshold := 7 * 24 * time.Hour
+	return time.Until(*c.ExpiresAt) <= warningThreshold && time.Until(*c.ExpiresAt) > 0
+}
+
 // OAuthInfo contains the information needed to redirect user for OAuth
 type OAuthInfo struct {
 	AuthURL     string    `json:"auth_url"`

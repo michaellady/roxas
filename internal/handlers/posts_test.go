@@ -617,9 +617,8 @@ func TestCreatePost_BlockedWhenConnectionExpired(t *testing.T) {
 		ExpiresAt: &expiredYesterday,
 	})
 
-	// TDD RED: Currently NewPostsHandler doesn't accept a connection checker.
-	// This test documents the expected behavior when it's implemented.
-	handler := NewPostsHandler(postStore, commitStore, generator)
+	// Use the constructor with connection checker
+	handler := NewPostsHandlerWithConnectionChecker(postStore, commitStore, generator, connChecker)
 
 	// Attempt to create a post
 	req := createAuthenticatedRequest(t, http.MethodPost, "/api/v1/commits/commit-123/posts?platform=linkedin", nil, userID, "test@example.com")
@@ -628,7 +627,6 @@ func TestCreatePost_BlockedWhenConnectionExpired(t *testing.T) {
 	protectedHandler := auth.JWTMiddleware(http.HandlerFunc(handler.CreatePost))
 	protectedHandler.ServeHTTP(rr, req)
 
-	// TDD RED: Currently returns 201 Created because connection check isn't implemented.
 	// Should return 403 Forbidden when connection is expired.
 	if rr.Code != http.StatusForbidden {
 		t.Errorf("Expected status 403 Forbidden when connection is expired, got %d: %s", rr.Code, rr.Body.String())
@@ -649,7 +647,6 @@ func TestCreatePost_BlockedWhenConnectionExpired(t *testing.T) {
 
 // TestCreatePost_BlockedWhenNoConnection tests that post creation fails
 // when the user has no connection to the target platform at all.
-// TDD RED: This test should FAIL because the posts handler doesn't check connections.
 func TestCreatePost_BlockedWhenNoConnection(t *testing.T) {
 	postStore := NewMockPostStore()
 	commitStore := NewMockCommitStoreForPosts()
@@ -660,6 +657,7 @@ func TestCreatePost_BlockedWhenNoConnection(t *testing.T) {
 			CommitID: "commit-123",
 		},
 	}
+	connChecker := NewMockConnectionCheckerForPosts()
 
 	userID := "user-123"
 	commit := &services.Commit{
@@ -674,7 +672,7 @@ func TestCreatePost_BlockedWhenNoConnection(t *testing.T) {
 
 	// No connection set up for the user - they haven't connected LinkedIn yet
 
-	handler := NewPostsHandler(postStore, commitStore, generator)
+	handler := NewPostsHandlerWithConnectionChecker(postStore, commitStore, generator, connChecker)
 
 	req := createAuthenticatedRequest(t, http.MethodPost, "/api/v1/commits/commit-123/posts?platform=linkedin", nil, userID, "test@example.com")
 
@@ -682,7 +680,6 @@ func TestCreatePost_BlockedWhenNoConnection(t *testing.T) {
 	protectedHandler := auth.JWTMiddleware(http.HandlerFunc(handler.CreatePost))
 	protectedHandler.ServeHTTP(rr, req)
 
-	// TDD RED: Currently returns 201 Created because connection check isn't implemented.
 	// Should return 403 Forbidden when no connection exists.
 	if rr.Code != http.StatusForbidden {
 		t.Errorf("Expected status 403 Forbidden when no connection exists, got %d: %s", rr.Code, rr.Body.String())
@@ -701,7 +698,6 @@ func TestCreatePost_BlockedWhenNoConnection(t *testing.T) {
 
 // TestCreatePost_AllowedWhenConnectionHealthy tests that post creation succeeds
 // when the user has a healthy (non-expired) connection to the platform.
-// TDD RED: This test verifies the happy path works after connection checking is added.
 func TestCreatePost_AllowedWhenConnectionHealthy(t *testing.T) {
 	postStore := NewMockPostStore()
 	commitStore := NewMockCommitStoreForPosts()
@@ -735,7 +731,7 @@ func TestCreatePost_AllowedWhenConnectionHealthy(t *testing.T) {
 		ExpiresAt: &expiresIn30Days,
 	})
 
-	handler := NewPostsHandler(postStore, commitStore, generator)
+	handler := NewPostsHandlerWithConnectionChecker(postStore, commitStore, generator, connChecker)
 
 	req := createAuthenticatedRequest(t, http.MethodPost, "/api/v1/commits/commit-123/posts?platform=linkedin", nil, userID, "test@example.com")
 
@@ -743,8 +739,7 @@ func TestCreatePost_AllowedWhenConnectionHealthy(t *testing.T) {
 	protectedHandler := auth.JWTMiddleware(http.HandlerFunc(handler.CreatePost))
 	protectedHandler.ServeHTTP(rr, req)
 
-	// This test currently PASSES because connection checking isn't implemented.
-	// Once implemented with the connChecker dependency, it should still pass.
+	// Should return 201 Created for healthy connection
 	if rr.Code != http.StatusCreated {
 		t.Errorf("Expected status 201 Created for healthy connection, got %d: %s", rr.Code, rr.Body.String())
 	}

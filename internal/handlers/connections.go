@@ -50,6 +50,7 @@ type ConnectionResponse struct {
 	ConnectedAt    *time.Time `json:"connected_at,omitempty"`
 	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
 	IsHealthy      bool       `json:"is_healthy"`
+	ExpiresSoon    bool       `json:"expires_soon"`
 }
 
 // ConnectionListResponse represents the list connections response
@@ -343,6 +344,7 @@ func (h *ConnectionHandler) toConnectionResponse(conn *services.Connection) Conn
 		ConnectedAt: conn.ConnectedAt,
 		ExpiresAt:   conn.ExpiresAt,
 		IsHealthy:   conn.IsHealthy(),
+		ExpiresSoon: conn.ExpiresSoon(),
 	}
 }
 

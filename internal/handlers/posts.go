@@ -61,11 +61,17 @@ type PostGeneratorInterface interface {
 	Generate(ctx context.Context, platform string, commit *services.Commit) (*services.GeneratedPost, error)
 }
 
+// ConnectionChecker checks if a user has a valid connection to a platform
+type ConnectionChecker interface {
+	GetConnection(ctx context.Context, userID, platform string) (*services.Connection, error)
+}
+
 // PostsHandler handles posts API endpoints
 type PostsHandler struct {
-	postStore   PostStore
-	commitStore CommitStoreForPosts
-	generator   PostGeneratorInterface
+	postStore        PostStore
+	commitStore      CommitStoreForPosts
+	generator        PostGeneratorInterface
+	connectionChecker ConnectionChecker
 }
 
 // NewPostsHandler creates a new posts handler
@@ -74,6 +80,16 @@ func NewPostsHandler(postStore PostStore, commitStore CommitStoreForPosts, gener
 		postStore:   postStore,
 		commitStore: commitStore,
 		generator:   generator,
+	}
+}
+
+// NewPostsHandlerWithConnectionChecker creates a posts handler with connection checking
+func NewPostsHandlerWithConnectionChecker(postStore PostStore, commitStore CommitStoreForPosts, generator PostGeneratorInterface, connChecker ConnectionChecker) *PostsHandler {
+	return &PostsHandler{
+		postStore:         postStore,
+		commitStore:       commitStore,
+		generator:         generator,
+		connectionChecker: connChecker,
 	}
 }
 
@@ -105,6 +121,23 @@ func (h *PostsHandler) CreatePost(w http.ResponseWriter, r *http.Request) {
 	if !supportedPlatforms[platform] {
 		h.writeError(w, http.StatusBadRequest, "unsupported platform: "+platform+". Supported: linkedin, twitter, instagram, youtube")
 		return
+	}
+
+	// Check connection status if connection checker is configured
+	if h.connectionChecker != nil {
+		conn, err := h.connectionChecker.GetConnection(r.Context(), userID, platform)
+		if err != nil {
+			if errors.Is(err, services.ErrConnectionNotFound) {
+				h.writeError(w, http.StatusForbidden, "platform not connected")
+				return
+			}
+			h.writeError(w, http.StatusInternalServerError, "failed to check connection")
+			return
+		}
+		if !conn.IsHealthy() {
+			h.writeError(w, http.StatusForbidden, "connection expired")
+			return
+		}
 	}
 
 	// Look up commit
