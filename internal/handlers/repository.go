@@ -24,6 +24,9 @@ type Repository struct {
 	Name          string    `json:"name"`
 	IsActive      bool      `json:"is_active"`
 	CreatedAt     time.Time `json:"created_at"`
+	GitHubRepoID  *int64    `json:"github_repo_id,omitempty"`
+	WebhookID     *int64    `json:"webhook_id,omitempty"`
+	IsPrivate     bool      `json:"is_private"`
 }
 
 // RepositoryStore defines the interface for repository persistence
