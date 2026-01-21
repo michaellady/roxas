@@ -53,7 +53,7 @@ var templateFuncs = template.FuncMap{
 
 func init() {
 	pageTemplates = make(map[string]*template.Template)
-	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "connections.html", "connections_new.html", "bluesky_connect.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "repository_delete.html", "webhook_regenerate.html", "webhook_deliveries.html", "connection_disconnect.html"}
+	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "connections.html", "connections_new.html", "bluesky_connect.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "repository_delete.html", "webhook_regenerate.html", "webhook_deliveries.html", "connection_disconnect.html", "drafts.html", "draft_preview.html"}
 
 	for _, page := range pages {
 		// Clone the base template and parse the page with functions
@@ -778,6 +778,8 @@ type DashboardData struct {
 	ActivityTotalPages int
 	ActivityTotal      int
 	ActivityPageSize   int
+	// Connection status for platform-specific UI
+	HasThreadsConnection bool
 }
 
 func (r *Router) handleDashboard(w http.ResponseWriter, req *http.Request) {
@@ -856,6 +858,14 @@ func (r *Router) handleDashboard(w http.ResponseWriter, req *http.Request) {
 
 	// Check if dashboard is empty (no repos)
 	dashData.IsEmpty = len(dashData.Repositories) == 0
+
+	// Check for Threads connection
+	if r.connectionService != nil {
+		conn, err := r.connectionService.GetConnection(req.Context(), claims.UserID, "threads")
+		if err == nil && conn != nil && conn.Status == ConnectionStatusConnected {
+			dashData.HasThreadsConnection = true
+		}
+	}
 
 	r.renderPage(w, "dashboard.html", PageData{
 		Title: "Dashboard",
