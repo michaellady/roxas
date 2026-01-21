@@ -380,6 +380,28 @@ func NewRouterWithWebhookTesterAndDeliveries(userStore UserStore, repoStore Repo
 	return r
 }
 
+// ThreadsOAuthProvider interface for Threads OAuth operations (TDD - alice-90)
+type ThreadsOAuthProvider interface {
+	Platform() string
+	GetAuthURL(state, redirectURL string) string
+}
+
+// ThreadsCredentialStore interface for storing Threads credentials (TDD - alice-90)
+type ThreadsCredentialStore interface {
+	// Placeholder - to be expanded when implementing alice-90
+}
+
+// NewRouterWithThreadsOAuth creates a new web router with Threads OAuth support (TDD - alice-90)
+// TDD RED PHASE - Implementation pending
+func NewRouterWithThreadsOAuth(userStore UserStore, oauthProvider ThreadsOAuthProvider, credStore ThreadsCredentialStore) *Router {
+	r := &Router{
+		mux:       http.NewServeMux(),
+		userStore: userStore,
+	}
+	r.setupRoutes()
+	return r
+}
+
 // ServeHTTP implements http.Handler
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.mux.ServeHTTP(w, req)
