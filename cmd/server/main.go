@@ -142,12 +142,55 @@ func webhookHandlerWithMocks(config Config, openAIBaseURL, linkedInBaseURL strin
 	}
 }
 
+// =============================================================================
+// Adapters to bridge database stores to handlers interfaces
+// =============================================================================
+
+// commitStoreAdapter adapts database.CommitStore to handlers.CommitStore interface
+type commitStoreAdapter struct {
+	pool *database.Pool
+}
+
+func (a *commitStoreAdapter) StoreCommit(ctx context.Context, commit *handlers.StoredCommit) error {
+	_, err := a.pool.Exec(ctx,
+		`INSERT INTO commits (repository_id, commit_sha, github_url, commit_message, author, timestamp)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 ON CONFLICT (repository_id, commit_sha) DO NOTHING`,
+		commit.RepositoryID, commit.CommitSHA, commit.GitHubURL, commit.Message, commit.Author, commit.Timestamp,
+	)
+	return err
+}
+
+func (a *commitStoreAdapter) GetCommitBySHA(ctx context.Context, repoID, sha string) (*handlers.StoredCommit, error) {
+	var commit handlers.StoredCommit
+	err := a.pool.QueryRow(ctx,
+		`SELECT id, repository_id, commit_sha, github_url, commit_message, author, timestamp
+		 FROM commits
+		 WHERE repository_id = $1 AND commit_sha = $2`,
+		repoID, sha,
+	).Scan(&commit.ID, &commit.RepositoryID, &commit.CommitSHA, &commit.GitHubURL, &commit.Message, &commit.Author, &commit.Timestamp)
+	if err != nil {
+		return nil, err
+	}
+	return &commit, nil
+}
+
 // createRouter builds the combined HTTP router for both web UI and webhook
 func createRouter(config Config, dbPool *database.Pool) http.Handler {
 	mux := http.NewServeMux()
 
-	// Webhook endpoint
+	// Legacy webhook endpoint (single-tenant, uses global WEBHOOK_SECRET)
 	mux.HandleFunc("/webhook", webhookHandler(config))
+
+	// Multi-tenant webhook endpoint: /webhooks/github/{repo_id}
+	// Each repository has its own webhook secret stored in the database
+	if dbPool != nil {
+		repoStore := database.NewRepositoryStore(dbPool)
+		commitStore := &commitStoreAdapter{pool: dbPool}
+		// Note: delivery store is optional - passing nil skips delivery recording
+		multiTenantHandler := handlers.NewMultiTenantWebhookHandler(repoStore, commitStore)
+		mux.Handle("/webhooks/github/", multiTenantHandler)
+	}
 
 	// Web UI routes (handles everything else including /, /login, /signup, /dashboard, /logout)
 	var webRouter http.Handler

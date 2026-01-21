@@ -995,7 +995,7 @@ func (r *Router) handleRepositoriesNewPost(w http.ResponseWriter, req *http.Requ
 	}
 
 	// Build webhook URL
-	webhookURL := fmt.Sprintf("%s/webhook/%s", r.webhookURL, repo.ID)
+	webhookURL := fmt.Sprintf("%s/webhooks/github/%s", r.webhookURL, repo.ID)
 
 	// Redirect to success page with query params
 	http.Redirect(w, req, fmt.Sprintf("/repositories/success?webhook_url=%s&webhook_secret=%s",
@@ -1168,7 +1168,7 @@ func (r *Router) handleRepositoryView(w http.ResponseWriter, req *http.Request) 
 	repoName := extractRepoName(repo.GitHubURL)
 
 	// Build webhook URL
-	webhookURL := fmt.Sprintf("%s/webhook/%s", r.webhookURL, repo.ID)
+	webhookURL := fmt.Sprintf("%s/webhooks/github/%s", r.webhookURL, repo.ID)
 
 	r.renderPage(w, "repository_view.html", PageData{
 		Title: repoName,
@@ -1536,7 +1536,7 @@ func (r *Router) handleWebhookTest(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Build webhook URL
-	webhookURL := fmt.Sprintf("%s/webhook/%s", r.webhookURL, repo.ID)
+	webhookURL := fmt.Sprintf("%s/webhooks/github/%s", r.webhookURL, repo.ID)
 
 	// Test the webhook
 	var result WebhookTestResult
@@ -1700,7 +1700,7 @@ func (r *Router) handleWebhookRegenerate(w http.ResponseWriter, req *http.Reques
 	repoName := extractRepoName(repo.GitHubURL)
 
 	// Build webhook URL
-	webhookURL := fmt.Sprintf("%s/webhook/%s", r.webhookURL, repo.ID)
+	webhookURL := fmt.Sprintf("%s/webhooks/github/%s", r.webhookURL, repo.ID)
 
 	// Render success page showing the new secret (one-time display)
 	r.renderPage(w, "webhook_regenerate.html", PageData{

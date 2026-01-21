@@ -584,8 +584,8 @@ func TestBrowser_AddRepositoryFlow(t *testing.T) {
 	// Verify webhook URL is displayed
 	webhookURLInput := page.MustElement("#webhook-url")
 	webhookURL := webhookURLInput.MustProperty("value").String()
-	if !strings.HasPrefix(webhookURL, testWebhookBaseURL+"/webhook/") {
-		t.Fatalf("Step 5 FAILED: Expected webhook URL starting with '%s/webhook/', got: %s", testWebhookBaseURL, webhookURL)
+	if !strings.HasPrefix(webhookURL, testWebhookBaseURL+"/webhooks/github/") {
+		t.Fatalf("Step 5 FAILED: Expected webhook URL starting with '%s/webhooks/github/', got: %s", testWebhookBaseURL, webhookURL)
 	}
 	t.Logf("Step 5: Webhook URL displayed: %s", webhookURL)
 
