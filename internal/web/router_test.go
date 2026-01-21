@@ -4080,8 +4080,8 @@ func TestRouter_GetDrafts_EmptyState_ShowsEmptyMessage(t *testing.T) {
 	}
 
 	body := rr.Body.String()
-	// Should show empty state message
-	if !strings.Contains(body, "No drafts") && !strings.Contains(body, "no drafts") {
+	// Should show empty state message (template shows "No Drafts Yet")
+	if !strings.Contains(body, "No Drafts Yet") {
 		t.Errorf("Expected empty state message about no drafts, got: %s", body[:min(len(body), 500)])
 	}
 }
@@ -4240,13 +4240,11 @@ func TestRouter_GetDrafts_Pagination_SecondPage(t *testing.T) {
 	// Add many drafts to test pagination (assuming page size of 10)
 	for i := 0; i < 25; i++ {
 		draftLister.AddDraft(user.ID, &DraftItem{
-			ID:             fmt.Sprintf("draft-%d", i),
-			RepositoryID:   "repo-1",
-			RepoName: fmt.Sprintf("repo/project-%d", i),
+			ID:          fmt.Sprintf("draft-%d", i),
+			RepoName:    fmt.Sprintf("repo/project-%d", i),
 			PreviewText: fmt.Sprintf("Draft content for item %d", i),
-			Status:         "draft",
-			CreatedAt:      time.Now().Add(-time.Duration(i) * time.Hour),
-			UpdatedAt:      time.Now(),
+			Platform:    "threads",
+			CreatedAt:   time.Now().Add(-time.Duration(i) * time.Hour),
 		})
 	}
 
@@ -4279,30 +4277,27 @@ func TestRouter_GetDrafts_ShowsDraftStatus(t *testing.T) {
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
-	// Add drafts with different statuses
+	// Add drafts (status is not part of DraftItem, but tests check for visual indicators)
 	draftLister.AddDraft(user.ID, &DraftItem{
-		ID:             "draft-1",
-		RepoName: "repo/pending",
+		ID:          "draft-1",
+		RepoName:    "repo/pending",
 		PreviewText: "Pending draft",
-		Status:         "draft",
-		CreatedAt:      time.Now(),
-		UpdatedAt:      time.Now(),
+		Platform:    "threads",
+		CreatedAt:   time.Now(),
 	})
 	draftLister.AddDraft(user.ID, &DraftItem{
-		ID:             "draft-2",
-		RepoName: "repo/posted",
+		ID:          "draft-2",
+		RepoName:    "repo/posted",
 		PreviewText: "Posted draft",
-		Status:         "posted",
-		CreatedAt:      time.Now(),
-		UpdatedAt:      time.Now(),
+		Platform:    "threads",
+		CreatedAt:   time.Now(),
 	})
 	draftLister.AddDraft(user.ID, &DraftItem{
-		ID:             "draft-3",
-		RepoName: "repo/failed",
+		ID:          "draft-3",
+		RepoName:    "repo/failed",
 		PreviewText: "Failed draft",
-		Status:         "failed",
-		CreatedAt:      time.Now(),
-		UpdatedAt:      time.Now(),
+		Platform:    "threads",
+		CreatedAt:   time.Now(),
 	})
 
 	token, _ := generateToken(user.ID, user.Email)
