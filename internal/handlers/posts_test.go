@@ -548,3 +548,204 @@ func TestGetPostNoAuth(t *testing.T) {
 
 // Note: PostResponse, CreatePostResponse, GetPostResponse, ListPostsResponse,
 // PostsHandler, NewPostsHandler, and handler methods are defined in posts.go
+
+// =============================================================================
+// Token Expiration UI Tests (alice-94: TDD Red Phase)
+// Posting should be blocked when the user's connection to a platform is expired.
+// =============================================================================
+
+// MockConnectionCheckerForPosts provides connection status checking for posts tests
+type MockConnectionCheckerForPosts struct {
+	connections map[string]map[string]*services.Connection // userID -> platform -> connection
+}
+
+func NewMockConnectionCheckerForPosts() *MockConnectionCheckerForPosts {
+	return &MockConnectionCheckerForPosts{
+		connections: make(map[string]map[string]*services.Connection),
+	}
+}
+
+func (m *MockConnectionCheckerForPosts) SetConnection(userID, platform string, conn *services.Connection) {
+	if m.connections[userID] == nil {
+		m.connections[userID] = make(map[string]*services.Connection)
+	}
+	m.connections[userID][platform] = conn
+}
+
+func (m *MockConnectionCheckerForPosts) GetConnection(ctx context.Context, userID, platform string) (*services.Connection, error) {
+	if userConns, ok := m.connections[userID]; ok {
+		if conn, ok := userConns[platform]; ok {
+			return conn, nil
+		}
+	}
+	return nil, services.ErrConnectionNotFound
+}
+
+// TestCreatePost_BlockedWhenConnectionExpired tests that post creation fails
+// when the user's connection to the target platform has an expired token.
+// TDD RED: This test should FAIL because the posts handler doesn't check connections.
+func TestCreatePost_BlockedWhenConnectionExpired(t *testing.T) {
+	postStore := NewMockPostStore()
+	commitStore := NewMockCommitStoreForPosts()
+	generator := &MockPostGenerator{
+		Response: &services.GeneratedPost{
+			Platform: "linkedin",
+			Content:  "Test post content",
+			CommitID: "commit-123",
+		},
+	}
+	connChecker := NewMockConnectionCheckerForPosts()
+
+	userID := "user-123"
+	commit := &services.Commit{
+		ID:           "commit-123",
+		RepositoryID: "repo-456",
+		CommitSHA:    "abc123",
+		Message:      "feat: add new feature",
+		Author:       "Test Author",
+		Timestamp:    time.Now(),
+	}
+	commitStore.AddCommit(commit, userID)
+
+	// Set up an EXPIRED connection for the user
+	now := time.Now()
+	expiredYesterday := now.Add(-24 * time.Hour)
+	connChecker.SetConnection(userID, "linkedin", &services.Connection{
+		UserID:    userID,
+		Platform:  "linkedin",
+		Status:    services.ConnectionStatusExpired,
+		ExpiresAt: &expiredYesterday,
+	})
+
+	// TDD RED: Currently NewPostsHandler doesn't accept a connection checker.
+	// This test documents the expected behavior when it's implemented.
+	handler := NewPostsHandler(postStore, commitStore, generator)
+
+	// Attempt to create a post
+	req := createAuthenticatedRequest(t, http.MethodPost, "/api/v1/commits/commit-123/posts?platform=linkedin", nil, userID, "test@example.com")
+
+	rr := httptest.NewRecorder()
+	protectedHandler := auth.JWTMiddleware(http.HandlerFunc(handler.CreatePost))
+	protectedHandler.ServeHTTP(rr, req)
+
+	// TDD RED: Currently returns 201 Created because connection check isn't implemented.
+	// Should return 403 Forbidden when connection is expired.
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("Expected status 403 Forbidden when connection is expired, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Verify error message explains the issue
+	var errResp ErrorResponse
+	if err := json.NewDecoder(rr.Body).Decode(&errResp); err != nil {
+		t.Fatalf("Failed to decode error response: %v", err)
+	}
+
+	// Error message should tell user to reconnect
+	expectedMsg := "connection expired"
+	if errResp.Error != expectedMsg {
+		t.Errorf("Expected error message '%s', got '%s'", expectedMsg, errResp.Error)
+	}
+}
+
+// TestCreatePost_BlockedWhenNoConnection tests that post creation fails
+// when the user has no connection to the target platform at all.
+// TDD RED: This test should FAIL because the posts handler doesn't check connections.
+func TestCreatePost_BlockedWhenNoConnection(t *testing.T) {
+	postStore := NewMockPostStore()
+	commitStore := NewMockCommitStoreForPosts()
+	generator := &MockPostGenerator{
+		Response: &services.GeneratedPost{
+			Platform: "linkedin",
+			Content:  "Test post content",
+			CommitID: "commit-123",
+		},
+	}
+
+	userID := "user-123"
+	commit := &services.Commit{
+		ID:           "commit-123",
+		RepositoryID: "repo-456",
+		CommitSHA:    "abc123",
+		Message:      "feat: add new feature",
+		Author:       "Test Author",
+		Timestamp:    time.Now(),
+	}
+	commitStore.AddCommit(commit, userID)
+
+	// No connection set up for the user - they haven't connected LinkedIn yet
+
+	handler := NewPostsHandler(postStore, commitStore, generator)
+
+	req := createAuthenticatedRequest(t, http.MethodPost, "/api/v1/commits/commit-123/posts?platform=linkedin", nil, userID, "test@example.com")
+
+	rr := httptest.NewRecorder()
+	protectedHandler := auth.JWTMiddleware(http.HandlerFunc(handler.CreatePost))
+	protectedHandler.ServeHTTP(rr, req)
+
+	// TDD RED: Currently returns 201 Created because connection check isn't implemented.
+	// Should return 403 Forbidden when no connection exists.
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("Expected status 403 Forbidden when no connection exists, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var errResp ErrorResponse
+	if err := json.NewDecoder(rr.Body).Decode(&errResp); err != nil {
+		t.Fatalf("Failed to decode error response: %v", err)
+	}
+
+	expectedMsg := "platform not connected"
+	if errResp.Error != expectedMsg {
+		t.Errorf("Expected error message '%s', got '%s'", expectedMsg, errResp.Error)
+	}
+}
+
+// TestCreatePost_AllowedWhenConnectionHealthy tests that post creation succeeds
+// when the user has a healthy (non-expired) connection to the platform.
+// TDD RED: This test verifies the happy path works after connection checking is added.
+func TestCreatePost_AllowedWhenConnectionHealthy(t *testing.T) {
+	postStore := NewMockPostStore()
+	commitStore := NewMockCommitStoreForPosts()
+	generator := &MockPostGenerator{
+		Response: &services.GeneratedPost{
+			Platform: "linkedin",
+			Content:  "🚀 Excited to share our latest update! #coding",
+			CommitID: "commit-123",
+		},
+	}
+	connChecker := NewMockConnectionCheckerForPosts()
+
+	userID := "user-123"
+	commit := &services.Commit{
+		ID:           "commit-123",
+		RepositoryID: "repo-456",
+		CommitSHA:    "abc123",
+		Message:      "feat: add new feature",
+		Author:       "Test Author",
+		Timestamp:    time.Now(),
+	}
+	commitStore.AddCommit(commit, userID)
+
+	// Set up a HEALTHY connection for the user (expires in 30 days)
+	now := time.Now()
+	expiresIn30Days := now.Add(30 * 24 * time.Hour)
+	connChecker.SetConnection(userID, "linkedin", &services.Connection{
+		UserID:    userID,
+		Platform:  "linkedin",
+		Status:    services.ConnectionStatusConnected,
+		ExpiresAt: &expiresIn30Days,
+	})
+
+	handler := NewPostsHandler(postStore, commitStore, generator)
+
+	req := createAuthenticatedRequest(t, http.MethodPost, "/api/v1/commits/commit-123/posts?platform=linkedin", nil, userID, "test@example.com")
+
+	rr := httptest.NewRecorder()
+	protectedHandler := auth.JWTMiddleware(http.HandlerFunc(handler.CreatePost))
+	protectedHandler.ServeHTTP(rr, req)
+
+	// This test currently PASSES because connection checking isn't implemented.
+	// Once implemented with the connChecker dependency, it should still pass.
+	if rr.Code != http.StatusCreated {
+		t.Errorf("Expected status 201 Created for healthy connection, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
