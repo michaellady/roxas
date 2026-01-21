@@ -255,7 +255,6 @@ func TestRouter_GetOAuthThreads_StoresStateInSession(t *testing.T) {
 func TestRouter_GetOAuthThreadsCallback_ExchangesCodeForTokens(t *testing.T) {
 	userStore := NewMockUserStore()
 	oauthProvider := NewMockThreadsOAuthProvider()
-	credStore := NewMockThreadsCredentialStore()
 	router := NewRouterWithThreadsOAuth(userStore, oauthProvider, "https://test.example.com")
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
@@ -470,7 +469,6 @@ func TestRouter_GetOAuthThreadsCallback_StoresUsername(t *testing.T) {
 func TestRouter_GetOAuthThreadsCallback_RedirectsToConnectionsOnSuccess(t *testing.T) {
 	userStore := NewMockUserStore()
 	oauthProvider := NewMockThreadsOAuthProvider()
-	credStore := NewMockThreadsCredentialStore()
 	router := NewRouterWithThreadsOAuth(userStore, oauthProvider, "https://test.example.com")
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
@@ -660,7 +658,6 @@ func TestRouter_ThreadsTokenRefresh_RequiresAuth(t *testing.T) {
 func TestRouter_ThreadsTokenRefresh_RequiresExistingCredentials(t *testing.T) {
 	userStore := NewMockUserStore()
 	oauthProvider := NewMockThreadsOAuthProvider()
-	credStore := NewMockThreadsCredentialStore() // Empty store
 	router := NewRouterWithThreadsOAuth(userStore, oauthProvider, "https://test.example.com")
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
