@@ -1,0 +1,46 @@
+{{define "content"}}
+<div class="drafts-container">
+    <div class="page-header">
+        <h1>Drafts</h1>
+    </div>
+
+    {{if .Error}}
+    <div class="alert alert-error">{{.Error}}</div>
+    {{end}}
+
+    {{if .Data.Drafts}}
+    <div class="table-container">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Repository</th>
+                    <th>Preview</th>
+                    <th>Platform</th>
+                    <th>Created</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .Data.Drafts}}
+                <tr>
+                    <td>{{.RepoName}}</td>
+                    <td class="preview-text">{{truncate .PreviewText 80}}</td>
+                    <td>{{.Platform}}</td>
+                    <td>{{timeAgo .CreatedAt}}</td>
+                    <td class="actions-cell">
+                        <a href="/drafts/{{.ID}}" class="btn btn-small">Preview</a>
+                    </td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+    {{else}}
+    <div class="empty-state">
+        <h2>No Drafts Yet</h2>
+        <p>When you push commits to your connected repositories, draft posts will appear here for review before publishing.</p>
+        <a href="/repositories" class="btn btn-primary">Manage Repositories</a>
+    </div>
+    {{end}}
+</div>
+{{end}}
