@@ -28,39 +28,32 @@ import (
 // Run with: go test -tags=browser -v ./internal/web -run TestBrowser_ActivityFeed
 // =============================================================================
 
-// Activity represents a user activity for the feed
-type Activity struct {
-	ID        string
-	UserID    string
-	Type      string // draft_created, post_success, post_failed
-	DraftID   *string
-	PostID    *string
-	Platform  string
-	Message   string
-	CreatedAt time.Time
+// strPtr returns a pointer to the given string
+func strPtr(s string) *string {
+	return &s
 }
 
-// MockActivityStore simulates activity storage
+// MockActivityStore simulates activity storage (implements ActivityLister)
 type MockActivityStore struct {
-	activities map[string][]*Activity // userID -> activities
+	activities map[string][]*DashboardActivity // userID -> activities
 }
 
 func NewMockActivityStore() *MockActivityStore {
 	return &MockActivityStore{
-		activities: make(map[string][]*Activity),
+		activities: make(map[string][]*DashboardActivity),
 	}
 }
 
-func (m *MockActivityStore) ListActivitiesByUser(ctx context.Context, userID string, limit, offset int) ([]*Activity, error) {
+func (m *MockActivityStore) ListActivitiesByUser(ctx context.Context, userID string, limit, offset int) ([]*DashboardActivity, error) {
 	userActivities := m.activities[userID]
 	if userActivities == nil {
-		return []*Activity{}, nil
+		return []*DashboardActivity{}, nil
 	}
 
 	// Apply offset and limit
 	start := offset
 	if start > len(userActivities) {
-		return []*Activity{}, nil
+		return []*DashboardActivity{}, nil
 	}
 	end := start + limit
 	if end > len(userActivities) {
@@ -74,11 +67,10 @@ func (m *MockActivityStore) CountActivitiesByUser(ctx context.Context, userID st
 	return len(m.activities[userID]), nil
 }
 
-func (m *MockActivityStore) AddActivity(userID string, activity *Activity) {
+func (m *MockActivityStore) AddActivity(userID string, activity *DashboardActivity) {
 	activity.ID = uuid.New().String()
-	activity.UserID = userID
 	// Prepend to keep newest first
-	m.activities[userID] = append([]*Activity{activity}, m.activities[userID]...)
+	m.activities[userID] = append([]*DashboardActivity{activity}, m.activities[userID]...)
 }
 
 // TestBrowser_ActivityFeed_RendersActivityList tests that dashboard shows activity list
@@ -88,7 +80,7 @@ func TestBrowser_ActivityFeed_RendersActivityList(t *testing.T) {
 	activityStore := NewMockActivityStore()
 	secretGen := &MockSecretGeneratorForWeb{Secret: "test-secret"}
 
-	router := NewRouterWithActivityStore(userStore, repoStore, nil, nil, secretGen, "https://api.test", activityStore)
+	router := NewRouterWithActivityLister(userStore, repoStore, nil, nil, activityStore, secretGen, "https://api.test")
 
 	ts := httptest.NewServer(router)
 	defer ts.Close()
@@ -116,20 +108,20 @@ func TestBrowser_ActivityFeed_RendersActivityList(t *testing.T) {
 	user, _ := userStore.GetUserByEmail(context.Background(), testEmail)
 
 	draftID := "draft-123"
-	activityStore.AddActivity(user.ID, &Activity{
+	activityStore.AddActivity(user.ID, &DashboardActivity{
 		Type:      "draft_created",
 		DraftID:   &draftID,
-		Platform:  "threads",
-		Message:   "Draft created from commit abc123",
+		Platform:  strPtr("threads"),
+		Message:   strPtr("Draft created from commit abc123"),
 		CreatedAt: time.Now().Add(-1 * time.Hour),
 	})
 
 	postID := "post-456"
-	activityStore.AddActivity(user.ID, &Activity{
+	activityStore.AddActivity(user.ID, &DashboardActivity{
 		Type:      "post_success",
 		PostID:    &postID,
-		Platform:  "threads",
-		Message:   "Successfully posted to Threads",
+		Platform:  strPtr("threads"),
+		Message:   strPtr("Successfully posted to Threads"),
 		CreatedAt: time.Now().Add(-30 * time.Minute),
 	})
 
@@ -180,7 +172,7 @@ func TestBrowser_ActivityFeed_ShowsActivityTypes(t *testing.T) {
 	activityStore := NewMockActivityStore()
 	secretGen := &MockSecretGeneratorForWeb{Secret: "test-secret"}
 
-	router := NewRouterWithActivityStore(userStore, repoStore, nil, nil, secretGen, "https://api.test", activityStore)
+	router := NewRouterWithActivityLister(userStore, repoStore, nil, nil, activityStore, secretGen, "https://api.test")
 
 	ts := httptest.NewServer(router)
 	defer ts.Close()
@@ -208,28 +200,28 @@ func TestBrowser_ActivityFeed_ShowsActivityTypes(t *testing.T) {
 
 	// Add all three activity types
 	draftID := "draft-1"
-	activityStore.AddActivity(user.ID, &Activity{
+	activityStore.AddActivity(user.ID, &DashboardActivity{
 		Type:      "draft_created",
 		DraftID:   &draftID,
-		Platform:  "threads",
-		Message:   "New draft created",
+		Platform:  strPtr("threads"),
+		Message:   strPtr("New draft created"),
 		CreatedAt: time.Now().Add(-3 * time.Hour),
 	})
 
 	postID := "post-1"
-	activityStore.AddActivity(user.ID, &Activity{
+	activityStore.AddActivity(user.ID, &DashboardActivity{
 		Type:      "post_success",
 		PostID:    &postID,
-		Platform:  "threads",
-		Message:   "Post published successfully",
+		Platform:  strPtr("threads"),
+		Message:   strPtr("Post published successfully"),
 		CreatedAt: time.Now().Add(-2 * time.Hour),
 	})
 
-	activityStore.AddActivity(user.ID, &Activity{
+	activityStore.AddActivity(user.ID, &DashboardActivity{
 		Type:      "post_failed",
 		DraftID:   &draftID,
-		Platform:  "linkedin",
-		Message:   "Failed to post: API rate limit exceeded",
+		Platform:  strPtr("linkedin"),
+		Message:   strPtr("Failed to post: API rate limit exceeded"),
 		CreatedAt: time.Now().Add(-1 * time.Hour),
 	})
 
@@ -281,7 +273,7 @@ func TestBrowser_ActivityFeed_NewestFirst(t *testing.T) {
 	activityStore := NewMockActivityStore()
 	secretGen := &MockSecretGeneratorForWeb{Secret: "test-secret"}
 
-	router := NewRouterWithActivityStore(userStore, repoStore, nil, nil, secretGen, "https://api.test", activityStore)
+	router := NewRouterWithActivityLister(userStore, repoStore, nil, nil, activityStore, secretGen, "https://api.test")
 
 	ts := httptest.NewServer(router)
 	defer ts.Close()
@@ -308,26 +300,26 @@ func TestBrowser_ActivityFeed_NewestFirst(t *testing.T) {
 
 	// Add activities in chronological order (oldest to newest)
 	draftID1 := "draft-old"
-	activityStore.AddActivity(user.ID, &Activity{
+	activityStore.AddActivity(user.ID, &DashboardActivity{
 		Type:      "draft_created",
 		DraftID:   &draftID1,
-		Message:   "OLDEST activity",
+		Message:   strPtr("OLDEST activity"),
 		CreatedAt: time.Now().Add(-3 * time.Hour),
 	})
 
 	draftID2 := "draft-mid"
-	activityStore.AddActivity(user.ID, &Activity{
+	activityStore.AddActivity(user.ID, &DashboardActivity{
 		Type:      "draft_created",
 		DraftID:   &draftID2,
-		Message:   "MIDDLE activity",
+		Message:   strPtr("MIDDLE activity"),
 		CreatedAt: time.Now().Add(-2 * time.Hour),
 	})
 
 	draftID3 := "draft-new"
-	activityStore.AddActivity(user.ID, &Activity{
+	activityStore.AddActivity(user.ID, &DashboardActivity{
 		Type:      "draft_created",
 		DraftID:   &draftID3,
-		Message:   "NEWEST activity",
+		Message:   strPtr("NEWEST activity"),
 		CreatedAt: time.Now().Add(-1 * time.Hour),
 	})
 
@@ -371,7 +363,7 @@ func TestBrowser_ActivityFeed_Pagination(t *testing.T) {
 	activityStore := NewMockActivityStore()
 	secretGen := &MockSecretGeneratorForWeb{Secret: "test-secret"}
 
-	router := NewRouterWithActivityStore(userStore, repoStore, nil, nil, secretGen, "https://api.test", activityStore)
+	router := NewRouterWithActivityLister(userStore, repoStore, nil, nil, activityStore, secretGen, "https://api.test")
 
 	ts := httptest.NewServer(router)
 	defer ts.Close()
@@ -399,10 +391,11 @@ func TestBrowser_ActivityFeed_Pagination(t *testing.T) {
 	// Add many activities (more than page size, assume page size is 10)
 	for i := 0; i < 25; i++ {
 		draftID := "draft-" + string(rune('A'+i))
-		activityStore.AddActivity(user.ID, &Activity{
+		msg := "Activity " + string(rune('A'+i))
+		activityStore.AddActivity(user.ID, &DashboardActivity{
 			Type:      "draft_created",
 			DraftID:   &draftID,
-			Message:   "Activity " + string(rune('A'+i)),
+			Message:   &msg,
 			CreatedAt: time.Now().Add(-time.Duration(i) * time.Hour),
 		})
 	}
@@ -475,7 +468,7 @@ func TestBrowser_ActivityFeed_EmptyState(t *testing.T) {
 	activityStore := NewMockActivityStore() // Empty store
 	secretGen := &MockSecretGeneratorForWeb{Secret: "test-secret"}
 
-	router := NewRouterWithActivityStore(userStore, repoStore, nil, nil, secretGen, "https://api.test", activityStore)
+	router := NewRouterWithActivityLister(userStore, repoStore, nil, nil, activityStore, secretGen, "https://api.test")
 
 	ts := httptest.NewServer(router)
 	defer ts.Close()
@@ -540,7 +533,7 @@ func TestBrowser_ActivityFeed_ShowsPlatform(t *testing.T) {
 	activityStore := NewMockActivityStore()
 	secretGen := &MockSecretGeneratorForWeb{Secret: "test-secret"}
 
-	router := NewRouterWithActivityStore(userStore, repoStore, nil, nil, secretGen, "https://api.test", activityStore)
+	router := NewRouterWithActivityLister(userStore, repoStore, nil, nil, activityStore, secretGen, "https://api.test")
 
 	ts := httptest.NewServer(router)
 	defer ts.Close()
@@ -567,20 +560,20 @@ func TestBrowser_ActivityFeed_ShowsPlatform(t *testing.T) {
 
 	// Add activities with different platforms
 	postID1 := "post-threads"
-	activityStore.AddActivity(user.ID, &Activity{
+	activityStore.AddActivity(user.ID, &DashboardActivity{
 		Type:      "post_success",
 		PostID:    &postID1,
-		Platform:  "threads",
-		Message:   "Posted to Threads",
+		Platform:  strPtr("threads"),
+		Message:   strPtr("Posted to Threads"),
 		CreatedAt: time.Now().Add(-1 * time.Hour),
 	})
 
 	postID2 := "post-linkedin"
-	activityStore.AddActivity(user.ID, &Activity{
+	activityStore.AddActivity(user.ID, &DashboardActivity{
 		Type:      "post_success",
 		PostID:    &postID2,
-		Platform:  "linkedin",
-		Message:   "Posted to LinkedIn",
+		Platform:  strPtr("linkedin"),
+		Message:   strPtr("Posted to LinkedIn"),
 		CreatedAt: time.Now().Add(-30 * time.Minute),
 	})
 
