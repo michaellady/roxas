@@ -1692,3 +1692,301 @@ func TestBrowser_DeleteRepositoryFlow(t *testing.T) {
 
 	t.Log("=== DELETE REPOSITORY BROWSER E2E TEST PASSED ===")
 }
+
+// =============================================================================
+// TDD Tests for Draft Error States (alice-95)
+//
+// These tests verify error states for draft posts:
+// 1. AI generation failed shows retry button
+// 2. Posting failed shows retry button
+// 3. No Threads connected shows connect prompt
+//
+// These tests are written to FAIL initially (TDD red phase) because the UI
+// features don't exist yet.
+// =============================================================================
+
+// TestBrowser_DraftErrorStates_PostingFailed tests that a post with "failed" status
+// shows a retry button on the dashboard.
+func TestBrowser_DraftErrorStates_PostingFailed(t *testing.T) {
+	// Setup test server with post lister
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	commitLister := NewMockCommitListerForWeb()
+	postLister := NewMockPostListerForWeb()
+	router := NewRouterWithAllStores(userStore, repoStore, commitLister, postLister, nil, "")
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Launch browser
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	testEmail := "draft-failed-test@example.com"
+	testPassword := "securepassword123"
+
+	// =========================================================================
+	// Step 1: Create user and add a failed post
+	// =========================================================================
+	t.Log("Step 1: Create user and add a failed post")
+
+	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	inputText(t, page, "#confirm_password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Get user and add test data
+	user, err := userStore.GetUserByEmail(context.Background(), testEmail)
+	if err != nil || user == nil {
+		t.Fatalf("Step 1 FAILED: Could not get user: %v", err)
+	}
+
+	// Add a repository so dashboard doesn't show empty state
+	repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/test/repo", "secret")
+
+	// Add a post with "failed" status (posting failed)
+	postLister.AddPostForUser(user.ID, &DashboardPost{
+		ID:       "failed-post-1",
+		Platform: "linkedin",
+		Content:  "Test post that failed to publish",
+		Status:   "failed",
+	})
+
+	// Login
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+	t.Log("Step 1 PASSED: User created with failed post")
+
+	// =========================================================================
+	// Step 2: Verify dashboard shows the failed post with retry button
+	// =========================================================================
+	t.Log("Step 2: Verify failed post shows retry button")
+
+	// Verify we're on dashboard
+	currentURL := page.MustInfo().URL
+	if !strings.HasSuffix(currentURL, "/dashboard") {
+		t.Fatalf("Step 2 FAILED: Expected to be on /dashboard, got: %s", currentURL)
+	}
+
+	// Verify failed badge is shown
+	bodyText := page.MustElement("body").MustText()
+	if !strings.Contains(bodyText, "Failed") {
+		t.Fatal("Step 2 FAILED: Expected 'Failed' status badge on dashboard")
+	}
+
+	// TDD: Verify retry button exists for failed posts
+	// This should FAIL initially because the retry button doesn't exist yet
+	retryButtons := page.MustElements(".retry-btn, button.retry-btn, .btn-retry, button[class*='retry']")
+	if len(retryButtons) == 0 {
+		// Try alternative selectors
+		retryButtons = page.MustElements("form[action*='retry'] button, a[href*='retry']")
+	}
+
+	if len(retryButtons) == 0 {
+		t.Fatal("Step 2 FAILED (TDD RED): Expected retry button for failed post, but none found. " +
+			"This test is expected to fail until the retry UI is implemented.")
+	}
+
+	t.Log("Step 2 PASSED: Retry button found for failed post")
+	t.Log("=== DRAFT ERROR STATES - POSTING FAILED TEST PASSED ===")
+}
+
+// TestBrowser_DraftErrorStates_AIGenerationFailed tests that when AI generation fails,
+// the UI shows a retry button to regenerate the post.
+func TestBrowser_DraftErrorStates_AIGenerationFailed(t *testing.T) {
+	// Setup test server with post lister
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	commitLister := NewMockCommitListerForWeb()
+	postLister := NewMockPostListerForWeb()
+	router := NewRouterWithAllStores(userStore, repoStore, commitLister, postLister, nil, "")
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Launch browser
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	testEmail := "draft-generation-failed-test@example.com"
+	testPassword := "securepassword123"
+
+	// =========================================================================
+	// Step 1: Create user and add a post with generation_failed status
+	// =========================================================================
+	t.Log("Step 1: Create user and add a generation_failed post")
+
+	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	inputText(t, page, "#confirm_password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Get user and add test data
+	user, err := userStore.GetUserByEmail(context.Background(), testEmail)
+	if err != nil || user == nil {
+		t.Fatalf("Step 1 FAILED: Could not get user: %v", err)
+	}
+
+	// Add a repository
+	repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/test/repo", "secret")
+
+	// Add a post with "generation_failed" status (AI generation failed)
+	// Note: If the system uses a different status for this, adjust accordingly
+	postLister.AddPostForUser(user.ID, &DashboardPost{
+		ID:       "generation-failed-post-1",
+		Platform: "linkedin",
+		Content:  "", // Empty content because generation failed
+		Status:   "generation_failed",
+	})
+
+	// Login
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+	t.Log("Step 1 PASSED: User created with generation_failed post")
+
+	// =========================================================================
+	// Step 2: Verify dashboard shows retry option for generation failure
+	// =========================================================================
+	t.Log("Step 2: Verify generation_failed post shows retry option")
+
+	// Verify we're on dashboard
+	currentURL := page.MustInfo().URL
+	if !strings.HasSuffix(currentURL, "/dashboard") {
+		t.Fatalf("Step 2 FAILED: Expected to be on /dashboard, got: %s", currentURL)
+	}
+
+	// TDD: Verify retry/regenerate button exists for generation failures
+	// This should FAIL initially because the UI doesn't exist yet
+	retryElements := page.MustElements(".regenerate-btn, button.regenerate-btn, .btn-regenerate, " +
+		"button[class*='regenerate'], form[action*='regenerate'] button, a[href*='regenerate'], " +
+		".retry-generation, button[class*='retry']")
+
+	if len(retryElements) == 0 {
+		t.Fatal("Step 2 FAILED (TDD RED): Expected retry/regenerate button for AI generation failure, but none found. " +
+			"This test is expected to fail until the retry generation UI is implemented.")
+	}
+
+	t.Log("Step 2 PASSED: Retry/regenerate button found for generation failure")
+	t.Log("=== DRAFT ERROR STATES - AI GENERATION FAILED TEST PASSED ===")
+}
+
+// TestBrowser_DraftErrorStates_NoThreadsConnected tests that when viewing a draft
+// for Threads platform without a Threads connection, the UI shows a connect prompt.
+func TestBrowser_DraftErrorStates_NoThreadsConnected(t *testing.T) {
+	// Setup test server with post lister
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	commitLister := NewMockCommitListerForWeb()
+	postLister := NewMockPostListerForWeb()
+	router := NewRouterWithAllStores(userStore, repoStore, commitLister, postLister, nil, "")
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	// Launch browser
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(ts.URL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	testEmail := "draft-threads-connect-test@example.com"
+	testPassword := "securepassword123"
+
+	// =========================================================================
+	// Step 1: Create user with a Threads draft but NO Threads connection
+	// =========================================================================
+	t.Log("Step 1: Create user with Threads draft but no Threads connection")
+
+	page.MustNavigate(ts.URL + "/signup").MustWaitLoad()
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	inputText(t, page, "#confirm_password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	// Get user and add test data
+	user, err := userStore.GetUserByEmail(context.Background(), testEmail)
+	if err != nil || user == nil {
+		t.Fatalf("Step 1 FAILED: Could not get user: %v", err)
+	}
+
+	// Add a repository
+	repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/test/repo", "secret")
+
+	// Add a Threads draft post (user has NOT connected Threads)
+	postLister.AddPostForUser(user.ID, &DashboardPost{
+		ID:       "threads-draft-1",
+		Platform: "threads",
+		Content:  "Test post for Threads platform",
+		Status:   "draft",
+	})
+
+	// Login
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+	t.Log("Step 1 PASSED: User created with Threads draft (no Threads connection)")
+
+	// =========================================================================
+	// Step 2: Verify dashboard shows connect prompt for Threads
+	// =========================================================================
+	t.Log("Step 2: Verify Threads draft shows connect prompt")
+
+	// Verify we're on dashboard
+	currentURL := page.MustInfo().URL
+	if !strings.HasSuffix(currentURL, "/dashboard") {
+		t.Fatalf("Step 2 FAILED: Expected to be on /dashboard, got: %s", currentURL)
+	}
+
+	bodyText := page.MustElement("body").MustText()
+
+	// Verify the Threads post is shown
+	if !strings.Contains(strings.ToLower(bodyText), "threads") {
+		t.Fatal("Step 2 FAILED: Expected Threads post on dashboard")
+	}
+
+	// TDD: Verify connect prompt exists for unconnected platform
+	// This should FAIL initially because the UI doesn't exist yet
+	// Look for: "Connect Threads", connect button, or warning about not connected
+	connectElements := page.MustElements(
+		".connect-threads-btn, button.connect-threads, a[href*='connections'][href*='threads'], " +
+			".connect-prompt, .platform-not-connected, .needs-connection")
+
+	// Also check for text indicating connection needed
+	hasConnectPrompt := strings.Contains(strings.ToLower(bodyText), "connect threads") ||
+		strings.Contains(strings.ToLower(bodyText), "not connected") ||
+		strings.Contains(strings.ToLower(bodyText), "connect your threads")
+
+	if len(connectElements) == 0 && !hasConnectPrompt {
+		t.Fatal("Step 2 FAILED (TDD RED): Expected 'Connect Threads' prompt for unconnected platform, but none found. " +
+			"This test is expected to fail until the connect prompt UI is implemented.")
+	}
+
+	t.Log("Step 2 PASSED: Connect prompt found for Threads")
+	t.Log("=== DRAFT ERROR STATES - NO THREADS CONNECTED TEST PASSED ===")
+}
