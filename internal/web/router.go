@@ -50,11 +50,46 @@ var templateFuncs = template.FuncMap{
 	"lt": func(a, b int) bool {
 		return a < b
 	},
+	"timeAgo": func(t time.Time) string {
+		now := time.Now()
+		diff := now.Sub(t)
+
+		switch {
+		case diff < time.Minute:
+			return "just now"
+		case diff < time.Hour:
+			mins := int(diff.Minutes())
+			if mins == 1 {
+				return "1 minute ago"
+			}
+			return fmt.Sprintf("%d minutes ago", mins)
+		case diff < 24*time.Hour:
+			hours := int(diff.Hours())
+			if hours == 1 {
+				return "1 hour ago"
+			}
+			return fmt.Sprintf("%d hours ago", hours)
+		case diff < 7*24*time.Hour:
+			days := int(diff.Hours() / 24)
+			if days == 1 {
+				return "1 day ago"
+			}
+			return fmt.Sprintf("%d days ago", days)
+		default:
+			return t.Format("Jan 02, 2006")
+		}
+	},
+	"truncate": func(s string, maxLen int) string {
+		if len(s) <= maxLen {
+			return s
+		}
+		return s[:maxLen-3] + "..."
+	},
 }
 
 func init() {
 	pageTemplates = make(map[string]*template.Template)
-	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "connections.html", "connections_new.html", "bluesky_connect.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "repository_delete.html", "webhook_regenerate.html", "webhook_deliveries.html", "connection_disconnect.html"}
+	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "connections.html", "connections_new.html", "bluesky_connect.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "repository_delete.html", "webhook_regenerate.html", "webhook_deliveries.html", "connection_disconnect.html", "drafts.html"}
 
 	for _, page := range pages {
 		// Clone the base template and parse the page with functions
@@ -122,6 +157,20 @@ type PostLister interface {
 // DraftCounter interface for counting draft posts
 type DraftCounter interface {
 	CountDraftsByUser(ctx context.Context, userID string) (int, error)
+}
+
+// DraftItem represents a draft post for the drafts list page
+type DraftItem struct {
+	ID          string
+	RepoName    string
+	PreviewText string
+	Platform    string
+	CreatedAt   time.Time
+}
+
+// DraftLister interface for listing user drafts
+type DraftLister interface {
+	ListDraftsByUser(ctx context.Context, userID string) ([]*DraftItem, error)
 }
 
 // WebhookTester interface for testing webhook connectivity
@@ -358,6 +407,7 @@ type Router struct {
 	connectionService    ConnectionService
 	blueskyConnector     BlueskyConnector
 	draftCounter         DraftCounter
+	draftLister          DraftLister
 	githubOAuthProvider  GitHubOAuthProvider
 	credentialStore      CredentialStore
 	baseURL              string // Base URL for constructing redirect URIs
@@ -506,6 +556,17 @@ func NewRouterWithThreadsOAuth(userStore UserStore, threadsOAuth ThreadsOAuthCon
 	return r
 }
 
+// NewRouterWithDraftLister creates a new web router with draft lister
+func NewRouterWithDraftLister(userStore UserStore, draftLister DraftLister) *Router {
+	r := &Router{
+		mux:         http.NewServeMux(),
+		userStore:   userStore,
+		draftLister: draftLister,
+	}
+	r.setupRoutes()
+	return r
+}
+
 // NewRouterWithWebhookTesterAndDeliveries creates a new web router with both webhook tester and delivery store
 func NewRouterWithWebhookTesterAndDeliveries(userStore UserStore, repoStore RepositoryStore, commitLister CommitLister, postLister PostLister, secretGen SecretGenerator, webhookURL string, webhookTester WebhookTester, webhookDeliveryStore WebhookDeliveryStore) *Router {
 	r := &Router{
@@ -560,6 +621,7 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("/connections/new", r.handleConnectionsNew)
 	r.mux.HandleFunc("/repositories", r.handleRepositories)
 	r.mux.HandleFunc("/repositories/new", r.handleRepositoriesNew)
+	r.mux.HandleFunc("/drafts", r.handleDrafts)
 	r.mux.HandleFunc("/repositories/success", r.handleRepositoriesSuccess)
 	r.mux.HandleFunc("/repositories/{id}", r.handleRepositoryView)
 	r.mux.HandleFunc("GET /repositories/{id}/edit", r.handleRepositoryEdit)
@@ -1060,6 +1122,11 @@ type RepositoriesListData struct {
 	Repositories []*handlers.Repository
 }
 
+// DraftsListData holds data for the drafts list page
+type DraftsListData struct {
+	Drafts []*DraftItem
+}
+
 func (r *Router) handleRepositories(w http.ResponseWriter, req *http.Request) {
 	// Check for auth cookie
 	cookie, err := req.Cookie(auth.CookieName)
@@ -1121,6 +1188,50 @@ type GitHubRepoItem struct {
 	Description string
 	Private     bool
 	IsConnected bool
+}
+
+func (r *Router) handleDrafts(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Fetch drafts
+	listData := &DraftsListData{}
+
+	if r.draftLister != nil {
+		drafts, err := r.draftLister.ListDraftsByUser(req.Context(), claims.UserID)
+		if err != nil {
+			r.renderPage(w, "drafts.html", PageData{
+				Title: "Drafts",
+				User: &UserData{
+					ID:    claims.UserID,
+					Email: claims.Email,
+				},
+				Error: "Failed to load drafts",
+			})
+			return
+		}
+		listData.Drafts = drafts
+	}
+
+	r.renderPage(w, "drafts.html", PageData{
+		Title: "Drafts",
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+		Data: listData,
+	})
 }
 
 func (r *Router) handleRepositoriesNew(w http.ResponseWriter, req *http.Request) {
