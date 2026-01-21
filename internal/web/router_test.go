@@ -1297,7 +1297,7 @@ func TestWebUI_AddRepositoryAndVerifyWebhook(t *testing.T) {
 	}
 
 	// Verify webhook URL is displayed
-	expectedWebhookURL := testWebhookBaseURL + "/webhook/" + createdRepo.ID
+	expectedWebhookURL := testWebhookBaseURL + "/webhooks/github/" + createdRepo.ID
 	if !strings.Contains(body, expectedWebhookURL) {
 		t.Fatalf("Step 4 FAILED: Expected webhook URL '%s' in page, body: %s", expectedWebhookURL, body[:min(len(body), 500)])
 	}
@@ -1559,7 +1559,7 @@ func TestRouter_GetRepositoriesSuccess_WithAuth_ShowsConfig(t *testing.T) {
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 	token, _ := generateToken(user.ID, user.Email)
 
-	req := httptest.NewRequest(http.MethodGet, "/repositories/success?webhook_url=https://roxas.ai/webhook/123&webhook_secret=secret456", nil)
+	req := httptest.NewRequest(http.MethodGet, "/repositories/success?webhook_url=https://roxas.ai/webhooks/github/123&webhook_secret=secret456", nil)
 	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
 	rr := httptest.NewRecorder()
 
@@ -1577,7 +1577,7 @@ func TestRouter_GetRepositoriesSuccess_WithAuth_ShowsConfig(t *testing.T) {
 	}
 
 	// Should display webhook URL
-	if !strings.Contains(body, "https://roxas.ai/webhook/123") {
+	if !strings.Contains(body, "https://roxas.ai/webhooks/github/123") {
 		t.Errorf("Expected webhook URL in response")
 	}
 
@@ -1788,7 +1788,7 @@ func TestRouter_GetRepositoryView_WithAuth_ShowsRepoDetails(t *testing.T) {
 		t.Errorf("Expected GitHub URL in response")
 	}
 	// Should show webhook URL
-	if !strings.Contains(body, "https://example.com/webhook/"+repo.ID) {
+	if !strings.Contains(body, "https://example.com/webhooks/github/"+repo.ID) {
 		t.Errorf("Expected webhook URL in response")
 	}
 	// Should show status
@@ -2411,7 +2411,7 @@ func TestRouter_PostWebhookTest_Success_ReturnsOK(t *testing.T) {
 	}
 
 	// Verify the webhook tester was called with correct URL
-	expectedURL := "https://example.com/webhook/" + repo.ID
+	expectedURL := "https://example.com/webhooks/github/" + repo.ID
 	if webhookTester.GetLastURL() != expectedURL {
 		t.Errorf("Expected webhook tester to be called with %s, got %s", expectedURL, webhookTester.GetLastURL())
 	}
@@ -2660,7 +2660,7 @@ func TestRouter_PostWebhookRegenerate_Success_ShowsNewSecret(t *testing.T) {
 	}
 
 	// Should show webhook URL
-	if !strings.Contains(body, "https://roxas.ai/webhook/"+repo.ID) {
+	if !strings.Contains(body, "https://roxas.ai/webhooks/github/"+repo.ID) {
 		t.Errorf("Expected webhook URL in response")
 	}
 
