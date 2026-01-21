@@ -3417,13 +3417,13 @@ type MockRouterDraftStore struct {
 }
 
 func NewMockRouterDraftStore() *MockRouterDraftStore {
-	return &MockDraftStore{drafts: make(map[string]*RouterDraft)}
+	return &MockRouterDraftStore{drafts: make(map[string]*RouterDraft)}
 }
 
 func (s *MockRouterDraftStore) CreateDraft(ctx context.Context, userID, repoID, content string) (*RouterDraft, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	draft := &Draft{
+	draft := &RouterDraft{
 		ID:           uuid.New().String(),
 		UserID:       userID,
 		RepositoryID: repoID,
@@ -3489,7 +3489,7 @@ func TestRouter_GetDraftPreview_WithoutAuth_RedirectsToLogin(t *testing.T) {
 	router := NewRouterWithRouterDraftStore(userStore, draftStore)
 
 	// Create a draft
-	draft := &Draft{
+	draft := &RouterDraft{
 		ID:        uuid.New().String(),
 		UserID:    "some-user-id",
 		Content:   "Test draft content",
@@ -3524,7 +3524,7 @@ func TestRouter_GetDraftPreview_WithAuth_ReturnsHTML(t *testing.T) {
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
 	// Create a draft for this user
-	draft := &Draft{
+	draft := &RouterDraft{
 		ID:        uuid.New().String(),
 		UserID:    user.ID,
 		Content:   "This is my test draft content about a new feature",
@@ -3589,7 +3589,7 @@ func TestRouter_GetDraftPreview_OtherUserDraft_Returns404(t *testing.T) {
 	user2, _ := userStore.CreateUser(context.Background(), "user2@example.com", hashPassword("password123"))
 
 	// Create a draft for user1
-	draft := &Draft{
+	draft := &RouterDraft{
 		ID:        uuid.New().String(),
 		UserID:    user1.ID,
 		Content:   "User1's draft",
@@ -3625,7 +3625,7 @@ func TestRouter_GetDraftPreview_DisplaysDraftContent(t *testing.T) {
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
-	draft := &Draft{
+	draft := &RouterDraft{
 		ID:        uuid.New().String(),
 		UserID:    user.ID,
 		Content:   "This commit introduces secure authentication middleware for the API",
@@ -3657,7 +3657,7 @@ func TestRouter_GetDraftPreview_HasEditableTextarea(t *testing.T) {
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
-	draft := &Draft{
+	draft := &RouterDraft{
 		ID:        uuid.New().String(),
 		UserID:    user.ID,
 		Content:   "Draft content here",
@@ -3693,7 +3693,7 @@ func TestRouter_GetDraftPreview_ShowsCharacterCount(t *testing.T) {
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
-	draft := &Draft{
+	draft := &RouterDraft{
 		ID:        uuid.New().String(),
 		UserID:    user.ID,
 		Content:   "Short content", // 13 characters
@@ -3736,7 +3736,7 @@ func TestRouter_GetDraftPreview_HasRegenerateButton(t *testing.T) {
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
-	draft := &Draft{
+	draft := &RouterDraft{
 		ID:        uuid.New().String(),
 		UserID:    user.ID,
 		Content:   "Draft content",
@@ -3771,7 +3771,7 @@ func TestRouter_GetDraftPreview_HasDeleteButton(t *testing.T) {
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
-	draft := &Draft{
+	draft := &RouterDraft{
 		ID:        uuid.New().String(),
 		UserID:    user.ID,
 		Content:   "Draft content",
@@ -3807,7 +3807,7 @@ func TestRouter_GetDraftPreview_HasPostButton(t *testing.T) {
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
-	draft := &Draft{
+	draft := &RouterDraft{
 		ID:        uuid.New().String(),
 		UserID:    user.ID,
 		Content:   "Draft content",
@@ -3846,7 +3846,7 @@ func TestRouter_PostDraftRegenerate_RegeneratesContent(t *testing.T) {
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
-	draft := &Draft{
+	draft := &RouterDraft{
 		ID:        uuid.New().String(),
 		UserID:    user.ID,
 		Content:   "Original content",
@@ -3877,7 +3877,7 @@ func TestRouter_PostDraftDelete_DeletesDraft(t *testing.T) {
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
-	draft := &Draft{
+	draft := &RouterDraft{
 		ID:        uuid.New().String(),
 		UserID:    user.ID,
 		Content:   "Draft to delete",
@@ -3908,7 +3908,7 @@ func TestRouter_PostDraftPost_PublishesDraft(t *testing.T) {
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
-	draft := &Draft{
+	draft := &RouterDraft{
 		ID:        uuid.New().String(),
 		UserID:    user.ID,
 		Content:   "Draft to post",
@@ -3972,32 +3972,32 @@ type DraftListItem struct {
 
 // DraftLister interface for listing drafts - to be implemented
 type DraftLister interface {
-	ListDraftsByUser(ctx context.Context, userID string, page, pageSize int) ([]*RouterDraftListItem, int, error)
+	ListDraftsByUser(ctx context.Context, userID string, page, pageSize int) ([]*DraftListItem, int, error)
 }
 
 // MockDraftLister implements DraftLister for testing
 type MockDraftLister struct {
 	mu       sync.Mutex
-	drafts   map[string][]*RouterDraftListItem // userID -> drafts
+	drafts   map[string][]*DraftListItem // userID -> drafts
 	total    map[string]int              // userID -> total count
 	errOnGet error
 }
 
 func NewMockDraftLister() *MockDraftLister {
 	return &MockDraftLister{
-		drafts: make(map[string][]*RouterDraftListItem),
+		drafts: make(map[string][]*DraftListItem),
 		total:  make(map[string]int),
 	}
 }
 
-func (m *MockDraftLister) AddDraft(userID string, draft *RouterDraftListItem) {
+func (m *MockDraftLister) AddDraft(userID string, draft *DraftListItem) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.drafts[userID] = append(m.drafts[userID], draft)
 	m.total[userID] = len(m.drafts[userID])
 }
 
-func (m *MockDraftLister) ListDraftsByUser(ctx context.Context, userID string, page, pageSize int) ([]*RouterDraftListItem, int, error) {
+func (m *MockDraftLister) ListDraftsByUser(ctx context.Context, userID string, page, pageSize int) ([]*DraftListItem, int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -4011,7 +4011,7 @@ func (m *MockDraftLister) ListDraftsByUser(ctx context.Context, userID string, p
 	// Apply pagination
 	start := (page - 1) * pageSize
 	if start >= len(drafts) {
-		return []*RouterDraftListItem{}, total, nil
+		return []*DraftListItem{}, total, nil
 	}
 	end := start + pageSize
 	if end > len(drafts) {
