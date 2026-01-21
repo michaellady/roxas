@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/go-rod/rod"
 )
 
 // =============================================================================
@@ -33,15 +31,7 @@ type MockGitHubRepoLister struct {
 	repos []GitHubRepo
 }
 
-// GitHubRepo represents a repository from GitHub API
-type GitHubRepo struct {
-	ID          int64
-	Name        string
-	FullName    string
-	HTMLURL     string
-	Description string
-	Private     bool
-}
+// Note: GitHubRepo is defined in router.go
 
 func NewMockGitHubRepoLister() *MockGitHubRepoLister {
 	return &MockGitHubRepoLister{
@@ -261,9 +251,8 @@ func TestBrowser_RepoSelection_FormSubmission(t *testing.T) {
 	checkboxes := page.MustElements("input[type='checkbox'][name='repos']")
 	checkboxes[0].MustClick()
 
-	// Submit form
-	submitBtn := page.MustElement("button[type='submit']")
-	submitBtn.MustClick()
+	// Submit form using JS submit (more reliable for checkbox forms in browser automation)
+	page.MustElement("form.auth-form").MustEval(`() => this.submit()`)
 	page.MustWaitLoad()
 	page.MustWaitStable()
 

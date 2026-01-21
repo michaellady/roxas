@@ -267,6 +267,22 @@ type OAuthTokens struct {
 // CredentialStore interface for storing platform credentials
 type CredentialStore interface {
 	SaveCredentials(ctx context.Context, creds *PlatformCredentials) error
+	GetCredentials(ctx context.Context, userID, platform string) (*PlatformCredentials, error)
+}
+
+// GitHubRepoLister interface for listing user's GitHub repositories
+type GitHubRepoLister interface {
+	ListUserRepos(ctx context.Context, accessToken string) ([]GitHubRepo, error)
+}
+
+// GitHubRepo represents a repository from GitHub API
+type GitHubRepo struct {
+	ID          int64
+	Name        string
+	FullName    string
+	HTMLURL     string
+	Description string
+	Private     bool
 }
 
 // PlatformCredentials represents OAuth credentials for a platform
@@ -297,6 +313,7 @@ type Router struct {
 	githubOAuthProvider  GitHubOAuthProvider
 	credentialStore      CredentialStore
 	baseURL              string // Base URL for constructing redirect URIs
+	githubRepoLister     GitHubRepoLister
 }
 
 // NewRouter creates a new web router with all routes configured (no user store)
@@ -423,6 +440,22 @@ func NewRouterWithWebhookTesterAndDeliveries(userStore UserStore, repoStore Repo
 		webhookURL:           webhookURL,
 		webhookTester:        webhookTester,
 		webhookDeliveryStore: webhookDeliveryStore,
+	}
+	r.setupRoutes()
+	return r
+}
+
+// NewRouterWithGitHubRepoLister creates a new web router with GitHub repo listing support (alice-60)
+func NewRouterWithGitHubRepoLister(userStore UserStore, repoStore RepositoryStore, commitLister CommitLister, postLister PostLister, secretGen SecretGenerator, webhookURL string, githubRepoLister GitHubRepoLister) *Router {
+	r := &Router{
+		mux:              http.NewServeMux(),
+		userStore:        userStore,
+		repoStore:        repoStore,
+		commitLister:     commitLister,
+		postLister:       postLister,
+		secretGen:        secretGen,
+		webhookURL:       webhookURL,
+		githubRepoLister: githubRepoLister,
 	}
 	r.setupRoutes()
 	return r
@@ -943,6 +976,24 @@ func (r *Router) handleRepositories(w http.ResponseWriter, req *http.Request) {
 	})
 }
 
+// RepoSelectionData holds data for the repo selection page
+type RepoSelectionData struct {
+	GitHubRepos      []GitHubRepoItem
+	HasGitHubRepos   bool
+	ConnectedRepoIDs map[string]bool // Map of GitHub URLs that are already connected
+}
+
+// GitHubRepoItem represents a repo item for display in the selection list
+type GitHubRepoItem struct {
+	ID          int64
+	Name        string
+	FullName    string
+	HTMLURL     string
+	Description string
+	Private     bool
+	IsConnected bool
+}
+
 func (r *Router) handleRepositoriesNew(w http.ResponseWriter, req *http.Request) {
 	// Check for auth cookie
 	cookie, err := req.Cookie(auth.CookieName)
@@ -963,11 +1014,82 @@ func (r *Router) handleRepositoriesNew(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
+	// If we have a GitHub repo lister, show the selection page
+	if r.githubRepoLister != nil {
+		r.handleRepoSelectionPage(w, req, claims)
+		return
+	}
+
+	// Fall back to manual URL form
 	r.renderPage(w, "repositories_new.html", PageData{
 		Title: "Add Repository",
 		User: &UserData{
 			ID:    claims.UserID,
 			Email: claims.Email,
+		},
+	})
+}
+
+// handleRepoSelectionPage renders the GitHub repo selection page
+func (r *Router) handleRepoSelectionPage(w http.ResponseWriter, req *http.Request, claims *auth.Claims) {
+	// Get connected repos to mark as already added
+	connectedRepos := make(map[string]bool)
+	if r.repoStore != nil {
+		repos, err := r.repoStore.ListRepositoriesByUser(req.Context(), claims.UserID)
+		if err == nil {
+			for _, repo := range repos {
+				connectedRepos[repo.GitHubURL] = true
+			}
+		}
+	}
+
+	// Fetch GitHub repos - for now use an empty access token since we get it from mock in tests
+	// In production, this would come from credentialStore
+	accessToken := ""
+	if r.credentialStore != nil {
+		creds, err := r.credentialStore.GetCredentials(req.Context(), claims.UserID, "github")
+		if err == nil && creds != nil {
+			accessToken = creds.AccessToken
+		}
+	}
+
+	githubRepos, err := r.githubRepoLister.ListUserRepos(req.Context(), accessToken)
+	if err != nil {
+		r.renderPage(w, "repositories_new.html", PageData{
+			Title: "Add Repository",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Failed to fetch GitHub repositories",
+		})
+		return
+	}
+
+	// Convert to display items
+	repoItems := make([]GitHubRepoItem, 0, len(githubRepos))
+	for _, repo := range githubRepos {
+		repoItems = append(repoItems, GitHubRepoItem{
+			ID:          repo.ID,
+			Name:        repo.Name,
+			FullName:    repo.FullName,
+			HTMLURL:     repo.HTMLURL,
+			Description: repo.Description,
+			Private:     repo.Private,
+			IsConnected: connectedRepos[repo.HTMLURL],
+		})
+	}
+
+	r.renderPage(w, "repositories_new.html", PageData{
+		Title: "Add Repository",
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+		Data: &RepoSelectionData{
+			GitHubRepos:      repoItems,
+			HasGitHubRepos:   len(repoItems) > 0,
+			ConnectedRepoIDs: connectedRepos,
 		},
 	})
 }
@@ -986,6 +1108,14 @@ func (r *Router) handleRepositoriesNewPost(w http.ResponseWriter, req *http.Requ
 		return
 	}
 
+	// Check if this is multi-select form (repos field) or single URL form (github_url field)
+	selectedRepos := req.Form["repos"]
+	if len(selectedRepos) > 0 {
+		r.handleRepoSelectionPost(w, req, claims, selectedRepos)
+		return
+	}
+
+	// Single URL form - fallback mode
 	githubURL := req.FormValue("github_url")
 
 	// Validate GitHub URL
@@ -1053,6 +1183,46 @@ func (r *Router) handleRepositoriesNewPost(w http.ResponseWriter, req *http.Requ
 	http.Redirect(w, req, fmt.Sprintf("/repositories/success?webhook_url=%s&webhook_secret=%s",
 		url.QueryEscape(webhookURL),
 		url.QueryEscape(secret)), http.StatusSeeOther)
+}
+
+// handleRepoSelectionPost handles POST from the multi-select repo form
+func (r *Router) handleRepoSelectionPost(w http.ResponseWriter, req *http.Request, claims *auth.Claims, selectedRepos []string) {
+	// Check if stores are configured
+	if r.repoStore == nil || r.secretGen == nil {
+		r.renderPage(w, "repositories_new.html", PageData{
+			Title: "Add Repository",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Repository creation not configured",
+		})
+		return
+	}
+
+	// Create each selected repository
+	for _, repoURL := range selectedRepos {
+		// Validate GitHub URL
+		if err := r.validateGitHubURL(repoURL); err != nil {
+			continue // Skip invalid URLs
+		}
+
+		// Generate webhook secret for each repo
+		secret, err := r.secretGen.Generate()
+		if err != nil {
+			continue // Skip if we can't generate a secret
+		}
+
+		// Create repository (ignore duplicates)
+		_, err = r.repoStore.CreateRepository(req.Context(), claims.UserID, repoURL, secret)
+		if err != nil && err != handlers.ErrDuplicateRepository {
+			// Log error but continue with other repos
+			continue
+		}
+	}
+
+	// Redirect to repositories list
+	http.Redirect(w, req, "/repositories", http.StatusSeeOther)
 }
 
 // validateGitHubURL validates that the URL is a valid GitHub repository URL

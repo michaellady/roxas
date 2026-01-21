@@ -49,6 +49,8 @@ func (m *MockGitHubOAuthProvider) ExchangeCode(ctx context.Context, code, redire
 type MockCredentialStore struct {
 	SavedCreds *PlatformCredentials
 	SaveError  error
+	GetCreds   *PlatformCredentials
+	GetError   error
 }
 
 func (m *MockCredentialStore) SaveCredentials(ctx context.Context, creds *PlatformCredentials) error {
@@ -57,6 +59,13 @@ func (m *MockCredentialStore) SaveCredentials(ctx context.Context, creds *Platfo
 	}
 	m.SavedCreds = creds
 	return nil
+}
+
+func (m *MockCredentialStore) GetCredentials(ctx context.Context, userID, platform string) (*PlatformCredentials, error) {
+	if m.GetError != nil {
+		return nil, m.GetError
+	}
+	return m.GetCreds, nil
 }
 
 // =============================================================================
