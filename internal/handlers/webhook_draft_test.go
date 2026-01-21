@@ -13,43 +13,16 @@ import (
 
 // =============================================================================
 // Mock Stores for Draft Creation Tests (alice-86 TDD RED phase)
+// Uses types defined in webhook_multitenant.go: WebhookDraft, WebhookActivity
 // =============================================================================
 
-// Draft represents a draft social media post created from a webhook push
-type Draft struct {
-	ID               string
-	UserID           string
-	RepositoryID     string
-	Ref              string     // e.g., "refs/heads/main"
-	BeforeSHA        string     // SHA before push
-	AfterSHA         string     // SHA after push
-	CommitSHAs       []string   // List of commit SHAs in the push
-	GeneratedContent string     // AI-generated content
-	EditedContent    string     // User-edited content (initially same as generated)
-	Status           string     // draft, posted, failed, error
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-}
-
-// DraftStatus constants
+// DraftStatus constants (for test assertions)
 const (
 	DraftStatusDraft  = "draft"
 	DraftStatusPosted = "posted"
 	DraftStatusFailed = "failed"
 	DraftStatusError  = "error"
 )
-
-// Activity represents an activity log entry
-type Activity struct {
-	ID        string
-	UserID    string
-	Type      string // draft_created, post_success, post_failed
-	DraftID   *string
-	PostID    *string
-	Platform  string
-	Message   string
-	CreatedAt time.Time
-}
 
 // ActivityType constants
 const (
@@ -58,28 +31,6 @@ const (
 	ActivityTypePostFailed   = "post_failed"
 )
 
-// DraftWebhookStore defines the interface for draft persistence from webhooks
-type DraftWebhookStore interface {
-	CreateDraftFromPush(ctx context.Context, userID, repoID, ref, beforeSHA, afterSHA string, commitSHAs []string) (*Draft, error)
-	GetDraftByPushSignature(ctx context.Context, repoID, beforeSHA, afterSHA string) (*Draft, error)
-}
-
-// ActivityStore defines the interface for activity logging
-type ActivityStore interface {
-	CreateActivity(ctx context.Context, userID, activityType string, draftID *string, message string) (*Activity, error)
-}
-
-// AIGeneratorService defines the interface for async AI content generation
-type AIGeneratorService interface {
-	TriggerGeneration(ctx context.Context, draftID string) error
-}
-
-// IdempotencyStore defines the interface for delivery idempotency checks
-type IdempotencyStore interface {
-	CheckDeliveryProcessed(ctx context.Context, deliveryID string) (bool, error)
-	MarkDeliveryProcessed(ctx context.Context, deliveryID, repoID string) error
-}
-
 // =============================================================================
 // Mock Implementations
 // =============================================================================
@@ -87,22 +38,22 @@ type IdempotencyStore interface {
 // MockDraftWebhookStore is an in-memory draft store for testing
 type MockDraftWebhookStore struct {
 	mu     sync.Mutex
-	drafts map[string]*Draft
+	drafts map[string]*WebhookDraft
 	nextID int
 }
 
 func NewMockDraftWebhookStore() *MockDraftWebhookStore {
 	return &MockDraftWebhookStore{
-		drafts: make(map[string]*Draft),
+		drafts: make(map[string]*WebhookDraft),
 		nextID: 1,
 	}
 }
 
-func (m *MockDraftWebhookStore) CreateDraftFromPush(ctx context.Context, userID, repoID, ref, beforeSHA, afterSHA string, commitSHAs []string) (*Draft, error) {
+func (m *MockDraftWebhookStore) CreateDraftFromPush(ctx context.Context, userID, repoID, ref, beforeSHA, afterSHA string, commitSHAs []string) (*WebhookDraft, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	draft := &Draft{
+	draft := &WebhookDraft{
 		ID:           generateTestID("draft", m.nextID),
 		UserID:       userID,
 		RepositoryID: repoID,
@@ -119,7 +70,7 @@ func (m *MockDraftWebhookStore) CreateDraftFromPush(ctx context.Context, userID,
 	return draft, nil
 }
 
-func (m *MockDraftWebhookStore) GetDraftByPushSignature(ctx context.Context, repoID, beforeSHA, afterSHA string) (*Draft, error) {
+func (m *MockDraftWebhookStore) GetDraftByPushSignature(ctx context.Context, repoID, beforeSHA, afterSHA string) (*WebhookDraft, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -131,11 +82,11 @@ func (m *MockDraftWebhookStore) GetDraftByPushSignature(ctx context.Context, rep
 	return nil, nil
 }
 
-func (m *MockDraftWebhookStore) GetDrafts() []*Draft {
+func (m *MockDraftWebhookStore) GetDrafts() []*WebhookDraft {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	result := make([]*Draft, 0, len(m.drafts))
+	result := make([]*WebhookDraft, 0, len(m.drafts))
 	for _, d := range m.drafts {
 		result = append(result, d)
 	}
@@ -145,22 +96,22 @@ func (m *MockDraftWebhookStore) GetDrafts() []*Draft {
 // MockActivityStore is an in-memory activity store for testing
 type MockActivityStore struct {
 	mu         sync.Mutex
-	activities []*Activity
+	activities []*WebhookActivity
 	nextID     int
 }
 
 func NewMockActivityStore() *MockActivityStore {
 	return &MockActivityStore{
-		activities: make([]*Activity, 0),
+		activities: make([]*WebhookActivity, 0),
 		nextID:     1,
 	}
 }
 
-func (m *MockActivityStore) CreateActivity(ctx context.Context, userID, activityType string, draftID *string, message string) (*Activity, error) {
+func (m *MockActivityStore) CreateActivity(ctx context.Context, userID, activityType string, draftID *string, message string) (*WebhookActivity, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	activity := &Activity{
+	activity := &WebhookActivity{
 		ID:        generateTestID("activity", m.nextID),
 		UserID:    userID,
 		Type:      activityType,
@@ -173,11 +124,11 @@ func (m *MockActivityStore) CreateActivity(ctx context.Context, userID, activity
 	return activity, nil
 }
 
-func (m *MockActivityStore) GetActivities() []*Activity {
+func (m *MockActivityStore) GetActivities() []*WebhookActivity {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	result := make([]*Activity, len(m.activities))
+	result := make([]*WebhookActivity, len(m.activities))
 	copy(result, m.activities)
 	return result
 }
@@ -298,9 +249,6 @@ func TestWebhookDraft_CreatesDraftFromPush(t *testing.T) {
 	repoStore := NewMockWebhookRepositoryStore()
 	draftStore := NewMockDraftWebhookStore()
 	idempotencyStore := NewMockIdempotencyStore()
-	_ = idempotencyStore // Will be used when handler is implemented
-
-	t.Skip("TDD RED: Webhook handler does not yet create drafts (alice-64 not implemented)")
 
 	repo := &Repository{
 		ID:            "repo-123",
@@ -311,8 +259,7 @@ func TestWebhookDraft_CreatesDraftFromPush(t *testing.T) {
 	}
 	repoStore.AddRepository(repo)
 
-	// TODO: Create DraftCreatingWebhookHandler when alice-64 is implemented
-	// handler := NewDraftCreatingWebhookHandler(repoStore, draftStore, idempotencyStore)
+	handler := NewDraftCreatingWebhookHandler(repoStore, draftStore, idempotencyStore)
 
 	commits := []map[string]interface{}{
 		{
@@ -333,7 +280,7 @@ func TestWebhookDraft_CreatesDraftFromPush(t *testing.T) {
 	req.Header.Set("X-GitHub-Event", "push")
 
 	rr := httptest.NewRecorder()
-	// handler.ServeHTTP(rr, req)
+	handler.ServeHTTP(rr, req)
 
 	// Verify response
 	if rr.Code != http.StatusOK {
@@ -382,9 +329,6 @@ func TestWebhookDraft_CreatesActivityRecord(t *testing.T) {
 	draftStore := NewMockDraftWebhookStore()
 	activityStore := NewMockActivityStore()
 	idempotencyStore := NewMockIdempotencyStore()
-	_ = idempotencyStore // Will be used when handler is implemented
-
-	t.Skip("TDD RED: Webhook handler does not yet create activity records (alice-64 not implemented)")
 
 	repo := &Repository{
 		ID:            "repo-123",
@@ -395,9 +339,8 @@ func TestWebhookDraft_CreatesActivityRecord(t *testing.T) {
 	}
 	repoStore.AddRepository(repo)
 
-	// TODO: Create handler with activity store when alice-64 is implemented
-	// handler := NewDraftCreatingWebhookHandler(repoStore, draftStore, idempotencyStore).
-	//     WithActivityStore(activityStore)
+	handler := NewDraftCreatingWebhookHandler(repoStore, draftStore, idempotencyStore).
+		WithActivityStore(activityStore)
 
 	commits := []map[string]interface{}{
 		{
@@ -413,7 +356,7 @@ func TestWebhookDraft_CreatesActivityRecord(t *testing.T) {
 	req.Header.Set("X-GitHub-Event", "push")
 
 	rr := httptest.NewRecorder()
-	// handler.ServeHTTP(rr, req)
+	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Errorf("Expected status 200 OK, got %d", rr.Code)
@@ -454,9 +397,6 @@ func TestWebhookDraft_IdempotencyRejectsDuplicate(t *testing.T) {
 	repoStore := NewMockWebhookRepositoryStore()
 	draftStore := NewMockDraftWebhookStore()
 	idempotencyStore := NewMockIdempotencyStore()
-	_ = idempotencyStore // Will be used when handler is implemented
-
-	t.Skip("TDD RED: Webhook handler does not yet check delivery_id idempotency (alice-77 not implemented)")
 
 	repo := &Repository{
 		ID:            "repo-123",
@@ -467,8 +407,7 @@ func TestWebhookDraft_IdempotencyRejectsDuplicate(t *testing.T) {
 	}
 	repoStore.AddRepository(repo)
 
-	// TODO: Create handler with idempotency store
-	// handler := NewDraftCreatingWebhookHandler(repoStore, draftStore, idempotencyStore)
+	handler := NewDraftCreatingWebhookHandler(repoStore, draftStore, idempotencyStore)
 
 	commits := []map[string]interface{}{
 		{
@@ -486,7 +425,7 @@ func TestWebhookDraft_IdempotencyRejectsDuplicate(t *testing.T) {
 	req1.Header.Set("X-GitHub-Event", "push")
 
 	rr1 := httptest.NewRecorder()
-	// handler.ServeHTTP(rr1, req1)
+	handler.ServeHTTP(rr1, req1)
 
 	if rr1.Code != http.StatusOK {
 		t.Errorf("First request: expected status 200 OK, got %d", rr1.Code)
@@ -503,7 +442,7 @@ func TestWebhookDraft_IdempotencyRejectsDuplicate(t *testing.T) {
 	req2.Header.Set("X-GitHub-Event", "push")
 
 	rr2 := httptest.NewRecorder()
-	// handler.ServeHTTP(rr2, req2)
+	handler.ServeHTTP(rr2, req2)
 
 	// Should return 200 OK (idempotent - not an error, just a no-op)
 	if rr2.Code != http.StatusOK {
@@ -536,9 +475,6 @@ func TestWebhookDraft_IdempotencyAllowsDifferentDeliveryIDs(t *testing.T) {
 	repoStore := NewMockWebhookRepositoryStore()
 	draftStore := NewMockDraftWebhookStore()
 	idempotencyStore := NewMockIdempotencyStore()
-	_ = idempotencyStore // Will be used when handler is implemented
-
-	t.Skip("TDD RED: Webhook handler does not yet check delivery_id idempotency (alice-77 not implemented)")
 
 	repo := &Repository{
 		ID:            "repo-123",
@@ -549,8 +485,7 @@ func TestWebhookDraft_IdempotencyAllowsDifferentDeliveryIDs(t *testing.T) {
 	}
 	repoStore.AddRepository(repo)
 
-	// TODO: Create handler
-	// handler := NewDraftCreatingWebhookHandler(repoStore, draftStore, idempotencyStore)
+	handler := NewDraftCreatingWebhookHandler(repoStore, draftStore, idempotencyStore)
 
 	// First push
 	commits1 := []map[string]interface{}{
@@ -563,7 +498,7 @@ func TestWebhookDraft_IdempotencyAllowsDifferentDeliveryIDs(t *testing.T) {
 	req1.Header.Set("X-GitHub-Event", "push")
 
 	rr1 := httptest.NewRecorder()
-	// handler.ServeHTTP(rr1, req1)
+	handler.ServeHTTP(rr1, req1)
 
 	// Second push (different delivery_id)
 	commits2 := []map[string]interface{}{
@@ -576,7 +511,7 @@ func TestWebhookDraft_IdempotencyAllowsDifferentDeliveryIDs(t *testing.T) {
 	req2.Header.Set("X-GitHub-Event", "push")
 
 	rr2 := httptest.NewRecorder()
-	// handler.ServeHTTP(rr2, req2)
+	handler.ServeHTTP(rr2, req2)
 
 	// Both should succeed
 	if rr1.Code != http.StatusOK {
@@ -605,9 +540,6 @@ func TestWebhookDraft_TriggersAsyncAIGeneration(t *testing.T) {
 	draftStore := NewMockDraftWebhookStore()
 	idempotencyStore := NewMockIdempotencyStore()
 	aiGenerator := NewMockAIGeneratorService()
-	_ = idempotencyStore // Will be used when handler is implemented
-
-	t.Skip("TDD RED: Webhook handler does not yet trigger async AI generation (alice-64 not implemented)")
 
 	repo := &Repository{
 		ID:            "repo-123",
@@ -618,9 +550,8 @@ func TestWebhookDraft_TriggersAsyncAIGeneration(t *testing.T) {
 	}
 	repoStore.AddRepository(repo)
 
-	// TODO: Create handler with AI generator
-	// handler := NewDraftCreatingWebhookHandler(repoStore, draftStore, idempotencyStore).
-	//     WithAIGenerator(aiGenerator)
+	handler := NewDraftCreatingWebhookHandler(repoStore, draftStore, idempotencyStore).
+		WithAIGenerator(aiGenerator)
 
 	commits := []map[string]interface{}{
 		{
@@ -636,11 +567,14 @@ func TestWebhookDraft_TriggersAsyncAIGeneration(t *testing.T) {
 	req.Header.Set("X-GitHub-Event", "push")
 
 	rr := httptest.NewRecorder()
-	// handler.ServeHTTP(rr, req)
+	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Errorf("Expected status 200 OK, got %d", rr.Code)
 	}
+
+	// Give goroutine time to run
+	time.Sleep(10 * time.Millisecond)
 
 	// Verify AI generation was triggered
 	triggeredIDs := aiGenerator.GetTriggeredDraftIDs()
@@ -661,9 +595,6 @@ func TestWebhookDraft_MultipleCommitsInSinglePush(t *testing.T) {
 	repoStore := NewMockWebhookRepositoryStore()
 	draftStore := NewMockDraftWebhookStore()
 	idempotencyStore := NewMockIdempotencyStore()
-	_ = idempotencyStore // Will be used when handler is implemented
-
-	t.Skip("TDD RED: Webhook handler does not yet create drafts (alice-64 not implemented)")
 
 	repo := &Repository{
 		ID:            "repo-123",
@@ -674,8 +605,7 @@ func TestWebhookDraft_MultipleCommitsInSinglePush(t *testing.T) {
 	}
 	repoStore.AddRepository(repo)
 
-	// TODO: Create handler
-	// handler := NewDraftCreatingWebhookHandler(repoStore, draftStore, idempotencyStore)
+	handler := NewDraftCreatingWebhookHandler(repoStore, draftStore, idempotencyStore)
 
 	// Push with 3 commits
 	commits := []map[string]interface{}{
@@ -690,7 +620,7 @@ func TestWebhookDraft_MultipleCommitsInSinglePush(t *testing.T) {
 	req.Header.Set("X-GitHub-Event", "push")
 
 	rr := httptest.NewRecorder()
-	// handler.ServeHTTP(rr, req)
+	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Errorf("Expected status 200 OK, got %d", rr.Code)
@@ -717,9 +647,6 @@ func TestWebhookDraft_PingEventDoesNotCreateDraft(t *testing.T) {
 	repoStore := NewMockWebhookRepositoryStore()
 	draftStore := NewMockDraftWebhookStore()
 	idempotencyStore := NewMockIdempotencyStore()
-	_ = idempotencyStore // Will be used when handler is implemented
-
-	t.Skip("TDD RED: Webhook handler does not yet create drafts (alice-64 not implemented)")
 
 	repo := &Repository{
 		ID:            "repo-123",
@@ -730,8 +657,7 @@ func TestWebhookDraft_PingEventDoesNotCreateDraft(t *testing.T) {
 	}
 	repoStore.AddRepository(repo)
 
-	// TODO: Create handler
-	// handler := NewDraftCreatingWebhookHandler(repoStore, draftStore, idempotencyStore)
+	handler := NewDraftCreatingWebhookHandler(repoStore, draftStore, idempotencyStore)
 
 	payload := createPingPayload()
 	signature := generateGitHubSignature(payload, repo.WebhookSecret)
@@ -740,7 +666,7 @@ func TestWebhookDraft_PingEventDoesNotCreateDraft(t *testing.T) {
 	req.Header.Set("X-GitHub-Event", "ping")
 
 	rr := httptest.NewRecorder()
-	// handler.ServeHTTP(rr, req)
+	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Errorf("Expected status 200 OK for ping, got %d", rr.Code)
@@ -759,9 +685,6 @@ func TestWebhookDraft_MissingDeliveryIDRejects(t *testing.T) {
 	repoStore := NewMockWebhookRepositoryStore()
 	draftStore := NewMockDraftWebhookStore()
 	idempotencyStore := NewMockIdempotencyStore()
-	_ = idempotencyStore // Will be used when handler is implemented
-
-	t.Skip("TDD RED: Webhook handler does not yet require delivery_id (alice-77 not implemented)")
 
 	repo := &Repository{
 		ID:            "repo-123",
@@ -772,8 +695,7 @@ func TestWebhookDraft_MissingDeliveryIDRejects(t *testing.T) {
 	}
 	repoStore.AddRepository(repo)
 
-	// TODO: Create handler
-	// handler := NewDraftCreatingWebhookHandler(repoStore, draftStore, idempotencyStore)
+	handler := NewDraftCreatingWebhookHandler(repoStore, draftStore, idempotencyStore)
 
 	commits := []map[string]interface{}{
 		{"id": "abc123", "message": "test", "author": map[string]interface{}{"name": "Dev"}},
@@ -786,7 +708,7 @@ func TestWebhookDraft_MissingDeliveryIDRejects(t *testing.T) {
 	req.Header.Set("X-GitHub-Event", "push")
 
 	rr := httptest.NewRecorder()
-	// handler.ServeHTTP(rr, req)
+	handler.ServeHTTP(rr, req)
 
 	// Should reject request without delivery_id
 	if rr.Code != http.StatusBadRequest {
@@ -807,9 +729,6 @@ func TestWebhookDraft_DualIdempotencyCheck(t *testing.T) {
 	repoStore := NewMockWebhookRepositoryStore()
 	draftStore := NewMockDraftWebhookStore()
 	idempotencyStore := NewMockIdempotencyStore()
-	_ = idempotencyStore // Will be used when handler is implemented
-
-	t.Skip("TDD RED: Webhook handler does not yet implement dual idempotency (alice-77 not implemented)")
 
 	repo := &Repository{
 		ID:            "repo-123",
@@ -820,8 +739,7 @@ func TestWebhookDraft_DualIdempotencyCheck(t *testing.T) {
 	}
 	repoStore.AddRepository(repo)
 
-	// TODO: Create handler
-	// handler := NewDraftCreatingWebhookHandler(repoStore, draftStore, idempotencyStore)
+	handler := NewDraftCreatingWebhookHandler(repoStore, draftStore, idempotencyStore)
 
 	commits := []map[string]interface{}{
 		{"id": "abc123", "message": "test", "author": map[string]interface{}{"name": "Dev"}},
@@ -836,7 +754,7 @@ func TestWebhookDraft_DualIdempotencyCheck(t *testing.T) {
 	req1.Header.Set("X-GitHub-Event", "push")
 
 	rr1 := httptest.NewRecorder()
-	// handler.ServeHTTP(rr1, req1)
+	handler.ServeHTTP(rr1, req1)
 
 	if rr1.Code != http.StatusOK {
 		t.Errorf("First request: expected 200, got %d", rr1.Code)
@@ -848,7 +766,7 @@ func TestWebhookDraft_DualIdempotencyCheck(t *testing.T) {
 	req2.Header.Set("X-GitHub-Event", "push")
 
 	rr2 := httptest.NewRecorder()
-	// handler.ServeHTTP(rr2, req2)
+	handler.ServeHTTP(rr2, req2)
 
 	// Should return 200 OK (idempotent)
 	if rr2.Code != http.StatusOK {

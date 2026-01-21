@@ -334,3 +334,287 @@ func truncatePayloadForAuthFailure(payload []byte) string {
 	truncated := payload[:maxPayloadBytesForAuthFailure]
 	return fmt.Sprintf("%s...[truncated, %d bytes total, sha256:%s]", string(truncated), len(payload), hashHex[:16])
 }
+
+// =============================================================================
+// Draft-Creating Webhook Handler (alice-64)
+// =============================================================================
+
+// DraftWebhookStore defines the interface for draft persistence from webhooks
+type DraftWebhookStore interface {
+	CreateDraftFromPush(ctx context.Context, userID, repoID, ref, beforeSHA, afterSHA string, commitSHAs []string) (*WebhookDraft, error)
+	GetDraftByPushSignature(ctx context.Context, repoID, beforeSHA, afterSHA string) (*WebhookDraft, error)
+}
+
+// WebhookDraft represents a draft created from a webhook push event
+type WebhookDraft struct {
+	ID               string
+	UserID           string
+	RepositoryID     string
+	Ref              string
+	BeforeSHA        string
+	AfterSHA         string
+	CommitSHAs       []string
+	GeneratedContent string
+	EditedContent    string
+	Status           string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+// ActivityStore defines the interface for activity logging
+type ActivityStore interface {
+	CreateActivity(ctx context.Context, userID, activityType string, draftID *string, message string) (*WebhookActivity, error)
+}
+
+// WebhookActivity represents an activity log entry
+type WebhookActivity struct {
+	ID        string
+	UserID    string
+	Type      string
+	DraftID   *string
+	PostID    *string
+	Platform  string
+	Message   string
+	CreatedAt time.Time
+}
+
+// AIGeneratorService defines the interface for async AI content generation
+type AIGeneratorService interface {
+	TriggerGeneration(ctx context.Context, draftID string) error
+}
+
+// IdempotencyStore defines the interface for delivery idempotency checks
+type IdempotencyStore interface {
+	CheckDeliveryProcessed(ctx context.Context, deliveryID string) (bool, error)
+	MarkDeliveryProcessed(ctx context.Context, deliveryID, repoID string) error
+}
+
+// DraftCreatingWebhookHandler handles GitHub webhooks and creates drafts
+type DraftCreatingWebhookHandler struct {
+	repoStore        WebhookRepositoryStore
+	draftStore       DraftWebhookStore
+	idempotencyStore IdempotencyStore
+	activityStore    ActivityStore      // optional
+	aiGenerator      AIGeneratorService // optional
+	deliveryStore    WebhookDeliveryStore // optional, for tracking deliveries
+}
+
+// NewDraftCreatingWebhookHandler creates a new draft-creating webhook handler
+func NewDraftCreatingWebhookHandler(repoStore WebhookRepositoryStore, draftStore DraftWebhookStore, idempotencyStore IdempotencyStore) *DraftCreatingWebhookHandler {
+	return &DraftCreatingWebhookHandler{
+		repoStore:        repoStore,
+		draftStore:       draftStore,
+		idempotencyStore: idempotencyStore,
+	}
+}
+
+// WithActivityStore adds an activity store for logging
+func (h *DraftCreatingWebhookHandler) WithActivityStore(store ActivityStore) *DraftCreatingWebhookHandler {
+	h.activityStore = store
+	return h
+}
+
+// WithAIGenerator adds an AI generator service
+func (h *DraftCreatingWebhookHandler) WithAIGenerator(gen AIGeneratorService) *DraftCreatingWebhookHandler {
+	h.aiGenerator = gen
+	return h
+}
+
+// WithDeliveryStore adds a delivery store for tracking webhook deliveries
+func (h *DraftCreatingWebhookHandler) WithDeliveryStore(store WebhookDeliveryStore) *DraftCreatingWebhookHandler {
+	h.deliveryStore = store
+	return h
+}
+
+// DraftWebhookResponse is the JSON response for draft webhook requests
+type DraftWebhookResponse struct {
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
+	DraftID string `json:"draft_id,omitempty"`
+}
+
+// GitHubPushPayloadWithSHAs extends GitHubPushPayload with before/after SHAs
+type GitHubPushPayloadWithSHAs struct {
+	Ref        string `json:"ref"`
+	Before     string `json:"before"`
+	After      string `json:"after"`
+	Repository struct {
+		HTMLURL  string `json:"html_url"`
+		FullName string `json:"full_name"`
+	} `json:"repository"`
+	Commits []GitHubCommit `json:"commits"`
+}
+
+// ServeHTTP implements http.Handler for DraftCreatingWebhookHandler
+func (h *DraftCreatingWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Extract repo_id from URL path
+	repoID := extractRepoIDFromPath(r.URL.Path)
+	if repoID == "" {
+		h.writeError(w, http.StatusBadRequest, "missing repository ID")
+		return
+	}
+
+	// Extract event type
+	eventType := r.Header.Get("X-GitHub-Event")
+
+	// Extract delivery ID for idempotency
+	deliveryID := r.Header.Get("X-GitHub-Delivery")
+
+	// Look up repository by ID
+	repo, err := h.repoStore.GetRepositoryByID(r.Context(), repoID)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to look up repository")
+		return
+	}
+	if repo == nil {
+		h.writeError(w, http.StatusNotFound, "repository not found")
+		return
+	}
+
+	// Read request body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to read request body")
+		return
+	}
+	defer r.Body.Close()
+
+	// Validate GitHub signature
+	signature := r.Header.Get("X-Hub-Signature-256")
+	if signature == "" {
+		h.writeError(w, http.StatusUnauthorized, "missing signature")
+		return
+	}
+
+	if !h.validateSignature(body, signature, repo.WebhookSecret) {
+		h.writeError(w, http.StatusUnauthorized, "invalid signature")
+		return
+	}
+
+	// Handle ping event
+	if eventType == "ping" {
+		response := DraftWebhookResponse{Status: "ok", Message: "pong"}
+		h.writeJSON(w, http.StatusOK, response)
+		return
+	}
+
+	// Handle push event
+	if eventType == "push" {
+		// Require delivery_id for push events (idempotency)
+		if deliveryID == "" {
+			h.writeError(w, http.StatusBadRequest, "missing delivery ID")
+			return
+		}
+
+		// Check delivery_id idempotency
+		processed, err := h.idempotencyStore.CheckDeliveryProcessed(r.Context(), deliveryID)
+		if err != nil {
+			h.writeError(w, http.StatusInternalServerError, "failed to check idempotency")
+			return
+		}
+		if processed {
+			response := DraftWebhookResponse{Status: "ok", Message: "duplicate delivery"}
+			h.writeJSON(w, http.StatusOK, response)
+			return
+		}
+
+		// Parse push payload
+		var payload GitHubPushPayloadWithSHAs
+		if err := json.Unmarshal(body, &payload); err != nil {
+			h.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		// Dual idempotency: check push signature (repo_id + before_sha + after_sha)
+		existingDraft, err := h.draftStore.GetDraftByPushSignature(r.Context(), repoID, payload.Before, payload.After)
+		if err != nil {
+			h.writeError(w, http.StatusInternalServerError, "failed to check push signature")
+			return
+		}
+		if existingDraft != nil {
+			// Already processed this exact push - return success (idempotent)
+			// Mark this delivery_id as processed too
+			_ = h.idempotencyStore.MarkDeliveryProcessed(r.Context(), deliveryID, repoID)
+			response := DraftWebhookResponse{Status: "ok", Message: "duplicate delivery", DraftID: existingDraft.ID}
+			h.writeJSON(w, http.StatusOK, response)
+			return
+		}
+
+		// Extract commit SHAs from payload
+		commitSHAs := make([]string, len(payload.Commits))
+		for i, commit := range payload.Commits {
+			commitSHAs[i] = commit.ID
+		}
+
+		// Create draft
+		draft, err := h.draftStore.CreateDraftFromPush(
+			r.Context(),
+			repo.UserID,
+			repoID,
+			payload.Ref,
+			payload.Before,
+			payload.After,
+			commitSHAs,
+		)
+		if err != nil {
+			h.writeError(w, http.StatusInternalServerError, "failed to create draft")
+			return
+		}
+
+		// Mark delivery as processed
+		_ = h.idempotencyStore.MarkDeliveryProcessed(r.Context(), deliveryID, repoID)
+
+		// Create activity record (if activity store configured)
+		if h.activityStore != nil {
+			draftID := draft.ID
+			_, _ = h.activityStore.CreateActivity(
+				r.Context(),
+				repo.UserID,
+				"draft_created",
+				&draftID,
+				fmt.Sprintf("Draft created from push to %s", payload.Ref),
+			)
+		}
+
+		// Trigger async AI generation (if AI generator configured)
+		if h.aiGenerator != nil {
+			// Fire and forget - don't block on AI generation
+			go func() {
+				ctx := context.Background()
+				_ = h.aiGenerator.TriggerGeneration(ctx, draft.ID)
+			}()
+		}
+
+		response := DraftWebhookResponse{Status: "ok", Message: "draft created", DraftID: draft.ID}
+		h.writeJSON(w, http.StatusOK, response)
+		return
+	}
+
+	// Unknown event type - acknowledge but ignore
+	response := DraftWebhookResponse{Status: "ok", Message: "event ignored"}
+	h.writeJSON(w, http.StatusOK, response)
+}
+
+// validateSignature verifies the GitHub HMAC-SHA256 signature
+func (h *DraftCreatingWebhookHandler) validateSignature(payload []byte, signature, secret string) bool {
+	// Remove "sha256=" prefix
+	signature = strings.TrimPrefix(signature, "sha256=")
+
+	// Compute expected signature
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(payload)
+	expectedMAC := hex.EncodeToString(mac.Sum(nil))
+
+	// Constant-time comparison
+	return hmac.Equal([]byte(signature), []byte(expectedMAC))
+}
+
+func (h *DraftCreatingWebhookHandler) writeJSON(w http.ResponseWriter, status int, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(data)
+}
+
+func (h *DraftCreatingWebhookHandler) writeError(w http.ResponseWriter, status int, message string) {
+	h.writeJSON(w, status, ErrorResponse{Error: message})
+}

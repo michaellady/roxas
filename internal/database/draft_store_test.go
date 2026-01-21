@@ -2,79 +2,8 @@ package database
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
-)
-
-// Draft represents a draft social media post (TDD: define expected type)
-type Draft struct {
-	ID               string
-	UserID           string
-	RepositoryID     string
-	Ref              string
-	BeforeSHA        string
-	AfterSHA         string
-	CommitSHAs       []string
-	GeneratedContent string
-	EditedContent    *string
-	Status           string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-}
-
-// DraftStore handles draft persistence (TDD: define expected interface)
-type DraftStore struct {
-	pool *Pool
-}
-
-// NewDraftStore creates a new draft store
-func NewDraftStore(pool *Pool) *DraftStore {
-	return &DraftStore{pool: pool}
-}
-
-// CreateDraft creates a new draft (stub - to be implemented in alice-63)
-func (s *DraftStore) CreateDraft(ctx context.Context, userID, repoID, ref, beforeSHA, afterSHA string, commitSHAs []string, content string) (*Draft, error) {
-	// TODO: Implement in alice-63
-	return nil, errors.New("CreateDraft not implemented")
-}
-
-// GetDraft retrieves a draft by ID (stub - to be implemented in alice-63)
-func (s *DraftStore) GetDraft(ctx context.Context, draftID string) (*Draft, error) {
-	// TODO: Implement in alice-63
-	return nil, errors.New("GetDraft not implemented")
-}
-
-// ListDraftsByUser lists all drafts for a user (stub - to be implemented in alice-63)
-func (s *DraftStore) ListDraftsByUser(ctx context.Context, userID string) ([]*Draft, error) {
-	// TODO: Implement in alice-63
-	return nil, errors.New("ListDraftsByUser not implemented")
-}
-
-// UpdateDraftContent updates the edited content of a draft (stub - to be implemented in alice-63)
-func (s *DraftStore) UpdateDraftContent(ctx context.Context, draftID, content string) error {
-	// TODO: Implement in alice-63
-	return errors.New("UpdateDraftContent not implemented")
-}
-
-// UpdateDraftStatus updates the status of a draft (stub - to be implemented in alice-63)
-func (s *DraftStore) UpdateDraftStatus(ctx context.Context, draftID, status string) error {
-	// TODO: Implement in alice-63
-	return errors.New("UpdateDraftStatus not implemented")
-}
-
-// DeleteDraft deletes a draft (stub - to be implemented in alice-63)
-func (s *DraftStore) DeleteDraft(ctx context.Context, draftID string) error {
-	// TODO: Implement in alice-63
-	return errors.New("DeleteDraft not implemented")
-}
-
-// Draft status constants
-const (
-	DraftStatusDraft  = "draft"
-	DraftStatusPosted = "posted"
-	DraftStatusFailed = "failed"
-	DraftStatusError  = "error"
 )
 
 func TestDraftStore_CreateDraft(t *testing.T) {
