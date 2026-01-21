@@ -25,11 +25,13 @@ type MockThreadsOAuthProvider struct {
 	authURLRedirect  string
 	exchangeCodeCall *exchangeCodeCall
 	refreshCall      *refreshCall
+	credStore        *MockThreadsCredentialStore
+	lastUserID       string
 
 	// Configurable responses
-	exchangeTokens *services.OAuthTokens
+	exchangeTokens *OAuthTokens
 	exchangeError  error
-	refreshTokens  *services.OAuthTokens
+	refreshTokens  *OAuthTokens
 	refreshError   error
 }
 
@@ -46,8 +48,12 @@ func NewMockThreadsOAuthProvider() *MockThreadsOAuthProvider {
 	return &MockThreadsOAuthProvider{}
 }
 
+func NewMockThreadsOAuthProviderWithCredStore(credStore *MockThreadsCredentialStore) *MockThreadsOAuthProvider {
+	return &MockThreadsOAuthProvider{credStore: credStore}
+}
+
 func (p *MockThreadsOAuthProvider) Platform() string {
-	return services.PlatformThreads
+	return "threads"
 }
 
 func (p *MockThreadsOAuthProvider) GetAuthURL(state, redirectURL string) string {
@@ -63,14 +69,38 @@ func (p *MockThreadsOAuthProvider) ExchangeCode(ctx context.Context, userID, cod
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.exchangeCodeCall = &exchangeCodeCall{code: code, redirectURL: redirectURL}
+	p.lastUserID = userID
 	if p.exchangeError != nil {
 		return "", p.exchangeError
+	}
+	// Store credentials if credential store is available
+	if p.credStore != nil {
+		tokens := p.exchangeTokens
+		if tokens == nil {
+			tokens = &OAuthTokens{
+				AccessToken:    "test-access-token",
+				RefreshToken:   "test-refresh-token",
+				PlatformUserID: "threads-user-123",
+				Scopes:         "threads_basic threads_content_publish",
+				ExpiresAt:      timePtr(time.Now().Add(60 * 24 * time.Hour)),
+			}
+		}
+		p.credStore.SaveCredentials(ctx, &PlatformCredentials{
+			UserID:         userID,
+			Platform:       "threads",
+			AccessToken:    tokens.AccessToken,
+			RefreshToken:   tokens.RefreshToken,
+			PlatformUserID: tokens.PlatformUserID,
+			Scopes:         tokens.Scopes,
+			TokenExpiresAt: tokens.ExpiresAt,
+		})
+		return tokens.PlatformUserID, nil
 	}
 	// Return platform username
 	return "threads-user-123", nil
 }
 
-func (p *MockThreadsOAuthProvider) RefreshTokens(ctx context.Context, refreshToken string) (*services.OAuthTokens, error) {
+func (p *MockThreadsOAuthProvider) RefreshTokens(ctx context.Context, refreshToken string) (*OAuthTokens, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.refreshCall = &refreshCall{refreshToken: refreshToken}
@@ -81,7 +111,7 @@ func (p *MockThreadsOAuthProvider) RefreshTokens(ctx context.Context, refreshTok
 		return p.refreshTokens, nil
 	}
 	// Default successful response
-	return &services.OAuthTokens{
+	return &OAuthTokens{
 		AccessToken:    "new-access-token",
 		RefreshToken:   "new-refresh-token",
 		PlatformUserID: "threads-user-123",
@@ -104,13 +134,13 @@ func timePtr(t time.Time) *time.Time {
 
 type MockThreadsCredentialStore struct {
 	mu          sync.Mutex
-	credentials map[string]*services.PlatformCredentials // key: userID:platform
+	credentials map[string]*PlatformCredentials // key: userID:platform
 	saveError   error
 }
 
 func NewMockThreadsCredentialStore() *MockThreadsCredentialStore {
 	return &MockThreadsCredentialStore{
-		credentials: make(map[string]*services.PlatformCredentials),
+		credentials: make(map[string]*PlatformCredentials),
 	}
 }
 
@@ -118,7 +148,7 @@ func (s *MockThreadsCredentialStore) key(userID, platform string) string {
 	return userID + ":" + platform
 }
 
-func (s *MockThreadsCredentialStore) GetCredentials(ctx context.Context, userID, platform string) (*services.PlatformCredentials, error) {
+func (s *MockThreadsCredentialStore) GetCredentials(ctx context.Context, userID, platform string) (*PlatformCredentials, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	creds, ok := s.credentials[s.key(userID, platform)]
@@ -128,7 +158,7 @@ func (s *MockThreadsCredentialStore) GetCredentials(ctx context.Context, userID,
 	return creds, nil
 }
 
-func (s *MockThreadsCredentialStore) SaveCredentials(ctx context.Context, creds *services.PlatformCredentials) error {
+func (s *MockThreadsCredentialStore) SaveCredentials(ctx context.Context, creds *PlatformCredentials) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.saveError != nil {
@@ -145,10 +175,10 @@ func (s *MockThreadsCredentialStore) DeleteCredentials(ctx context.Context, user
 	return nil
 }
 
-func (s *MockThreadsCredentialStore) GetCredentialsForUser(ctx context.Context, userID string) ([]*services.PlatformCredentials, error) {
+func (s *MockThreadsCredentialStore) GetCredentialsForUser(ctx context.Context, userID string) ([]*PlatformCredentials, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var result []*services.PlatformCredentials
+	var result []*PlatformCredentials
 	for key, creds := range s.credentials {
 		if strings.HasPrefix(key, userID+":") {
 			result = append(result, creds)
@@ -157,10 +187,10 @@ func (s *MockThreadsCredentialStore) GetCredentialsForUser(ctx context.Context, 
 	return result, nil
 }
 
-func (s *MockThreadsCredentialStore) GetExpiringCredentials(ctx context.Context, within time.Duration) ([]*services.PlatformCredentials, error) {
+func (s *MockThreadsCredentialStore) GetExpiringCredentials(ctx context.Context, within time.Duration) ([]*PlatformCredentials, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var result []*services.PlatformCredentials
+	var result []*PlatformCredentials
 	cutoff := time.Now().Add(within)
 	for _, creds := range s.credentials {
 		if creds.TokenExpiresAt != nil && creds.TokenExpiresAt.Before(cutoff) {
@@ -397,8 +427,8 @@ func TestRouter_GetOAuthThreadsCallback_HandlesOAuthError(t *testing.T) {
 
 func TestRouter_GetOAuthThreadsCallback_StoresCredentials(t *testing.T) {
 	userStore := NewMockUserStore()
-	oauthProvider := NewMockThreadsOAuthProvider()
 	credStore := NewMockThreadsCredentialStore()
+	oauthProvider := NewMockThreadsOAuthProviderWithCredStore(credStore)
 	router := NewRouterWithThreadsOAuth(userStore, oauthProvider, "https://test.example.com")
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
@@ -412,7 +442,7 @@ func TestRouter_GetOAuthThreadsCallback_StoresCredentials(t *testing.T) {
 	router.ServeHTTP(rr, req)
 
 	// Should store credentials in the credential store
-	creds, err := credStore.GetCredentials(context.Background(), user.ID, services.PlatformThreads)
+	creds, err := credStore.GetCredentials(context.Background(), user.ID, "threads")
 	if err != nil {
 		t.Fatalf("Expected credentials to be stored, got error: %v", err)
 	}
@@ -432,16 +462,16 @@ func TestRouter_GetOAuthThreadsCallback_StoresCredentials(t *testing.T) {
 
 func TestRouter_GetOAuthThreadsCallback_StoresUsername(t *testing.T) {
 	userStore := NewMockUserStore()
-	oauthProvider := NewMockThreadsOAuthProvider()
+	credStore := NewMockThreadsCredentialStore()
+	oauthProvider := NewMockThreadsOAuthProviderWithCredStore(credStore)
 	// Configure provider to return username
-	oauthProvider.exchangeTokens = &services.OAuthTokens{
+	oauthProvider.exchangeTokens = &OAuthTokens{
 		AccessToken:    "test-access-token",
 		RefreshToken:   "test-refresh-token",
 		PlatformUserID: "threads-user-123",
 		Scopes:         "threads_basic threads_content_publish",
 		ExpiresAt:      timePtr(time.Now().Add(60 * 24 * time.Hour)),
 	}
-	credStore := NewMockThreadsCredentialStore()
 	router := NewRouterWithThreadsOAuth(userStore, oauthProvider, "https://test.example.com")
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
@@ -455,7 +485,7 @@ func TestRouter_GetOAuthThreadsCallback_StoresUsername(t *testing.T) {
 	router.ServeHTTP(rr, req)
 
 	// Should store credentials with platform user ID
-	creds, err := credStore.GetCredentials(context.Background(), user.ID, services.PlatformThreads)
+	creds, err := credStore.GetCredentials(context.Background(), user.ID, "threads")
 	if err != nil {
 		t.Fatalf("Expected credentials to be stored, got error: %v", err)
 	}
@@ -532,14 +562,15 @@ func TestRouter_ThreadsTokenRefresh_RefreshesExpiredToken(t *testing.T) {
 	oauthProvider := NewMockThreadsOAuthProvider()
 	credStore := NewMockThreadsCredentialStore()
 	router := NewRouterWithThreadsOAuth(userStore, oauthProvider, "https://test.example.com")
+	router.credentialStore = credStore
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
 	// Store expired credentials
 	expiredTime := time.Now().Add(-1 * time.Hour)
-	credStore.SaveCredentials(context.Background(), &services.PlatformCredentials{
+	credStore.SaveCredentials(context.Background(), &PlatformCredentials{
 		UserID:         user.ID,
-		Platform:       services.PlatformThreads,
+		Platform:       "threads",
 		AccessToken:    "expired-access-token",
 		RefreshToken:   "valid-refresh-token",
 		TokenExpiresAt: &expiredTime,
@@ -570,14 +601,15 @@ func TestRouter_ThreadsTokenRefresh_UpdatesStoredCredentials(t *testing.T) {
 	oauthProvider := NewMockThreadsOAuthProvider()
 	credStore := NewMockThreadsCredentialStore()
 	router := NewRouterWithThreadsOAuth(userStore, oauthProvider, "https://test.example.com")
+	router.credentialStore = credStore
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
 	// Store credentials that need refresh
 	expiredTime := time.Now().Add(-1 * time.Hour)
-	credStore.SaveCredentials(context.Background(), &services.PlatformCredentials{
+	credStore.SaveCredentials(context.Background(), &PlatformCredentials{
 		UserID:         user.ID,
-		Platform:       services.PlatformThreads,
+		Platform:       "threads",
 		AccessToken:    "old-access-token",
 		RefreshToken:   "old-refresh-token",
 		TokenExpiresAt: &expiredTime,
@@ -593,7 +625,7 @@ func TestRouter_ThreadsTokenRefresh_UpdatesStoredCredentials(t *testing.T) {
 	router.ServeHTTP(rr, req)
 
 	// Credentials should be updated with new tokens
-	creds, err := credStore.GetCredentials(context.Background(), user.ID, services.PlatformThreads)
+	creds, err := credStore.GetCredentials(context.Background(), user.ID, "threads")
 	if err != nil {
 		t.Fatalf("Expected credentials to exist, got error: %v", err)
 	}
@@ -613,14 +645,15 @@ func TestRouter_ThreadsTokenRefresh_HandlesRefreshError(t *testing.T) {
 	oauthProvider.refreshError = services.ErrTokenRefreshFailed
 	credStore := NewMockThreadsCredentialStore()
 	router := NewRouterWithThreadsOAuth(userStore, oauthProvider, "https://test.example.com")
+	router.credentialStore = credStore
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
 	// Store credentials
 	expiredTime := time.Now().Add(-1 * time.Hour)
-	credStore.SaveCredentials(context.Background(), &services.PlatformCredentials{
+	credStore.SaveCredentials(context.Background(), &PlatformCredentials{
 		UserID:         user.ID,
-		Platform:       services.PlatformThreads,
+		Platform:       "threads",
 		AccessToken:    "old-access-token",
 		RefreshToken:   "invalid-refresh-token",
 		TokenExpiresAt: &expiredTime,
