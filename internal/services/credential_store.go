@@ -15,6 +15,7 @@ const (
 	PlatformBluesky  = "bluesky"
 	PlatformThreads  = "threads"
 	PlatformTikTok   = "tiktok"
+	PlatformGitHub   = "github"
 )
 
 // Error definitions for credential management
@@ -35,6 +36,7 @@ var SupportedPlatforms = map[string]bool{
 	PlatformBluesky:   true,
 	PlatformThreads:   true,
 	PlatformTikTok:    true,
+	PlatformGitHub:    true,
 }
 
 // PlatformCredentials represents OAuth credentials for a platform
