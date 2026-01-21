@@ -12,10 +12,10 @@ import (
 
 // Platform credential constants
 const (
-	PlatformBluesky  = "bluesky"
-	PlatformThreads  = "threads"
-	PlatformTikTok   = "tiktok"
-	PlatformGitHub   = "github"
+	PlatformBluesky = "bluesky"
+	PlatformThreads = "threads"
+	PlatformTikTok  = "tiktok"
+	PlatformGitHub  = "github"
 )
 
 // Error definitions for credential management
