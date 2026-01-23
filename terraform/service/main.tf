@@ -105,12 +105,13 @@ resource "aws_lambda_function" "roxas" {
 
   environment {
     variables = {
-      OPENAI_API_KEY        = var.openai_api_key
-      LINKEDIN_ACCESS_TOKEN = var.linkedin_access_token
-      WEBHOOK_SECRET        = var.webhook_secret
-      LOG_LEVEL             = var.log_level
-      DB_SECRET_NAME        = aws_secretsmanager_secret.database.name
-      WEBHOOK_BASE_URL      = local.create_custom_domain ? "https://${local.full_domain_name}" : aws_apigatewayv2_api.webhook.api_endpoint
+      OPENAI_API_KEY            = var.openai_api_key
+      LINKEDIN_ACCESS_TOKEN     = var.linkedin_access_token
+      WEBHOOK_SECRET            = var.webhook_secret
+      LOG_LEVEL                 = var.log_level
+      DB_SECRET_NAME            = aws_secretsmanager_secret.database.name
+      WEBHOOK_BASE_URL          = local.create_custom_domain ? "https://${local.full_domain_name}" : aws_apigatewayv2_api.webhook.api_endpoint
+      CREDENTIAL_ENCRYPTION_KEY = var.credential_encryption_key
     }
   }
 
