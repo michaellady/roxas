@@ -403,6 +403,169 @@ func TestPostGenerator_InvalidPlatform_ReturnsError(t *testing.T) {
 }
 
 // =============================================================================
+// Test: Bluesky Prompt Focuses on Commit Changes (TB-hq-nkc2d - TDD RED)
+// =============================================================================
+
+func TestPostGenerator_Bluesky_PromptContainsCommitEnablesGuidance(t *testing.T) {
+	// Bluesky prompt should guide AI to focus on what THIS commit enables/fixes
+
+	mockClient := &MockChatClient{
+		Response: "Bluesky support is live! Connect your account now.",
+	}
+
+	generator := NewPostGenerator(mockClient)
+
+	commit := &Commit{
+		ID:           "commit-123",
+		RepositoryID: "repo-456",
+		CommitSHA:    "abc123def456",
+		GitHubURL:    "https://github.com/test/repo/commit/abc123",
+		Message:      "feat: add Bluesky OAuth integration",
+		Author:       "Jane Developer",
+		Timestamp:    time.Now(),
+	}
+
+	ctx := context.Background()
+	_, err := generator.Generate(ctx, PlatformBluesky, commit)
+
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	prompt := mockClient.RecordedPrompt
+
+	// Prompt should instruct AI to focus on what THIS commit enables
+	if !strings.Contains(strings.ToLower(prompt), "what this commit enables") &&
+		!strings.Contains(strings.ToLower(prompt), "focus on what") {
+		t.Error("Bluesky prompt should contain guidance to focus on what the commit enables")
+	}
+}
+
+func TestPostGenerator_Bluesky_PromptNoGenericPhrasing(t *testing.T) {
+	// Bluesky prompt should NOT use generic "software development update" phrasing
+
+	mockClient := &MockChatClient{
+		Response: "Added webhook validation for Bluesky posts.",
+	}
+
+	generator := NewPostGenerator(mockClient)
+
+	commit := &Commit{
+		ID:           "commit-123",
+		RepositoryID: "repo-456",
+		CommitSHA:    "abc123def456",
+		GitHubURL:    "https://github.com/test/repo/commit/abc123",
+		Message:      "feat: add webhook handler",
+		Author:       "Jane Developer",
+		Timestamp:    time.Now(),
+	}
+
+	ctx := context.Background()
+	_, err := generator.Generate(ctx, PlatformBluesky, commit)
+
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	prompt := mockClient.RecordedPrompt
+
+	// Bluesky prompt should NOT contain generic phrasing that other platforms use
+	if strings.Contains(strings.ToLower(prompt), "software development update") {
+		t.Error("Bluesky prompt should NOT use generic 'software development update' phrasing")
+	}
+
+	// Should instruct not to explain what the app is
+	if !strings.Contains(strings.ToLower(prompt), "don't explain what the app is") &&
+		!strings.Contains(strings.ToLower(prompt), "assume readers follow") {
+		t.Error("Bluesky prompt should instruct not to re-explain what the app is")
+	}
+}
+
+func TestPostGenerator_Bluesky_PromptHasGoodBadExamples(t *testing.T) {
+	// Bluesky prompt should include examples of good vs bad post format
+
+	mockClient := &MockChatClient{
+		Response: "Now supports Bluesky! Auto-post your dev updates.",
+	}
+
+	generator := NewPostGenerator(mockClient)
+
+	commit := &Commit{
+		ID:           "commit-123",
+		RepositoryID: "repo-456",
+		CommitSHA:    "abc123def456",
+		GitHubURL:    "https://github.com/test/repo/commit/abc123",
+		Message:      "feat: add Bluesky posting support",
+		Author:       "Jane Developer",
+		Timestamp:    time.Now(),
+	}
+
+	ctx := context.Background()
+	_, err := generator.Generate(ctx, PlatformBluesky, commit)
+
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	prompt := mockClient.RecordedPrompt
+
+	// Prompt should contain BAD/GOOD examples to guide the AI
+	hasBadExample := strings.Contains(strings.ToUpper(prompt), "BAD:") ||
+		strings.Contains(strings.ToUpper(prompt), "BAD EXAMPLE")
+	hasGoodExample := strings.Contains(strings.ToUpper(prompt), "GOOD:") ||
+		strings.Contains(strings.ToUpper(prompt), "GOOD EXAMPLE")
+
+	if !hasBadExample || !hasGoodExample {
+		t.Error("Bluesky prompt should include BAD and GOOD examples to guide post style")
+	}
+}
+
+func TestPostGenerator_Bluesky_PromptLeadWithActionOutcome(t *testing.T) {
+	// Bluesky prompt should instruct to lead with action/outcome
+
+	mockClient := &MockChatClient{
+		Response: "Fixed auth timeout. Sessions now persist properly.",
+	}
+
+	generator := NewPostGenerator(mockClient)
+
+	commit := &Commit{
+		ID:           "commit-123",
+		RepositoryID: "repo-456",
+		CommitSHA:    "abc123def456",
+		GitHubURL:    "https://github.com/test/repo/commit/abc123",
+		Message:      "fix: resolve session timeout issue",
+		Author:       "Jane Developer",
+		Timestamp:    time.Now(),
+	}
+
+	ctx := context.Background()
+	_, err := generator.Generate(ctx, PlatformBluesky, commit)
+
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	prompt := mockClient.RecordedPrompt
+
+	// Should instruct to lead with action words
+	hasLeadWithAction := strings.Contains(strings.ToLower(prompt), "lead with") ||
+		strings.Contains(strings.ToLower(prompt), "start with the action") ||
+		(strings.Contains(strings.ToLower(prompt), "added") &&
+			strings.Contains(strings.ToLower(prompt), "fixed") &&
+			strings.Contains(strings.ToLower(prompt), "now supports"))
+
+	if !hasLeadWithAction {
+		t.Error("Bluesky prompt should instruct to lead with action/outcome (Added X, Fixed Y, Now supports Z)")
+	}
+
+	// Should mention being specific about functionality
+	if !strings.Contains(strings.ToLower(prompt), "specific") {
+		t.Error("Bluesky prompt should instruct to be specific about functionality")
+	}
+}
+
+// =============================================================================
 // Test: Prompt Includes Commit Metadata
 // =============================================================================
 
