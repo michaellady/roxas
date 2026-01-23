@@ -463,20 +463,32 @@ func (a *socialPosterAdapter) PostDraft(ctx context.Context, userID, draftID str
 		content = *draft.EditedContent
 	}
 
-	// Get user's Threads credentials
-	creds, err := a.credentialStore.GetCredentials(ctx, userID, "threads")
-	if err != nil {
-		return "", fmt.Errorf("no Threads connection found - please connect Threads first: %w", err)
+	// Try Bluesky first, then fall back to Threads
+	bluskyCreds, bskyErr := a.credentialStore.GetCredentials(ctx, userID, "bluesky")
+	if bskyErr == nil && bluskyCreds != nil {
+		// Bluesky: AccessToken = app password, RefreshToken = handle
+		handle := bluskyCreds.RefreshToken
+		appPassword := bluskyCreds.AccessToken
+		bskyClient := clients.NewBlueskyClient(handle, appPassword, "")
+		result, err := bskyClient.Post(ctx, services.PostContent{Text: content})
+		if err != nil {
+			return "", fmt.Errorf("failed to post to Bluesky: %w", err)
+		}
+		return result.PostURL, nil
 	}
 
-	// Create Threads client and post
-	threadsClient := clients.NewThreadsClient(creds.AccessToken, "")
-	result, err := threadsClient.Post(ctx, services.PostContent{Text: content})
-	if err != nil {
-		return "", fmt.Errorf("failed to post to Threads: %w", err)
+	// Fall back to Threads
+	threadsCreds, threadsErr := a.credentialStore.GetCredentials(ctx, userID, "threads")
+	if threadsErr == nil && threadsCreds != nil {
+		threadsClient := clients.NewThreadsClient(threadsCreds.AccessToken, "")
+		result, err := threadsClient.Post(ctx, services.PostContent{Text: content})
+		if err != nil {
+			return "", fmt.Errorf("failed to post to Threads: %w", err)
+		}
+		return result.PostURL, nil
 	}
 
-	return result.PostURL, nil
+	return "", fmt.Errorf("no social platform connected - please connect Bluesky or Threads first")
 }
 
 // threadsOAuthAdapter implements web.ThreadsOAuthConnector
@@ -530,6 +542,50 @@ func (a *threadsOAuthAdapter) RefreshTokens(ctx context.Context, refreshToken st
 		ExpiresAt:      tokens.ExpiresAt,
 		PlatformUserID: tokens.PlatformUserID,
 		Scopes:         tokens.Scopes,
+	}, nil
+}
+
+// blueskyConnectorAdapter implements web.BlueskyConnector for app password auth
+type blueskyConnectorAdapter struct {
+	credentialStore services.CredentialStore
+}
+
+func (a *blueskyConnectorAdapter) Connect(ctx context.Context, userID, handle, appPassword string) (*web.BlueskyConnectResult, error) {
+	// Normalize handle (remove @ if present)
+	handle = strings.TrimPrefix(handle, "@")
+
+	// Validate credentials by attempting to authenticate
+	client := clients.NewBlueskyClient(handle, appPassword, "")
+	if err := client.Authenticate(ctx); err != nil {
+		if client.IsAuthError(err) {
+			return &web.BlueskyConnectResult{
+				Success: false,
+				Error:   "Invalid handle or app password. Please check your credentials and try again.",
+			}, nil
+		}
+		return nil, fmt.Errorf("failed to authenticate with Bluesky: %w", err)
+	}
+
+	// Store credentials - use AccessToken for app password, RefreshToken for handle
+	// (App passwords don't expire, so no expiry time)
+	creds := &services.PlatformCredentials{
+		UserID:         userID,
+		Platform:       "bluesky",
+		AccessToken:    appPassword,  // The app password
+		RefreshToken:   handle,       // Store handle for later use
+		TokenExpiresAt: nil,          // App passwords don't expire
+		PlatformUserID: client.GetDID(),
+		Scopes:         "",
+	}
+
+	if err := a.credentialStore.SaveCredentials(ctx, creds); err != nil {
+		return nil, fmt.Errorf("failed to save credentials: %w", err)
+	}
+
+	return &web.BlueskyConnectResult{
+		Handle:  handle,
+		DID:     client.GetDID(),
+		Success: true,
 	}, nil
 }
 
@@ -619,7 +675,7 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 						credentialStore: credentialStore,
 					}
 					router = router.WithSocialPoster(socialPoster)
-					log.Println("Social posting to Threads enabled")
+					log.Println("Social posting enabled (Bluesky, Threads)")
 
 					// Add Threads OAuth if configured
 					if config.ThreadsClientID != "" && config.ThreadsClientSecret != "" {
@@ -637,6 +693,13 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 					} else {
 						log.Println("Threads OAuth disabled (no THREADS_CLIENT_ID/THREADS_CLIENT_SECRET)")
 					}
+
+					// Add Bluesky connector (always enabled with credential store)
+					blueskyConnector := &blueskyConnectorAdapter{
+						credentialStore: credentialStore,
+					}
+					router = router.WithBlueskyConnector(blueskyConnector)
+					log.Println("Bluesky connection enabled")
 				}
 			}
 		} else {

@@ -546,6 +546,12 @@ func (r *Router) WithThreadsOAuth(threadsOAuth ThreadsOAuthConnector, callbackUR
 	return r
 }
 
+// WithBlueskyConnector configures the router with a Bluesky connector for app password auth
+func (r *Router) WithBlueskyConnector(connector BlueskyConnector) *Router {
+	r.blueskyConnector = connector
+	return r
+}
+
 // NewRouterWithWebhookTester creates a new web router with webhook tester support
 func NewRouterWithWebhookTester(userStore UserStore, repoStore RepositoryStore, commitLister CommitLister, postLister PostLister, secretGen SecretGenerator, webhookURL string, webhookTester WebhookTester) *Router {
 	r := &Router{
