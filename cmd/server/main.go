@@ -38,6 +38,7 @@ type Config struct {
 	WebhookSecret       string
 	DBSecretName        string
 	WebhookBaseURL      string
+	EncryptionKey       string // 32 bytes (base64 encoded or hex) for credential encryption
 }
 
 // loadConfig loads configuration from environment variables
@@ -50,6 +51,7 @@ func loadConfig() Config {
 		WebhookSecret:       os.Getenv("WEBHOOK_SECRET"),
 		DBSecretName:        os.Getenv("DB_SECRET_NAME"),
 		WebhookBaseURL:      os.Getenv("WEBHOOK_BASE_URL"),
+		EncryptionKey:       os.Getenv("CREDENTIAL_ENCRYPTION_KEY"), // 32-byte key for AES-256
 	}
 }
 
@@ -379,6 +381,97 @@ func (a *aiGeneratorAdapter) TriggerGeneration(ctx context.Context, draftID stri
 	return nil
 }
 
+// draftStoreAdapter adapts database.DraftStore to web.DraftStore interface
+// Required for draft preview, edit, delete, and post operations
+type draftStoreAdapter struct {
+	store *database.DraftStore
+}
+
+func (a *draftStoreAdapter) GetDraftByID(ctx context.Context, draftID string) (*web.Draft, error) {
+	draft, err := a.store.GetDraft(ctx, draftID)
+	if err != nil {
+		return nil, err
+	}
+	// Use edited content if available, otherwise generated content
+	content := draft.GeneratedContent
+	if draft.EditedContent != nil && *draft.EditedContent != "" {
+		content = *draft.EditedContent
+	}
+	return &web.Draft{
+		ID:           draft.ID,
+		UserID:       draft.UserID,
+		RepositoryID: draft.RepositoryID,
+		Content:      content,
+		Status:       draft.Status,
+		CharLimit:    500, // Threads character limit
+		CreatedAt:    draft.CreatedAt,
+	}, nil
+}
+
+func (a *draftStoreAdapter) UpdateDraftContent(ctx context.Context, draftID, content string) (*web.Draft, error) {
+	err := a.store.UpdateDraftContent(ctx, draftID, content)
+	if err != nil {
+		return nil, err
+	}
+	return a.GetDraftByID(ctx, draftID)
+}
+
+func (a *draftStoreAdapter) DeleteDraft(ctx context.Context, draftID string) error {
+	return a.store.DeleteDraft(ctx, draftID)
+}
+
+func (a *draftStoreAdapter) UpdateDraftStatus(ctx context.Context, draftID, status string) (*web.Draft, error) {
+	err := a.store.UpdateDraftStatus(ctx, draftID, status)
+	if err != nil {
+		return nil, err
+	}
+	return a.GetDraftByID(ctx, draftID)
+}
+
+// aiRegeneratorAdapter implements web.AIRegenerator using aiGeneratorAdapter
+type aiRegeneratorAdapter struct {
+	generator *aiGeneratorAdapter
+}
+
+func (a *aiRegeneratorAdapter) RegenerateDraft(ctx context.Context, draftID string) error {
+	return a.generator.TriggerGeneration(ctx, draftID)
+}
+
+// socialPosterAdapter implements web.SocialPoster for posting to Threads
+type socialPosterAdapter struct {
+	draftStore      *database.DraftStore
+	credentialStore services.CredentialStore
+}
+
+func (a *socialPosterAdapter) PostDraft(ctx context.Context, userID, draftID string) (string, error) {
+	// Fetch the draft
+	draft, err := a.draftStore.GetDraft(ctx, draftID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get draft: %w", err)
+	}
+
+	// Get the content to post (edited or generated)
+	content := draft.GeneratedContent
+	if draft.EditedContent != nil && *draft.EditedContent != "" {
+		content = *draft.EditedContent
+	}
+
+	// Get user's Threads credentials
+	creds, err := a.credentialStore.GetCredentials(ctx, userID, "threads")
+	if err != nil {
+		return "", fmt.Errorf("no Threads connection found - please connect Threads first: %w", err)
+	}
+
+	// Create Threads client and post
+	threadsClient := clients.NewThreadsClient(creds.AccessToken, "")
+	result, err := threadsClient.Post(ctx, services.PostContent{Text: content})
+	if err != nil {
+		return "", fmt.Errorf("failed to post to Threads: %w", err)
+	}
+
+	return result.PostURL, nil
+}
+
 // createRouter builds the combined HTTP router for both web UI and webhook
 func createRouter(config Config, dbPool *database.Pool) http.Handler {
 	mux := http.NewServeMux()
@@ -439,11 +532,51 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 		draftStore := database.NewDraftStore(dbPool)
 		secretGen := handlers.NewCryptoSecretGenerator()
 
-		// Create draft lister adapter
+		// Create draft adapters
 		draftLister := &draftListerAdapter{draftStore: draftStore, repoStore: repoStore}
+		webDraftStore := &draftStoreAdapter{store: draftStore}
 
-		webRouter = web.NewRouterWithActivityLister(userStore, repoStore, commitStore, postStore, activityStore, secretGen, config.WebhookBaseURL).
-			WithDraftLister(draftLister)
+		router := web.NewRouterWithActivityLister(userStore, repoStore, commitStore, postStore, activityStore, secretGen, config.WebhookBaseURL).
+			WithDraftLister(draftLister).
+			WithDraftStore(webDraftStore)
+
+		// Add social poster if encryption key is configured
+		if config.EncryptionKey != "" {
+			encKey, err := hex.DecodeString(config.EncryptionKey)
+			if err != nil {
+				log.Printf("Warning: Invalid CREDENTIAL_ENCRYPTION_KEY format (expected hex): %v", err)
+			} else if len(encKey) != 32 {
+				log.Printf("Warning: CREDENTIAL_ENCRYPTION_KEY must be 32 bytes (64 hex chars), got %d bytes", len(encKey))
+			} else {
+				credentialStore, err := database.NewCredentialStore(dbPool, encKey)
+				if err != nil {
+					log.Printf("Warning: Failed to create credential store: %v", err)
+				} else {
+					socialPoster := &socialPosterAdapter{
+						draftStore:      draftStore,
+						credentialStore: credentialStore,
+					}
+					router = router.WithSocialPoster(socialPoster)
+					log.Println("Social posting to Threads enabled")
+				}
+			}
+		} else {
+			log.Println("Social posting disabled (no CREDENTIAL_ENCRYPTION_KEY)")
+		}
+
+		// Add AI regenerator if OpenAI is configured
+		if config.OpenAIAPIKey != "" {
+			openaiClient := clients.NewOpenAIClient(config.OpenAIAPIKey, "", config.OpenAIChatModel, config.OpenAIImageModel)
+			postGenerator := services.NewPostGenerator(openaiClient)
+			aiGen := &aiGeneratorAdapter{
+				draftStore:    draftStore,
+				repoStore:     repoStore,
+				postGenerator: postGenerator,
+			}
+			router = router.WithAIRegenerator(&aiRegeneratorAdapter{generator: aiGen})
+		}
+
+		webRouter = router
 	} else {
 		// No database - use router without stores (auth will show "not configured")
 		log.Println("WARNING: Database unavailable - web authentication disabled")

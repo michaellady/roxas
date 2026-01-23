@@ -420,6 +420,19 @@ type PlatformCredentials struct {
 	Scopes         string
 }
 
+// AIRegenerator interface for regenerating AI content for drafts
+type AIRegenerator interface {
+	// RegenerateDraft regenerates the AI content for a draft and updates it
+	RegenerateDraft(ctx context.Context, draftID string) error
+}
+
+// SocialPoster interface for posting content to social media platforms
+type SocialPoster interface {
+	// PostDraft posts the draft content to the configured social platform
+	// Returns the URL of the created post
+	PostDraft(ctx context.Context, userID, draftID string) (postURL string, err error)
+}
+
 // Router is the main HTTP router for the web UI
 type Router struct {
 	mux                  *http.ServeMux
@@ -444,6 +457,8 @@ type Router struct {
 	githubRepoLister     GitHubRepoLister
 	threadsOAuth         ThreadsOAuthConnector
 	oauthCallbackURL     string // Base URL for OAuth callbacks (e.g., "https://app.example.com")
+	aiRegenerator        AIRegenerator
+	socialPoster         SocialPoster
 }
 
 // NewRouter creates a new web router with all routes configured (no user store)
@@ -499,6 +514,27 @@ func NewRouterWithActivityLister(userStore UserStore, repoStore RepositoryStore,
 // WithDraftLister adds a draft lister to the router (builder pattern)
 func (r *Router) WithDraftLister(draftLister DraftLister) *Router {
 	r.draftLister = draftLister
+	return r
+}
+
+// WithDraftStore adds a draft store to the router (builder pattern)
+// Required for draft preview, edit, delete, regenerate, and post operations
+func (r *Router) WithDraftStore(draftStore DraftStore) *Router {
+	r.draftStore = draftStore
+	return r
+}
+
+// WithAIRegenerator adds an AI regenerator to the router (builder pattern)
+// Required for regenerating draft content
+func (r *Router) WithAIRegenerator(aiRegenerator AIRegenerator) *Router {
+	r.aiRegenerator = aiRegenerator
+	return r
+}
+
+// WithSocialPoster adds a social poster to the router (builder pattern)
+// Required for posting drafts to social media platforms
+func (r *Router) WithSocialPoster(socialPoster SocialPoster) *Router {
+	r.socialPoster = socialPoster
 	return r
 }
 
@@ -3001,9 +3037,20 @@ func (r *Router) handleDraftRegenerate(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
-	// TODO: Regenerate draft content using AI generator
-	// For now, just redirect back to preview
-	http.Redirect(w, req, "/drafts/"+draftID, http.StatusSeeOther)
+	// Check if AI regenerator is available
+	if r.aiRegenerator == nil {
+		http.Error(w, "AI regeneration not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Regenerate draft content using AI generator
+	if err := r.aiRegenerator.RegenerateDraft(req.Context(), draftID); err != nil {
+		http.Error(w, "Failed to regenerate draft", http.StatusInternalServerError)
+		return
+	}
+
+	// Redirect back to draft preview with success message
+	http.Redirect(w, req, "/drafts/"+draftID+"?regenerated=true", http.StatusSeeOther)
 }
 
 func (r *Router) handleDraftDelete(w http.ResponseWriter, req *http.Request) {
@@ -3099,10 +3146,19 @@ func (r *Router) handleDraftPost(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Post to social media if configured
+	if r.socialPoster != nil {
+		_, err = r.socialPoster.PostDraft(req.Context(), claims.UserID, draftID)
+		if err != nil {
+			http.Error(w, "Failed to post to social media: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
 	// Update draft status to posted
 	_, err = r.draftStore.UpdateDraftStatus(req.Context(), draftID, "posted")
 	if err != nil {
-		http.Error(w, "Failed to publish draft", http.StatusInternalServerError)
+		http.Error(w, "Failed to update draft status", http.StatusInternalServerError)
 		return
 	}
 

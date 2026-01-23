@@ -3468,6 +3468,26 @@ func (s *MockDraftStore) AddDraft(draft *Draft) {
 	s.drafts[draft.ID] = draft
 }
 
+// MockAIRegenerator implements AIRegenerator interface for testing
+type MockAIRegenerator struct {
+	regenerateCalled bool
+	lastDraftID      string
+	shouldError      bool
+}
+
+func NewMockAIRegenerator() *MockAIRegenerator {
+	return &MockAIRegenerator{}
+}
+
+func (m *MockAIRegenerator) RegenerateDraft(ctx context.Context, draftID string) error {
+	m.regenerateCalled = true
+	m.lastDraftID = draftID
+	if m.shouldError {
+		return fmt.Errorf("mock regeneration error")
+	}
+	return nil
+}
+
 // =============================================================================
 // Draft Preview Page - Authentication Tests
 // =============================================================================
@@ -3831,7 +3851,8 @@ func TestRouter_GetDraftPreview_HasPostButton(t *testing.T) {
 func TestRouter_PostDraftRegenerate_RegeneratesContent(t *testing.T) {
 	userStore := NewMockUserStore()
 	draftStore := NewMockDraftStore()
-	router := NewRouterWithDraftStore(userStore, draftStore)
+	aiRegenerator := NewMockAIRegenerator()
+	router := NewRouterWithDraftStore(userStore, draftStore).WithAIRegenerator(aiRegenerator)
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
@@ -3853,9 +3874,48 @@ func TestRouter_PostDraftRegenerate_RegeneratesContent(t *testing.T) {
 
 	router.ServeHTTP(rr, req)
 
-	// Should redirect back to draft preview or return success
+	// Should redirect back to draft preview
 	if rr.Code != http.StatusSeeOther && rr.Code != http.StatusOK {
 		t.Errorf("Expected redirect or success status, got %d", rr.Code)
+	}
+
+	// Verify AI regenerator was called
+	if !aiRegenerator.regenerateCalled {
+		t.Error("Expected AI regenerator to be called")
+	}
+	if aiRegenerator.lastDraftID != draft.ID {
+		t.Errorf("Expected regenerator to be called with draft ID %s, got %s", draft.ID, aiRegenerator.lastDraftID)
+	}
+}
+
+func TestRouter_PostDraftRegenerate_WithoutAIRegenerator_Returns503(t *testing.T) {
+	userStore := NewMockUserStore()
+	draftStore := NewMockDraftStore()
+	router := NewRouterWithDraftStore(userStore, draftStore) // No AI regenerator
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+
+	draft := &Draft{
+		ID:        uuid.New().String(),
+		UserID:    user.ID,
+		Content:   "Original content",
+		Status:    "draft",
+		CharLimit: 500,
+		CreatedAt: time.Now(),
+	}
+	draftStore.AddDraft(draft)
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodPost, "/drafts/"+draft.ID+"/regenerate", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should return 503 when AI regenerator is not configured
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected 503 Service Unavailable, got %d", rr.Code)
 	}
 }
 
