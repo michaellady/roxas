@@ -322,6 +322,63 @@ func extractRepoNameFromURL(url string) string {
 	return url
 }
 
+// aiGeneratorAdapter implements handlers.AIGeneratorService to generate content for drafts
+type aiGeneratorAdapter struct {
+	draftStore    *database.DraftStore
+	repoStore     *database.RepositoryStore
+	postGenerator services.PostGeneratorService
+}
+
+func (a *aiGeneratorAdapter) TriggerGeneration(ctx context.Context, draftID string) error {
+	// Fetch the draft
+	draft, err := a.draftStore.GetDraft(ctx, draftID)
+	if err != nil {
+		return fmt.Errorf("failed to get draft: %w", err)
+	}
+
+	// Fetch repo info for the commit URL
+	repo, err := a.repoStore.GetRepositoryByID(ctx, draft.RepositoryID)
+	if err != nil {
+		return fmt.Errorf("failed to get repository: %w", err)
+	}
+
+	// Build a commit-like object for the generator
+	// Use the after_sha as the commit ID and combine commit messages
+	commitMessage := fmt.Sprintf("Push to %s with %d commit(s)", draft.Ref, len(draft.CommitSHAs))
+	if len(draft.CommitSHAs) == 1 {
+		commitMessage = fmt.Sprintf("Commit %s to %s", draft.AfterSHA[:7], draft.Ref)
+	}
+
+	commit := &services.Commit{
+		ID:        draft.AfterSHA,
+		Message:   commitMessage,
+		Author:    "developer", // Could be enhanced to fetch from commit data
+		GitHubURL: fmt.Sprintf("%s/commit/%s", repo.GitHubURL, draft.AfterSHA),
+	}
+
+	// Generate content using PostGenerator
+	// Use "threads" as the platform (could be made configurable)
+	generated, err := a.postGenerator.Generate(ctx, "linkedin", commit)
+	if err != nil {
+		// Update draft status to error
+		_ = a.draftStore.UpdateDraftStatus(ctx, draftID, database.DraftStatusError)
+		return fmt.Errorf("failed to generate content: %w", err)
+	}
+
+	// Update draft with generated content
+	_, err = a.draftStore.CreateDraft(ctx, draft.UserID, draft.RepositoryID, draft.Ref, draft.BeforeSHA, draft.AfterSHA, draft.CommitSHAs, generated.Content)
+	if err != nil {
+		// If duplicate, just update the content
+		err = a.draftStore.UpdateDraftContent(ctx, draftID, generated.Content)
+		if err != nil {
+			return fmt.Errorf("failed to update draft content: %w", err)
+		}
+	}
+
+	log.Printf("AI generation completed for draft %s", draftID)
+	return nil
+}
+
 // createRouter builds the combined HTTP router for both web UI and webhook
 func createRouter(config Config, dbPool *database.Pool) http.Handler {
 	mux := http.NewServeMux()
@@ -343,10 +400,29 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 		idempotencyStore := &idempotencyStoreAdapter{store: deliveryStore}
 		activityStoreForWebhook := &activityStoreAdapter{store: activityStore}
 
+		// Create AI generator if OpenAI API key is configured
+		var aiGenerator *aiGeneratorAdapter
+		if config.OpenAIAPIKey != "" {
+			openaiClient := clients.NewOpenAIClient(config.OpenAIAPIKey, "", config.OpenAIChatModel, config.OpenAIImageModel)
+			postGenerator := services.NewPostGenerator(openaiClient)
+			aiGenerator = &aiGeneratorAdapter{
+				draftStore:    draftStore,
+				repoStore:     repoStore,
+				postGenerator: postGenerator,
+			}
+			log.Println("AI content generation enabled")
+		} else {
+			log.Println("AI content generation disabled (no OPENAI_API_KEY)")
+		}
+
 		// Use DraftCreatingWebhookHandler which creates drafts on push events
 		draftHandler := handlers.NewDraftCreatingWebhookHandler(repoStore, draftWebhookStore, idempotencyStore).
 			WithActivityStore(activityStoreForWebhook)
-		// Note: WithAIGenerator not configured yet - AI generation will need separate implementation
+
+		// Add AI generator if configured
+		if aiGenerator != nil {
+			draftHandler = draftHandler.WithAIGenerator(aiGenerator)
+		}
 
 		mux.Handle("/webhooks/github/", draftHandler)
 	}
