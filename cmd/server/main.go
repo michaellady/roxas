@@ -551,12 +551,18 @@ type blueskyConnectorAdapter struct {
 }
 
 func (a *blueskyConnectorAdapter) Connect(ctx context.Context, userID, handle, appPassword string) (*web.BlueskyConnectResult, error) {
-	// Normalize handle (remove @ if present)
+	// Normalize handle
 	handle = strings.TrimPrefix(handle, "@")
+	// Add default domain if no domain present
+	if !strings.Contains(handle, ".") {
+		handle = handle + ".bsky.social"
+	}
 
 	// Validate credentials by attempting to authenticate
+	log.Printf("Bluesky connect: attempting auth for handle %s", handle)
 	client := clients.NewBlueskyClient(handle, appPassword, "")
 	if err := client.Authenticate(ctx); err != nil {
+		log.Printf("Bluesky connect: auth failed for %s: %v", handle, err)
 		if client.IsAuthError(err) {
 			return &web.BlueskyConnectResult{
 				Success: false,
@@ -565,6 +571,7 @@ func (a *blueskyConnectorAdapter) Connect(ctx context.Context, userID, handle, a
 		}
 		return nil, fmt.Errorf("failed to authenticate with Bluesky: %w", err)
 	}
+	log.Printf("Bluesky connect: auth successful for %s (DID: %s)", handle, client.GetDID())
 
 	// Store credentials - use AccessToken for app password, RefreshToken for handle
 	// (App passwords don't expire, so no expiry time)
