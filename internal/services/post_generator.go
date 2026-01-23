@@ -11,6 +11,7 @@ import (
 // =============================================================================
 
 // Platform constants for social media targets
+// Note: PlatformBluesky is defined in credential_store.go
 const (
 	PlatformLinkedIn  = "linkedin"
 	PlatformTwitter   = "twitter"
@@ -80,6 +81,12 @@ var platformConfigs = map[string]platformConfig{
 		Name:       "YouTube",
 		MaxLength:  0, // YouTube descriptions can be up to 5000 chars
 		Tone:       "informative, detailed, with sections and links",
+		HashtagReq: false,
+	},
+	PlatformBluesky: {
+		Name:       "Bluesky",
+		MaxLength:  300,
+		Tone:       "concise, engaging, focused on what was built/shipped",
 		HashtagReq: false,
 	},
 }
@@ -157,6 +164,12 @@ func buildPrompt(config platformConfig, commit *Commit) string {
 		sb.WriteString("- Include what was changed and why\n")
 		sb.WriteString("- Add relevant hashtags at the end\n")
 		sb.WriteString("- Make it informative for developers\n")
+	case "Bluesky":
+		sb.WriteString("\nRequirements for Bluesky:\n")
+		sb.WriteString("- MUST be 300 characters or less (this is critical!)\n")
+		sb.WriteString("- Be concise and engaging\n")
+		sb.WriteString("- Focus on what was built or shipped\n")
+		sb.WriteString("- Keep it punchy and direct\n")
 	}
 
 	sb.WriteString("\nGenerate only the post content, nothing else.")
@@ -191,8 +204,8 @@ func enforceConstraints(content string, config platformConfig) string {
 
 	// Enforce max length for platforms with limits
 	if config.MaxLength > 0 && len(content) > config.MaxLength {
-		// Truncate gracefully with ellipsis
-		content = content[:config.MaxLength-1] + "…"
+		// Truncate gracefully with ellipsis (use "..." for ASCII compatibility)
+		content = content[:config.MaxLength-3] + "..."
 	}
 
 	return content

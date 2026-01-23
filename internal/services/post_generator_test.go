@@ -446,3 +446,137 @@ func TestPostGenerator_PromptIncludesCommitMetadata(t *testing.T) {
 		t.Error("Prompt should include repository information")
 	}
 }
+
+// =============================================================================
+// Test: Bluesky Platform Configuration (TDD - RED)
+// =============================================================================
+
+func TestPlatformBluesky_ConstantExists(t *testing.T) {
+	// PlatformBluesky constant should exist and equal "bluesky"
+	if PlatformBluesky != "bluesky" {
+		t.Errorf("Expected PlatformBluesky to be 'bluesky', got '%s'", PlatformBluesky)
+	}
+}
+
+func TestPlatformBluesky_ConfigExists(t *testing.T) {
+	// platformConfigs should contain a Bluesky entry
+	config, ok := platformConfigs[PlatformBluesky]
+	if !ok {
+		t.Fatal("Expected platformConfigs to contain Bluesky entry")
+	}
+
+	if config.Name != "Bluesky" {
+		t.Errorf("Expected Bluesky config Name to be 'Bluesky', got '%s'", config.Name)
+	}
+}
+
+func TestPlatformBluesky_MaxLength300(t *testing.T) {
+	// Bluesky has a 300 character limit
+	config, ok := platformConfigs[PlatformBluesky]
+	if !ok {
+		t.Fatal("Expected platformConfigs to contain Bluesky entry")
+	}
+
+	if config.MaxLength != 300 {
+		t.Errorf("Expected Bluesky MaxLength to be 300, got %d", config.MaxLength)
+	}
+}
+
+func TestPostGenerator_Bluesky_AcceptsPlatform(t *testing.T) {
+	// Generate() should accept 'bluesky' platform without error
+	mockClient := &MockChatClient{
+		Response: "Just shipped a new feature! Building in public. 🚀",
+	}
+
+	generator := NewPostGenerator(mockClient)
+
+	commit := &Commit{
+		ID:           "commit-123",
+		RepositoryID: "repo-456",
+		CommitSHA:    "abc123def456",
+		GitHubURL:    "https://github.com/test/repo/commit/abc123",
+		Message:      "feat: add new user onboarding flow",
+		Author:       "Jane Developer",
+		Timestamp:    time.Now(),
+	}
+
+	ctx := context.Background()
+	post, err := generator.Generate(ctx, PlatformBluesky, commit)
+
+	if err != nil {
+		t.Fatalf("Expected no error for Bluesky platform, got: %v", err)
+	}
+
+	if post == nil {
+		t.Fatal("Expected post, got nil")
+	}
+
+	if post.Platform != PlatformBluesky {
+		t.Errorf("Expected platform %s, got %s", PlatformBluesky, post.Platform)
+	}
+}
+
+func TestPostGenerator_Bluesky_Enforces300CharLimit(t *testing.T) {
+	// Bluesky posts must be <=300 characters
+	// Generate content that's too long to verify truncation
+	longContent := strings.Repeat("x", 350)
+
+	mockClient := &MockChatClient{
+		Response: longContent,
+	}
+
+	generator := NewPostGenerator(mockClient)
+
+	commit := &Commit{
+		ID:           "commit-123",
+		RepositoryID: "repo-456",
+		CommitSHA:    "abc123def456",
+		GitHubURL:    "https://github.com/test/repo/commit/abc123",
+		Message:      "feat: add new feature",
+		Author:       "Jane Developer",
+		Timestamp:    time.Now(),
+	}
+
+	ctx := context.Background()
+	post, err := generator.Generate(ctx, PlatformBluesky, commit)
+
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	// Bluesky strict limit: 300 characters
+	if len(post.Content) > 300 {
+		t.Errorf("Bluesky post too long: %d chars (max 300)", len(post.Content))
+	}
+}
+
+func TestPostGenerator_Bluesky_PromptSpecifiesConstraints(t *testing.T) {
+	// Prompt should specify Bluesky-specific constraints
+	mockClient := &MockChatClient{
+		Response: "Shipped: new onboarding flow! 🎉",
+	}
+
+	generator := NewPostGenerator(mockClient)
+
+	commit := &Commit{
+		ID:           "commit-123",
+		RepositoryID: "repo-456",
+		CommitSHA:    "abc123def456",
+		GitHubURL:    "https://github.com/test/repo/commit/abc123",
+		Message:      "feat: add new user onboarding flow",
+		Author:       "Jane Developer",
+		Timestamp:    time.Now(),
+	}
+
+	ctx := context.Background()
+	_, err := generator.Generate(ctx, PlatformBluesky, commit)
+
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	// Verify prompt specified Bluesky constraints
+	if !strings.Contains(mockClient.RecordedPrompt, "300") || !strings.Contains(mockClient.RecordedPrompt, "Bluesky") {
+		t.Error("Prompt should specify Bluesky 300 character limit")
+	}
+}
