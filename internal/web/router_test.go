@@ -2164,17 +2164,21 @@ func (s *MockWebhookDeliveryStore) AddDelivery(repoID string, delivery *WebhookD
 	s.deliveries[repoID] = append(s.deliveries[repoID], delivery)
 }
 
-func (s *MockWebhookDeliveryStore) CreateDelivery(ctx context.Context, repoID, eventType string, payload []byte, statusCode int, errorMessage *string) (*WebhookDelivery, error) {
+func (s *MockWebhookDeliveryStore) CreateDelivery(ctx context.Context, params CreateDeliveryParams) (*WebhookDelivery, error) {
 	delivery := &WebhookDelivery{
-		ID:           fmt.Sprintf("delivery-%d", len(s.deliveries[repoID])+1),
-		RepositoryID: repoID,
-		EventType:    eventType,
-		Payload:      string(payload),
-		StatusCode:   statusCode,
-		ErrorMessage: errorMessage,
-		IsSuccess:    statusCode >= 200 && statusCode < 300,
+		ID:           fmt.Sprintf("delivery-%d", len(s.deliveries[params.RepositoryID])+1),
+		RepositoryID: params.RepositoryID,
+		DeliveryID:   params.DeliveryID,
+		EventType:    params.EventType,
+		Payload:      string(params.Payload),
+		StatusCode:   params.StatusCode,
+		ErrorMessage: params.ErrorMessage,
+		IsSuccess:    params.StatusCode >= 200 && params.StatusCode < 300,
+		Ref:          params.Ref,
+		BeforeSHA:    params.BeforeSHA,
+		AfterSHA:     params.AfterSHA,
 	}
-	s.deliveries[repoID] = append(s.deliveries[repoID], delivery)
+	s.deliveries[params.RepositoryID] = append(s.deliveries[params.RepositoryID], delivery)
 	return delivery, nil
 }
 

@@ -251,6 +251,7 @@ func (t *HTTPWebhookTester) TestWebhook(ctx context.Context, webhookURL, secret 
 type WebhookDelivery struct {
 	ID           string
 	RepositoryID string
+	DeliveryID   string
 	EventType    string
 	Payload      string
 	StatusCode   int
@@ -258,12 +259,28 @@ type WebhookDelivery struct {
 	ProcessedAt  *string
 	CreatedAt    string
 	IsSuccess    bool
+	Ref          *string
+	BeforeSHA    *string
+	AfterSHA     *string
+}
+
+// CreateDeliveryParams contains parameters for creating a webhook delivery
+type CreateDeliveryParams struct {
+	RepositoryID string
+	DeliveryID   string
+	EventType    string
+	Payload      []byte
+	StatusCode   int
+	ErrorMessage *string
+	Ref          *string
+	BeforeSHA    *string
+	AfterSHA     *string
 }
 
 // WebhookDeliveryStore interface for webhook delivery operations
 type WebhookDeliveryStore interface {
 	ListDeliveriesByRepository(ctx context.Context, repoID string, limit int) ([]*WebhookDelivery, error)
-	CreateDelivery(ctx context.Context, repoID, eventType string, payload []byte, statusCode int, errorMessage *string) (*WebhookDelivery, error)
+	CreateDelivery(ctx context.Context, params CreateDeliveryParams) (*WebhookDelivery, error)
 }
 
 // ConnectionService interface for connection management operations
@@ -2072,7 +2089,14 @@ func (r *Router) handleWebhookTest(w http.ResponseWriter, req *http.Request) {
 				errorMsg = &result.Error
 			}
 			// Ignore errors from recording - test result is what matters to user
-			_, _ = r.webhookDeliveryStore.CreateDelivery(req.Context(), repoID, "ping", testPayload, statusCode, errorMsg)
+			_, _ = r.webhookDeliveryStore.CreateDelivery(req.Context(), CreateDeliveryParams{
+				RepositoryID: repoID,
+				DeliveryID:   fmt.Sprintf("test-ping-%d", time.Now().UnixNano()),
+				EventType:    "ping",
+				Payload:      testPayload,
+				StatusCode:   statusCode,
+				ErrorMessage: errorMsg,
+			})
 		}
 	} else {
 		result = WebhookTestResult{

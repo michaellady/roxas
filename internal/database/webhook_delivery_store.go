@@ -10,7 +10,7 @@ import (
 type WebhookDelivery struct {
 	ID           string          `json:"id"`
 	RepositoryID string          `json:"repository_id"`
-	DeliveryID   string          `json:"delivery_id"`    // X-GitHub-Delivery header for idempotency
+	DeliveryID   string          `json:"delivery_id"` // X-GitHub-Delivery header for idempotency
 	EventType    string          `json:"event_type"`
 	Ref          *string         `json:"ref,omitempty"`        // Git ref (branch) for push events
 	BeforeSHA    *string         `json:"before_sha,omitempty"` // Commit SHA before push
@@ -49,20 +49,20 @@ func NewWebhookDeliveryStore(pool *Pool) *WebhookDeliveryStore {
 // CreateDeliveryParams holds parameters for creating a webhook delivery
 type CreateDeliveryParams struct {
 	RepositoryID string
-	DeliveryID   string          // X-GitHub-Delivery header
+	DeliveryID   string // X-GitHub-Delivery header
 	EventType    string
-	Ref          *string         // Git ref for push events
-	BeforeSHA    *string         // Commit SHA before push
-	AfterSHA     *string         // Commit SHA after push
+	Ref          *string // Git ref for push events
+	BeforeSHA    *string // Commit SHA before push
+	AfterSHA     *string // Commit SHA after push
 	Payload      json.RawMessage
 	StatusCode   int
 	ErrorMessage *string
 }
 
-// CreateDelivery records a new webhook delivery
-func (s *WebhookDeliveryStore) CreateDelivery(ctx context.Context, repoID, eventType string, payload json.RawMessage, statusCode int, errorMessage *string) (*WebhookDelivery, error) {
+// CreateDeliveryLegacy records a new webhook delivery using legacy parameters
+func (s *WebhookDeliveryStore) CreateDeliveryLegacy(ctx context.Context, repoID, eventType string, payload json.RawMessage, statusCode int, errorMessage *string) (*WebhookDelivery, error) {
 	// Legacy method - generates a unique delivery_id
-	return s.CreateDeliveryWithParams(ctx, CreateDeliveryParams{
+	return s.CreateDelivery(ctx, CreateDeliveryParams{
 		RepositoryID: repoID,
 		DeliveryID:   "", // Will be set to UUID by the query
 		EventType:    eventType,
@@ -72,8 +72,8 @@ func (s *WebhookDeliveryStore) CreateDelivery(ctx context.Context, repoID, event
 	})
 }
 
-// CreateDeliveryWithParams records a new webhook delivery with full parameters including idempotency fields
-func (s *WebhookDeliveryStore) CreateDeliveryWithParams(ctx context.Context, params CreateDeliveryParams) (*WebhookDelivery, error) {
+// CreateDelivery records a new webhook delivery with full parameters including idempotency fields
+func (s *WebhookDeliveryStore) CreateDelivery(ctx context.Context, params CreateDeliveryParams) (*WebhookDelivery, error) {
 	var delivery WebhookDelivery
 	now := time.Now()
 
@@ -105,6 +105,16 @@ func (s *WebhookDeliveryStore) ExistsByDeliveryID(ctx context.Context, repoID, d
 	err := s.pool.QueryRow(ctx,
 		`SELECT EXISTS(SELECT 1 FROM webhook_deliveries WHERE repository_id = $1 AND delivery_id = $2)`,
 		repoID, deliveryID,
+	).Scan(&exists)
+	return exists, err
+}
+
+// DeliveryExists checks if a delivery with the given delivery_id already exists (global lookup)
+func (s *WebhookDeliveryStore) DeliveryExists(ctx context.Context, deliveryID string) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM webhook_deliveries WHERE delivery_id = $1)`,
+		deliveryID,
 	).Scan(&exists)
 	return exists, err
 }
