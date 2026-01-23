@@ -135,6 +135,7 @@ jobs:
           TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           TF_VAR_linkedin_access_token: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
           TF_VAR_webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
+          TF_VAR_credential_encryption_key: ${{ secrets.CREDENTIAL_ENCRYPTION_KEY }}
           TF_VAR_function_name: roxas-webhook-handler-pr-${{ env.PR_NUMBER }}
           TF_VAR_environment: dev
           TF_VAR_pr_number: ${{ env.PR_NUMBER }}
@@ -148,6 +149,7 @@ jobs:
           TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           TF_VAR_linkedin_access_token: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
           TF_VAR_webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
+          TF_VAR_credential_encryption_key: ${{ secrets.CREDENTIAL_ENCRYPTION_KEY }}
           TF_VAR_function_name: roxas-webhook-handler-pr-${{ env.PR_NUMBER }}
           TF_VAR_environment: dev
           TF_VAR_pr_number: ${{ env.PR_NUMBER }}

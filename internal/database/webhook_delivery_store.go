@@ -175,3 +175,31 @@ func (s *WebhookDeliveryStore) GetDeliveryByID(ctx context.Context, id string) (
 
 	return &d, nil
 }
+
+// =============================================================================
+// IdempotencyStore interface methods (for DraftCreatingWebhookHandler)
+// =============================================================================
+
+// CheckDeliveryProcessed checks if a delivery with the given ID has already been processed.
+// This implements the IdempotencyStore interface for webhook deduplication.
+func (s *WebhookDeliveryStore) CheckDeliveryProcessed(ctx context.Context, deliveryID string) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM webhook_deliveries WHERE delivery_id = $1)`,
+		deliveryID,
+	).Scan(&exists)
+	return exists, err
+}
+
+// MarkDeliveryProcessed records that a delivery has been processed.
+// This implements the IdempotencyStore interface for webhook deduplication.
+// It creates a minimal delivery record to mark the delivery_id as processed.
+func (s *WebhookDeliveryStore) MarkDeliveryProcessed(ctx context.Context, deliveryID, repoID string) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO webhook_deliveries (repository_id, delivery_id, event_type, payload, status_code, processed_at)
+		 VALUES ($1, $2, 'push', '{}', 200, NOW())
+		 ON CONFLICT (delivery_id) DO NOTHING`,
+		repoID, deliveryID,
+	)
+	return err
+}

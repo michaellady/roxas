@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -640,13 +641,13 @@ func (h *DraftCreatingWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.R
 			)
 		}
 
-		// Trigger async AI generation (if AI generator configured)
+		// Trigger AI generation synchronously (Lambda kills goroutines on handler return)
+		// TODO: Consider async via SQS/Lambda invoke for better performance
 		if h.aiGenerator != nil {
-			// Fire and forget - don't block on AI generation
-			go func() {
-				ctx := context.Background()
-				_ = h.aiGenerator.TriggerGeneration(ctx, draft.ID)
-			}()
+			if err := h.aiGenerator.TriggerGeneration(r.Context(), draft.ID); err != nil {
+				// Log but don't fail - draft is already created
+				log.Printf("AI generation failed for draft %s: %v", draft.ID, err)
+			}
 		}
 
 		response := DraftWebhookResponse{Status: "ok", Message: "draft created", DraftID: draft.ID}

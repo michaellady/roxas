@@ -437,6 +437,19 @@ type PlatformCredentials struct {
 	Scopes         string
 }
 
+// AIRegenerator interface for regenerating AI content for drafts
+type AIRegenerator interface {
+	// RegenerateDraft regenerates the AI content for a draft and updates it
+	RegenerateDraft(ctx context.Context, draftID string) error
+}
+
+// SocialPoster interface for posting content to social media platforms
+type SocialPoster interface {
+	// PostDraft posts the draft content to the configured social platform
+	// Returns the URL of the created post
+	PostDraft(ctx context.Context, userID, draftID string) (postURL string, err error)
+}
+
 // Router is the main HTTP router for the web UI
 type Router struct {
 	mux                  *http.ServeMux
@@ -461,6 +474,8 @@ type Router struct {
 	githubRepoLister     GitHubRepoLister
 	threadsOAuth         ThreadsOAuthConnector
 	oauthCallbackURL     string // Base URL for OAuth callbacks (e.g., "https://app.example.com")
+	aiRegenerator        AIRegenerator
+	socialPoster         SocialPoster
 }
 
 // NewRouter creates a new web router with all routes configured (no user store)
@@ -510,6 +525,59 @@ func NewRouterWithActivityLister(userStore UserStore, repoStore RepositoryStore,
 		webhookURL:     webhookURL,
 	}
 	r.setupRoutes()
+	return r
+}
+
+// WithDraftLister adds a draft lister to the router (builder pattern)
+func (r *Router) WithDraftLister(draftLister DraftLister) *Router {
+	r.draftLister = draftLister
+	return r
+}
+
+// WithDraftStore adds a draft store to the router (builder pattern)
+// Required for draft preview, edit, delete, regenerate, and post operations
+func (r *Router) WithDraftStore(draftStore DraftStore) *Router {
+	r.draftStore = draftStore
+	return r
+}
+
+// WithAIRegenerator adds an AI regenerator to the router (builder pattern)
+// Required for regenerating draft content
+func (r *Router) WithAIRegenerator(aiRegenerator AIRegenerator) *Router {
+	r.aiRegenerator = aiRegenerator
+	return r
+}
+
+// WithSocialPoster adds a social poster to the router (builder pattern)
+// Required for posting drafts to social media platforms
+func (r *Router) WithSocialPoster(socialPoster SocialPoster) *Router {
+	r.socialPoster = socialPoster
+	return r
+}
+
+// WithThreadsOAuth adds Threads OAuth support to the router (builder pattern)
+// Required for connecting Threads accounts
+func (r *Router) WithThreadsOAuth(threadsOAuth ThreadsOAuthConnector, callbackURL string) *Router {
+	r.threadsOAuth = threadsOAuth
+	r.oauthCallbackURL = callbackURL
+	return r
+}
+
+// WithBlueskyConnector configures the router with a Bluesky connector for app password auth
+func (r *Router) WithBlueskyConnector(connector BlueskyConnector) *Router {
+	r.blueskyConnector = connector
+	return r
+}
+
+// WithConnectionLister configures the router with a connection lister for displaying user connections
+func (r *Router) WithConnectionLister(lister ConnectionLister) *Router {
+	r.connectionLister = lister
+	return r
+}
+
+// WithConnectionService configures the router with a connection service for disconnect operations
+func (r *Router) WithConnectionService(service ConnectionService) *Router {
+	r.connectionService = service
 	return r
 }
 
@@ -1055,6 +1123,11 @@ func (r *Router) handleConnections(w http.ResponseWriter, req *http.Request) {
 	})
 }
 
+// ConnectionsNewData holds data for the connections_new page
+type ConnectionsNewData struct {
+	ThreadsEnabled bool
+}
+
 func (r *Router) handleConnectionsNew(w http.ResponseWriter, req *http.Request) {
 	// Check for auth cookie
 	cookie, err := req.Cookie(auth.CookieName)
@@ -1069,9 +1142,15 @@ func (r *Router) handleConnectionsNew(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 
+	// Check which platforms are enabled
+	data := ConnectionsNewData{
+		ThreadsEnabled: r.threadsOAuth != nil,
+	}
+
 	r.renderPage(w, "connections_new.html", PageData{
 		Title: "Connect Account",
 		User:  &UserData{ID: claims.UserID, Email: claims.Email},
+		Data:  data,
 	})
 }
 
@@ -1470,7 +1549,7 @@ func (r *Router) handleRepositoriesNewPost(w http.ResponseWriter, req *http.Requ
 	}
 
 	// Build webhook URL
-	webhookURL := fmt.Sprintf("%s/webhook/%s", r.webhookURL, repo.ID)
+	webhookURL := fmt.Sprintf("%s/webhooks/github/%s", r.webhookURL, repo.ID)
 
 	// Redirect to success page with query params
 	http.Redirect(w, req, fmt.Sprintf("/repositories/success?webhook_url=%s&webhook_secret=%s",
@@ -1683,7 +1762,7 @@ func (r *Router) handleRepositoryView(w http.ResponseWriter, req *http.Request) 
 	repoName := extractRepoName(repo.GitHubURL)
 
 	// Build webhook URL
-	webhookURL := fmt.Sprintf("%s/webhook/%s", r.webhookURL, repo.ID)
+	webhookURL := fmt.Sprintf("%s/webhooks/github/%s", r.webhookURL, repo.ID)
 
 	r.renderPage(w, "repository_view.html", PageData{
 		Title: repoName,
@@ -2051,7 +2130,7 @@ func (r *Router) handleWebhookTest(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Build webhook URL
-	webhookURL := fmt.Sprintf("%s/webhook/%s", r.webhookURL, repo.ID)
+	webhookURL := fmt.Sprintf("%s/webhooks/github/%s", r.webhookURL, repo.ID)
 
 	// Test the webhook
 	var result WebhookTestResult
@@ -2222,7 +2301,7 @@ func (r *Router) handleWebhookRegenerate(w http.ResponseWriter, req *http.Reques
 	repoName := extractRepoName(repo.GitHubURL)
 
 	// Build webhook URL
-	webhookURL := fmt.Sprintf("%s/webhook/%s", r.webhookURL, repo.ID)
+	webhookURL := fmt.Sprintf("%s/webhooks/github/%s", r.webhookURL, repo.ID)
 
 	// Render success page showing the new secret (one-time display)
 	r.renderPage(w, "webhook_regenerate.html", PageData{
@@ -3019,9 +3098,20 @@ func (r *Router) handleDraftRegenerate(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
-	// TODO: Regenerate draft content using AI generator
-	// For now, just redirect back to preview
-	http.Redirect(w, req, "/drafts/"+draftID, http.StatusSeeOther)
+	// Check if AI regenerator is available
+	if r.aiRegenerator == nil {
+		http.Error(w, "AI regeneration not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Regenerate draft content using AI generator
+	if err := r.aiRegenerator.RegenerateDraft(req.Context(), draftID); err != nil {
+		http.Error(w, "Failed to regenerate draft", http.StatusInternalServerError)
+		return
+	}
+
+	// Redirect back to draft preview with success message
+	http.Redirect(w, req, "/drafts/"+draftID+"?regenerated=true", http.StatusSeeOther)
 }
 
 func (r *Router) handleDraftDelete(w http.ResponseWriter, req *http.Request) {
@@ -3117,10 +3207,19 @@ func (r *Router) handleDraftPost(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Post to social media if configured
+	if r.socialPoster != nil {
+		_, err = r.socialPoster.PostDraft(req.Context(), claims.UserID, draftID)
+		if err != nil {
+			http.Error(w, "Failed to post to social media: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
 	// Update draft status to posted
 	_, err = r.draftStore.UpdateDraftStatus(req.Context(), draftID, "posted")
 	if err != nil {
-		http.Error(w, "Failed to publish draft", http.StatusInternalServerError)
+		http.Error(w, "Failed to update draft status", http.StatusInternalServerError)
 		return
 	}
 

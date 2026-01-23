@@ -259,3 +259,49 @@ func (s *DraftStore) DeleteDraft(ctx context.Context, draftID string) error {
 
 	return nil
 }
+
+// =============================================================================
+// DraftWebhookStore interface methods (for DraftCreatingWebhookHandler)
+// =============================================================================
+
+// CreateDraftFromPush creates a new draft from a webhook push event.
+// This is used by DraftCreatingWebhookHandler and creates the draft with empty generated_content
+// which will be populated asynchronously by the AI generator.
+func (s *DraftStore) CreateDraftFromPush(ctx context.Context, userID, repoID, ref, beforeSHA, afterSHA string, commitSHAs []string) (*Draft, error) {
+	// Delegate to CreateDraft with empty content - AI will generate it async
+	return s.CreateDraft(ctx, userID, repoID, ref, beforeSHA, afterSHA, commitSHAs, "")
+}
+
+// GetDraftByPushSignature retrieves a draft by its push signature (repo_id + before_sha + after_sha).
+// This implements dual idempotency for webhook handling - if the same push is received twice,
+// we return the existing draft instead of creating a duplicate.
+func (s *DraftStore) GetDraftByPushSignature(ctx context.Context, repoID, beforeSHA, afterSHA string) (*Draft, error) {
+	var draft Draft
+	var createdAt, updatedAt time.Time
+	var commitSHAsJSON []byte
+
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, user_id, repository_id, ref, before_sha, after_sha, commit_shas,
+		        generated_content, edited_content, status, created_at, updated_at
+		 FROM drafts
+		 WHERE repository_id = $1 AND before_sha = $2 AND after_sha = $3`,
+		repoID, beforeSHA, afterSHA,
+	).Scan(&draft.ID, &draft.UserID, &draft.RepositoryID, &draft.Ref, &draft.BeforeSHA, &draft.AfterSHA,
+		&commitSHAsJSON, &draft.GeneratedContent, &draft.EditedContent, &draft.Status, &createdAt, &updatedAt)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil // Not found - return nil, nil (not an error)
+		}
+		return nil, err
+	}
+
+	if err := json.Unmarshal(commitSHAsJSON, &draft.CommitSHAs); err != nil {
+		return nil, err
+	}
+
+	draft.CreatedAt = createdAt
+	draft.UpdatedAt = updatedAt
+
+	return &draft, nil
+}

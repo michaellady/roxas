@@ -1297,7 +1297,7 @@ func TestWebUI_AddRepositoryAndVerifyWebhook(t *testing.T) {
 	}
 
 	// Verify webhook URL is displayed
-	expectedWebhookURL := testWebhookBaseURL + "/webhook/" + createdRepo.ID
+	expectedWebhookURL := testWebhookBaseURL + "/webhooks/github/" + createdRepo.ID
 	if !strings.Contains(body, expectedWebhookURL) {
 		t.Fatalf("Step 4 FAILED: Expected webhook URL '%s' in page, body: %s", expectedWebhookURL, body[:min(len(body), 500)])
 	}
@@ -1559,7 +1559,7 @@ func TestRouter_GetRepositoriesSuccess_WithAuth_ShowsConfig(t *testing.T) {
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 	token, _ := generateToken(user.ID, user.Email)
 
-	req := httptest.NewRequest(http.MethodGet, "/repositories/success?webhook_url=https://roxas.ai/webhook/123&webhook_secret=secret456", nil)
+	req := httptest.NewRequest(http.MethodGet, "/repositories/success?webhook_url=https://roxas.ai/webhooks/github/123&webhook_secret=secret456", nil)
 	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
 	rr := httptest.NewRecorder()
 
@@ -1577,7 +1577,7 @@ func TestRouter_GetRepositoriesSuccess_WithAuth_ShowsConfig(t *testing.T) {
 	}
 
 	// Should display webhook URL
-	if !strings.Contains(body, "https://roxas.ai/webhook/123") {
+	if !strings.Contains(body, "https://roxas.ai/webhooks/github/123") {
 		t.Errorf("Expected webhook URL in response")
 	}
 
@@ -1788,7 +1788,7 @@ func TestRouter_GetRepositoryView_WithAuth_ShowsRepoDetails(t *testing.T) {
 		t.Errorf("Expected GitHub URL in response")
 	}
 	// Should show webhook URL
-	if !strings.Contains(body, "https://example.com/webhook/"+repo.ID) {
+	if !strings.Contains(body, "https://example.com/webhooks/github/"+repo.ID) {
 		t.Errorf("Expected webhook URL in response")
 	}
 	// Should show status
@@ -2415,7 +2415,7 @@ func TestRouter_PostWebhookTest_Success_ReturnsOK(t *testing.T) {
 	}
 
 	// Verify the webhook tester was called with correct URL
-	expectedURL := "https://example.com/webhook/" + repo.ID
+	expectedURL := "https://example.com/webhooks/github/" + repo.ID
 	if webhookTester.GetLastURL() != expectedURL {
 		t.Errorf("Expected webhook tester to be called with %s, got %s", expectedURL, webhookTester.GetLastURL())
 	}
@@ -2664,7 +2664,7 @@ func TestRouter_PostWebhookRegenerate_Success_ShowsNewSecret(t *testing.T) {
 	}
 
 	// Should show webhook URL
-	if !strings.Contains(body, "https://roxas.ai/webhook/"+repo.ID) {
+	if !strings.Contains(body, "https://roxas.ai/webhooks/github/"+repo.ID) {
 		t.Errorf("Expected webhook URL in response")
 	}
 
@@ -3472,6 +3472,26 @@ func (s *MockDraftStore) AddDraft(draft *Draft) {
 	s.drafts[draft.ID] = draft
 }
 
+// MockAIRegenerator implements AIRegenerator interface for testing
+type MockAIRegenerator struct {
+	regenerateCalled bool
+	lastDraftID      string
+	shouldError      bool
+}
+
+func NewMockAIRegenerator() *MockAIRegenerator {
+	return &MockAIRegenerator{}
+}
+
+func (m *MockAIRegenerator) RegenerateDraft(ctx context.Context, draftID string) error {
+	m.regenerateCalled = true
+	m.lastDraftID = draftID
+	if m.shouldError {
+		return fmt.Errorf("mock regeneration error")
+	}
+	return nil
+}
+
 // =============================================================================
 // Draft Preview Page - Authentication Tests
 // =============================================================================
@@ -3835,7 +3855,8 @@ func TestRouter_GetDraftPreview_HasPostButton(t *testing.T) {
 func TestRouter_PostDraftRegenerate_RegeneratesContent(t *testing.T) {
 	userStore := NewMockUserStore()
 	draftStore := NewMockDraftStore()
-	router := NewRouterWithDraftStore(userStore, draftStore)
+	aiRegenerator := NewMockAIRegenerator()
+	router := NewRouterWithDraftStore(userStore, draftStore).WithAIRegenerator(aiRegenerator)
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
@@ -3857,9 +3878,48 @@ func TestRouter_PostDraftRegenerate_RegeneratesContent(t *testing.T) {
 
 	router.ServeHTTP(rr, req)
 
-	// Should redirect back to draft preview or return success
+	// Should redirect back to draft preview
 	if rr.Code != http.StatusSeeOther && rr.Code != http.StatusOK {
 		t.Errorf("Expected redirect or success status, got %d", rr.Code)
+	}
+
+	// Verify AI regenerator was called
+	if !aiRegenerator.regenerateCalled {
+		t.Error("Expected AI regenerator to be called")
+	}
+	if aiRegenerator.lastDraftID != draft.ID {
+		t.Errorf("Expected regenerator to be called with draft ID %s, got %s", draft.ID, aiRegenerator.lastDraftID)
+	}
+}
+
+func TestRouter_PostDraftRegenerate_WithoutAIRegenerator_Returns503(t *testing.T) {
+	userStore := NewMockUserStore()
+	draftStore := NewMockDraftStore()
+	router := NewRouterWithDraftStore(userStore, draftStore) // No AI regenerator
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+
+	draft := &Draft{
+		ID:        uuid.New().String(),
+		UserID:    user.ID,
+		Content:   "Original content",
+		Status:    "draft",
+		CharLimit: 500,
+		CreatedAt: time.Now(),
+	}
+	draftStore.AddDraft(draft)
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodPost, "/drafts/"+draft.ID+"/regenerate", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should return 503 when AI regenerator is not configured
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected 503 Service Unavailable, got %d", rr.Code)
 	}
 }
 
