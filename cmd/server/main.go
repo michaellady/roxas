@@ -176,6 +176,97 @@ func (a *commitStoreAdapter) GetCommitBySHA(ctx context.Context, repoID, sha str
 	return &commit, nil
 }
 
+// draftWebhookStoreAdapter adapts database.DraftStore to handlers.DraftWebhookStore interface
+type draftWebhookStoreAdapter struct {
+	store *database.DraftStore
+}
+
+func (a *draftWebhookStoreAdapter) CreateDraftFromPush(ctx context.Context, userID, repoID, ref, beforeSHA, afterSHA string, commitSHAs []string) (*handlers.WebhookDraft, error) {
+	draft, err := a.store.CreateDraftFromPush(ctx, userID, repoID, ref, beforeSHA, afterSHA, commitSHAs)
+	if err != nil {
+		return nil, err
+	}
+	return convertDraftToWebhookDraft(draft), nil
+}
+
+func (a *draftWebhookStoreAdapter) GetDraftByPushSignature(ctx context.Context, repoID, beforeSHA, afterSHA string) (*handlers.WebhookDraft, error) {
+	draft, err := a.store.GetDraftByPushSignature(ctx, repoID, beforeSHA, afterSHA)
+	if err != nil {
+		return nil, err
+	}
+	if draft == nil {
+		return nil, nil
+	}
+	return convertDraftToWebhookDraft(draft), nil
+}
+
+func convertDraftToWebhookDraft(d *database.Draft) *handlers.WebhookDraft {
+	editedContent := ""
+	if d.EditedContent != nil {
+		editedContent = *d.EditedContent
+	}
+	return &handlers.WebhookDraft{
+		ID:               d.ID,
+		UserID:           d.UserID,
+		RepositoryID:     d.RepositoryID,
+		Ref:              d.Ref,
+		BeforeSHA:        d.BeforeSHA,
+		AfterSHA:         d.AfterSHA,
+		CommitSHAs:       d.CommitSHAs,
+		GeneratedContent: d.GeneratedContent,
+		EditedContent:    editedContent,
+		Status:           d.Status,
+		CreatedAt:        d.CreatedAt,
+		UpdatedAt:        d.UpdatedAt,
+	}
+}
+
+// idempotencyStoreAdapter adapts database.WebhookDeliveryStore to handlers.IdempotencyStore interface
+type idempotencyStoreAdapter struct {
+	store *database.WebhookDeliveryStore
+}
+
+func (a *idempotencyStoreAdapter) CheckDeliveryProcessed(ctx context.Context, deliveryID string) (bool, error) {
+	return a.store.CheckDeliveryProcessed(ctx, deliveryID)
+}
+
+func (a *idempotencyStoreAdapter) MarkDeliveryProcessed(ctx context.Context, deliveryID, repoID string) error {
+	return a.store.MarkDeliveryProcessed(ctx, deliveryID, repoID)
+}
+
+// activityStoreAdapter adapts database.ActivityStore to handlers.ActivityStore interface
+type activityStoreAdapter struct {
+	store *database.ActivityStore
+}
+
+func (a *activityStoreAdapter) CreateActivity(ctx context.Context, userID, activityType string, draftID *string, message string) (*handlers.WebhookActivity, error) {
+	// Database CreateActivity takes: userID, activityType, draftID, postID, platform, message (all *string for optional fields)
+	// Handler CreateActivity takes: userID, activityType, draftID *string, message string
+	activity, err := a.store.CreateActivity(ctx, userID, activityType, draftID, nil, nil, &message)
+	if err != nil {
+		return nil, err
+	}
+	// Convert database.Activity to handlers.WebhookActivity
+	platform := ""
+	if activity.Platform != nil {
+		platform = *activity.Platform
+	}
+	msg := ""
+	if activity.Message != nil {
+		msg = *activity.Message
+	}
+	return &handlers.WebhookActivity{
+		ID:        activity.ID,
+		UserID:    activity.UserID,
+		Type:      activity.Type,
+		DraftID:   activity.DraftID,
+		PostID:    activity.PostID,
+		Platform:  platform,
+		Message:   msg,
+		CreatedAt: activity.CreatedAt,
+	}, nil
+}
+
 // createRouter builds the combined HTTP router for both web UI and webhook
 func createRouter(config Config, dbPool *database.Pool) http.Handler {
 	mux := http.NewServeMux()
@@ -185,12 +276,24 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 
 	// Multi-tenant webhook endpoint: /webhooks/github/{repo_id}
 	// Each repository has its own webhook secret stored in the database
+	// Uses DraftCreatingWebhookHandler to create drafts and trigger AI generation
 	if dbPool != nil {
 		repoStore := database.NewRepositoryStore(dbPool)
-		commitStore := &commitStoreAdapter{pool: dbPool}
-		// Note: delivery store is optional - passing nil skips delivery recording
-		multiTenantHandler := handlers.NewMultiTenantWebhookHandler(repoStore, commitStore)
-		mux.Handle("/webhooks/github/", multiTenantHandler)
+		draftStore := database.NewDraftStore(dbPool)
+		deliveryStore := database.NewWebhookDeliveryStore(dbPool)
+		activityStore := database.NewActivityStore(dbPool)
+
+		// Create adapters to bridge database types to handler interfaces
+		draftWebhookStore := &draftWebhookStoreAdapter{store: draftStore}
+		idempotencyStore := &idempotencyStoreAdapter{store: deliveryStore}
+		activityStoreForWebhook := &activityStoreAdapter{store: activityStore}
+
+		// Use DraftCreatingWebhookHandler which creates drafts on push events
+		draftHandler := handlers.NewDraftCreatingWebhookHandler(repoStore, draftWebhookStore, idempotencyStore).
+			WithActivityStore(activityStoreForWebhook)
+		// Note: WithAIGenerator not configured yet - AI generation will need separate implementation
+
+		mux.Handle("/webhooks/github/", draftHandler)
 	}
 
 	// Web UI routes (handles everything else including /, /login, /signup, /dashboard, /logout)
