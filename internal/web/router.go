@@ -552,6 +552,12 @@ func (r *Router) WithBlueskyConnector(connector BlueskyConnector) *Router {
 	return r
 }
 
+// WithConnectionLister configures the router with a connection lister for displaying user connections
+func (r *Router) WithConnectionLister(lister ConnectionLister) *Router {
+	r.connectionLister = lister
+	return r
+}
+
 // NewRouterWithWebhookTester creates a new web router with webhook tester support
 func NewRouterWithWebhookTester(userStore UserStore, repoStore RepositoryStore, commitLister CommitLister, postLister PostLister, secretGen SecretGenerator, webhookURL string, webhookTester WebhookTester) *Router {
 	r := &Router{

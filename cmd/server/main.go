@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/awslabs/aws-lambda-go-api-proxy/httpadapter"
@@ -600,6 +601,42 @@ func (a *blueskyConnectorAdapter) Connect(ctx context.Context, userID, handle, a
 	}, nil
 }
 
+// connectionListerAdapter implements web.ConnectionLister to list user's social connections
+type connectionListerAdapter struct {
+	credentialStore services.CredentialStore
+}
+
+func (a *connectionListerAdapter) ListConnectionsWithRateLimits(ctx context.Context, userID string) ([]*web.ConnectionData, error) {
+	var connections []*web.ConnectionData
+
+	// Check for Bluesky connection
+	if creds, err := a.credentialStore.GetCredentials(ctx, userID, "bluesky"); err == nil && creds != nil {
+		connections = append(connections, &web.ConnectionData{
+			Platform:    "bluesky",
+			Status:      "connected",
+			DisplayName: creds.RefreshToken, // We store handle in RefreshToken
+			IsHealthy:   true,
+		})
+	}
+
+	// Check for Threads connection
+	if creds, err := a.credentialStore.GetCredentials(ctx, userID, "threads"); err == nil && creds != nil {
+		displayName := creds.PlatformUserID
+		if displayName == "" {
+			displayName = "Connected"
+		}
+		connections = append(connections, &web.ConnectionData{
+			Platform:    "threads",
+			Status:      "connected",
+			DisplayName: displayName,
+			IsHealthy:   creds.TokenExpiresAt == nil || creds.TokenExpiresAt.After(time.Now()),
+			ExpiresSoon: creds.TokenExpiresAt != nil && creds.TokenExpiresAt.Before(time.Now().Add(7*24*time.Hour)),
+		})
+	}
+
+	return connections, nil
+}
+
 // createRouter builds the combined HTTP router for both web UI and webhook
 func createRouter(config Config, dbPool *database.Pool) http.Handler {
 	mux := http.NewServeMux()
@@ -711,6 +748,13 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 					}
 					router = router.WithBlueskyConnector(blueskyConnector)
 					log.Println("Bluesky connection enabled")
+
+					// Add connection lister to show user's connections
+					connectionLister := &connectionListerAdapter{
+						credentialStore: credentialStore,
+					}
+					router = router.WithConnectionLister(connectionLister)
+					log.Println("Connection listing enabled")
 				}
 			}
 		} else {
