@@ -496,6 +496,12 @@ func NewRouterWithActivityLister(userStore UserStore, repoStore RepositoryStore,
 	return r
 }
 
+// WithDraftLister adds a draft lister to the router (builder pattern)
+func (r *Router) WithDraftLister(draftLister DraftLister) *Router {
+	r.draftLister = draftLister
+	return r
+}
+
 // NewRouterWithWebhookTester creates a new web router with webhook tester support
 func NewRouterWithWebhookTester(userStore UserStore, repoStore RepositoryStore, commitLister CommitLister, postLister PostLister, secretGen SecretGenerator, webhookURL string, webhookTester WebhookTester) *Router {
 	r := &Router{

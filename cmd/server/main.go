@@ -267,6 +267,61 @@ func (a *activityStoreAdapter) CreateActivity(ctx context.Context, userID, activ
 	}, nil
 }
 
+// draftListerAdapter adapts database.DraftStore to web.DraftLister interface
+type draftListerAdapter struct {
+	draftStore *database.DraftStore
+	repoStore  *database.RepositoryStore
+}
+
+func (a *draftListerAdapter) ListDraftsByUser(ctx context.Context, userID string) ([]*web.DraftItem, error) {
+	drafts, err := a.draftStore.ListDraftsByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]*web.DraftItem, 0, len(drafts))
+	for _, d := range drafts {
+		// Get repo name for display
+		repoName := "Unknown Repository"
+		if repo, err := a.repoStore.GetRepositoryByID(ctx, d.RepositoryID); err == nil && repo != nil {
+			// Extract repo name from GitHub URL (e.g., "owner/repo" from "https://github.com/owner/repo")
+			repoName = extractRepoNameFromURL(repo.GitHubURL)
+		}
+
+		// Use generated content or edited content for preview
+		previewText := d.GeneratedContent
+		if d.EditedContent != nil && *d.EditedContent != "" {
+			previewText = *d.EditedContent
+		}
+		// Truncate for preview
+		if len(previewText) > 100 {
+			previewText = previewText[:100] + "..."
+		}
+		if previewText == "" {
+			previewText = "(Awaiting AI generation...)"
+		}
+
+		items = append(items, &web.DraftItem{
+			ID:          d.ID,
+			RepoName:    repoName,
+			PreviewText: previewText,
+			Platform:    "threads", // Default platform for now
+			CreatedAt:   d.CreatedAt,
+		})
+	}
+
+	return items, nil
+}
+
+func extractRepoNameFromURL(url string) string {
+	// Extract "owner/repo" from "https://github.com/owner/repo"
+	parts := strings.Split(url, "/")
+	if len(parts) >= 2 {
+		return parts[len(parts)-2] + "/" + parts[len(parts)-1]
+	}
+	return url
+}
+
 // createRouter builds the combined HTTP router for both web UI and webhook
 func createRouter(config Config, dbPool *database.Pool) http.Handler {
 	mux := http.NewServeMux()
@@ -305,8 +360,14 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 		commitStore := database.NewCommitStore(dbPool)
 		postStore := database.NewPostStore(dbPool)
 		activityStore := database.NewActivityStore(dbPool)
+		draftStore := database.NewDraftStore(dbPool)
 		secretGen := handlers.NewCryptoSecretGenerator()
-		webRouter = web.NewRouterWithActivityLister(userStore, repoStore, commitStore, postStore, activityStore, secretGen, config.WebhookBaseURL)
+
+		// Create draft lister adapter
+		draftLister := &draftListerAdapter{draftStore: draftStore, repoStore: repoStore}
+
+		webRouter = web.NewRouterWithActivityLister(userStore, repoStore, commitStore, postStore, activityStore, secretGen, config.WebhookBaseURL).
+			WithDraftLister(draftLister)
 	} else {
 		// No database - use router without stores (auth will show "not configured")
 		log.Println("WARNING: Database unavailable - web authentication disabled")
