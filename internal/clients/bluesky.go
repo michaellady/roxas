@@ -104,7 +104,7 @@ func (c *BlueskyClient) createSession(ctx context.Context) error {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%w: %d - %s", ErrBlueskyAuthentication, resp.StatusCode, string(body))
+		return fmt.Errorf("Bluesky API error: %d - %s", resp.StatusCode, string(body))
 	}
 
 	var sessionResp struct {

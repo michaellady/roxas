@@ -569,7 +569,11 @@ func (a *blueskyConnectorAdapter) Connect(ctx context.Context, userID, handle, a
 				Error:   "Invalid handle or app password. Please check your credentials and try again.",
 			}, nil
 		}
-		return nil, fmt.Errorf("failed to authenticate with Bluesky: %w", err)
+		// Network or other error - show more details
+		return &web.BlueskyConnectResult{
+			Success: false,
+			Error:   fmt.Sprintf("Failed to connect to Bluesky: %v", err),
+		}, nil
 	}
 	log.Printf("Bluesky connect: auth successful for %s (DID: %s)", handle, client.GetDID())
 
