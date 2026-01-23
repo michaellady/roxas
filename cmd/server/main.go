@@ -21,6 +21,7 @@ import (
 	"github.com/mikelady/roxas/internal/database"
 	"github.com/mikelady/roxas/internal/handlers"
 	"github.com/mikelady/roxas/internal/models"
+	"github.com/mikelady/roxas/internal/oauth"
 	"github.com/mikelady/roxas/internal/orchestrator"
 	"github.com/mikelady/roxas/internal/services"
 	"github.com/mikelady/roxas/internal/web"
@@ -39,6 +40,9 @@ type Config struct {
 	DBSecretName        string
 	WebhookBaseURL      string
 	EncryptionKey       string // 32 bytes (base64 encoded or hex) for credential encryption
+	ThreadsClientID     string
+	ThreadsClientSecret string
+	OAuthCallbackURL    string // Base URL for OAuth callbacks
 }
 
 // loadConfig loads configuration from environment variables
@@ -52,6 +56,9 @@ func loadConfig() Config {
 		DBSecretName:        os.Getenv("DB_SECRET_NAME"),
 		WebhookBaseURL:      os.Getenv("WEBHOOK_BASE_URL"),
 		EncryptionKey:       os.Getenv("CREDENTIAL_ENCRYPTION_KEY"), // 32-byte key for AES-256
+		ThreadsClientID:     os.Getenv("THREADS_CLIENT_ID"),
+		ThreadsClientSecret: os.Getenv("THREADS_CLIENT_SECRET"),
+		OAuthCallbackURL:    os.Getenv("OAUTH_CALLBACK_URL"), // e.g., https://app.example.com
 	}
 }
 
@@ -472,6 +479,60 @@ func (a *socialPosterAdapter) PostDraft(ctx context.Context, userID, draftID str
 	return result.PostURL, nil
 }
 
+// threadsOAuthAdapter implements web.ThreadsOAuthConnector
+type threadsOAuthAdapter struct {
+	provider        *oauth.ThreadsOAuthProvider
+	credentialStore services.CredentialStore
+}
+
+func (a *threadsOAuthAdapter) GetAuthURL(state, redirectURL string) string {
+	return a.provider.GetAuthURL(state, redirectURL)
+}
+
+func (a *threadsOAuthAdapter) ExchangeCode(ctx context.Context, userID, code, redirectURL string) (string, error) {
+	// Exchange code for tokens
+	tokens, err := a.provider.ExchangeCode(ctx, code, redirectURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to exchange code: %w", err)
+	}
+
+	// Store credentials
+	creds := &services.PlatformCredentials{
+		UserID:         userID,
+		Platform:       "threads",
+		AccessToken:    tokens.AccessToken,
+		RefreshToken:   tokens.RefreshToken,
+		TokenExpiresAt: tokens.ExpiresAt,
+		PlatformUserID: tokens.PlatformUserID,
+		Scopes:         tokens.Scopes,
+	}
+
+	if err := a.credentialStore.SaveCredentials(ctx, creds); err != nil {
+		return "", fmt.Errorf("failed to save credentials: %w", err)
+	}
+
+	// Return platform username (or user ID if username not available)
+	username := tokens.PlatformUserID
+	if username == "" {
+		username = "connected"
+	}
+	return username, nil
+}
+
+func (a *threadsOAuthAdapter) RefreshTokens(ctx context.Context, refreshToken string) (*web.OAuthTokens, error) {
+	tokens, err := a.provider.RefreshTokens(ctx, refreshToken)
+	if err != nil {
+		return nil, err
+	}
+	return &web.OAuthTokens{
+		AccessToken:    tokens.AccessToken,
+		RefreshToken:   tokens.RefreshToken,
+		ExpiresAt:      tokens.ExpiresAt,
+		PlatformUserID: tokens.PlatformUserID,
+		Scopes:         tokens.Scopes,
+	}, nil
+}
+
 // createRouter builds the combined HTTP router for both web UI and webhook
 func createRouter(config Config, dbPool *database.Pool) http.Handler {
 	mux := http.NewServeMux()
@@ -540,7 +601,7 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 			WithDraftLister(draftLister).
 			WithDraftStore(webDraftStore)
 
-		// Add social poster if encryption key is configured
+		// Add social poster and Threads OAuth if encryption key is configured
 		if config.EncryptionKey != "" {
 			encKey, err := hex.DecodeString(config.EncryptionKey)
 			if err != nil {
@@ -552,12 +613,30 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 				if err != nil {
 					log.Printf("Warning: Failed to create credential store: %v", err)
 				} else {
+					// Add social poster
 					socialPoster := &socialPosterAdapter{
 						draftStore:      draftStore,
 						credentialStore: credentialStore,
 					}
 					router = router.WithSocialPoster(socialPoster)
 					log.Println("Social posting to Threads enabled")
+
+					// Add Threads OAuth if configured
+					if config.ThreadsClientID != "" && config.ThreadsClientSecret != "" {
+						threadsProvider := oauth.NewThreadsOAuthProvider(config.ThreadsClientID, config.ThreadsClientSecret)
+						threadsOAuth := &threadsOAuthAdapter{
+							provider:        threadsProvider,
+							credentialStore: credentialStore,
+						}
+						callbackURL := config.OAuthCallbackURL
+						if callbackURL == "" {
+							callbackURL = config.WebhookBaseURL // Fallback to webhook base URL
+						}
+						router = router.WithThreadsOAuth(threadsOAuth, callbackURL)
+						log.Println("Threads OAuth enabled")
+					} else {
+						log.Println("Threads OAuth disabled (no THREADS_CLIENT_ID/THREADS_CLIENT_SECRET)")
+					}
 				}
 			}
 		} else {

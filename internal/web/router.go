@@ -538,6 +538,14 @@ func (r *Router) WithSocialPoster(socialPoster SocialPoster) *Router {
 	return r
 }
 
+// WithThreadsOAuth adds Threads OAuth support to the router (builder pattern)
+// Required for connecting Threads accounts
+func (r *Router) WithThreadsOAuth(threadsOAuth ThreadsOAuthConnector, callbackURL string) *Router {
+	r.threadsOAuth = threadsOAuth
+	r.oauthCallbackURL = callbackURL
+	return r
+}
+
 // NewRouterWithWebhookTester creates a new web router with webhook tester support
 func NewRouterWithWebhookTester(userStore UserStore, repoStore RepositoryStore, commitLister CommitLister, postLister PostLister, secretGen SecretGenerator, webhookURL string, webhookTester WebhookTester) *Router {
 	r := &Router{
@@ -1080,6 +1088,11 @@ func (r *Router) handleConnections(w http.ResponseWriter, req *http.Request) {
 	})
 }
 
+// ConnectionsNewData holds data for the connections_new page
+type ConnectionsNewData struct {
+	ThreadsEnabled bool
+}
+
 func (r *Router) handleConnectionsNew(w http.ResponseWriter, req *http.Request) {
 	// Check for auth cookie
 	cookie, err := req.Cookie(auth.CookieName)
@@ -1094,9 +1107,15 @@ func (r *Router) handleConnectionsNew(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 
+	// Check which platforms are enabled
+	data := ConnectionsNewData{
+		ThreadsEnabled: r.threadsOAuth != nil,
+	}
+
 	r.renderPage(w, "connections_new.html", PageData{
 		Title: "Connect Account",
 		User:  &UserData{ID: claims.UserID, Email: claims.Email},
+		Data:  data,
 	})
 }
 
