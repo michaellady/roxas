@@ -558,6 +558,12 @@ func (r *Router) WithConnectionLister(lister ConnectionLister) *Router {
 	return r
 }
 
+// WithConnectionService configures the router with a connection service for disconnect operations
+func (r *Router) WithConnectionService(service ConnectionService) *Router {
+	r.connectionService = service
+	return r
+}
+
 // NewRouterWithWebhookTester creates a new web router with webhook tester support
 func NewRouterWithWebhookTester(userStore UserStore, repoStore RepositoryStore, commitLister CommitLister, postLister PostLister, secretGen SecretGenerator, webhookURL string, webhookTester WebhookTester) *Router {
 	r := &Router{

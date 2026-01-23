@@ -606,6 +606,36 @@ type connectionListerAdapter struct {
 	credentialStore services.CredentialStore
 }
 
+// connectionServiceAdapter implements web.ConnectionService for disconnect operations
+type connectionServiceAdapter struct {
+	credentialStore services.CredentialStore
+}
+
+func (a *connectionServiceAdapter) GetConnection(ctx context.Context, userID, platform string) (*web.Connection, error) {
+	creds, err := a.credentialStore.GetCredentials(ctx, userID, platform)
+	if err != nil {
+		return nil, err
+	}
+	if creds == nil {
+		return nil, fmt.Errorf("connection not found")
+	}
+
+	displayName := creds.PlatformUserID
+	if platform == "bluesky" {
+		displayName = creds.RefreshToken // Handle stored in RefreshToken for Bluesky
+	}
+
+	return &web.Connection{
+		Platform:    platform,
+		Status:      "connected",
+		DisplayName: displayName,
+	}, nil
+}
+
+func (a *connectionServiceAdapter) Disconnect(ctx context.Context, userID, platform string) error {
+	return a.credentialStore.DeleteCredentials(ctx, userID, platform)
+}
+
 func (a *connectionListerAdapter) ListConnectionsWithRateLimits(ctx context.Context, userID string) ([]*web.ConnectionData, error) {
 	var connections []*web.ConnectionData
 
@@ -754,7 +784,13 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 						credentialStore: credentialStore,
 					}
 					router = router.WithConnectionLister(connectionLister)
-					log.Println("Connection listing enabled")
+
+					// Add connection service for disconnect operations
+					connectionService := &connectionServiceAdapter{
+						credentialStore: credentialStore,
+					}
+					router = router.WithConnectionService(connectionService)
+					log.Println("Connection management enabled")
 				}
 			}
 		} else {
