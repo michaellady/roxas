@@ -18,6 +18,18 @@ import (
 // POST /drafts/{id}/post?platform=<platform>
 // =============================================================================
 
+// Draft represents a draft post (minimal type for handler use)
+type Draft struct {
+	ID               string
+	UserID           string
+	RepositoryID     string
+	Status           string
+	GeneratedContent *string
+	EditedContent    *string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
 // Supported platforms for posting
 var supportedPostPlatforms = map[string]bool{
 	services.PlatformThreads: true,
