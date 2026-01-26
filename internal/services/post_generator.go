@@ -11,11 +11,13 @@ import (
 // =============================================================================
 
 // Platform constants for social media targets
+// Note: PlatformBluesky is defined in credential_store.go
 const (
 	PlatformLinkedIn  = "linkedin"
 	PlatformTwitter   = "twitter"
 	PlatformInstagram = "instagram"
 	PlatformYouTube   = "youtube"
+	// PlatformBluesky is defined in credential_store.go
 )
 
 // GeneratedPost represents a generated social media post
@@ -82,6 +84,12 @@ var platformConfigs = map[string]platformConfig{
 		Tone:       "informative, detailed, with sections and links",
 		HashtagReq: false,
 	},
+	PlatformBluesky: {
+		Name:       "Bluesky",
+		MaxLength:  300,
+		Tone:       "concise, engaging, focused on what was built/shipped",
+		HashtagReq: false,
+	},
 }
 
 // Generate creates a social media post for the given platform and commit
@@ -119,7 +127,12 @@ func buildPrompt(config platformConfig, commit *Commit) string {
 
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("Generate a %s post about this software development update.\n\n", config.Name))
+	// Bluesky uses commit-focused phrasing instead of generic "software development update"
+	if config.Name == "Bluesky" {
+		sb.WriteString("Generate a Bluesky post about what this commit enables.\n\n")
+	} else {
+		sb.WriteString(fmt.Sprintf("Generate a %s post about this software development update.\n\n", config.Name))
+	}
 
 	sb.WriteString("Commit Information:\n")
 	sb.WriteString(fmt.Sprintf("- Message: %s\n", commit.Message))
@@ -157,6 +170,18 @@ func buildPrompt(config platformConfig, commit *Commit) string {
 		sb.WriteString("- Include what was changed and why\n")
 		sb.WriteString("- Add relevant hashtags at the end\n")
 		sb.WriteString("- Make it informative for developers\n")
+	case "Bluesky":
+		sb.WriteString("\nRequirements for Bluesky:\n")
+		sb.WriteString("- MUST be 300 characters or less (this is critical!)\n")
+		sb.WriteString("- Focus on what THIS commit enables or fixes\n")
+		sb.WriteString("- Don't explain what the app is - assume readers follow the project\n")
+		sb.WriteString("- Lead with the action/outcome: Added X, Fixed Y, Now supports Z\n")
+		sb.WriteString("- Be specific about the functionality, not the technical implementation\n")
+		sb.WriteString("- One clear point per post\n")
+		sb.WriteString("- No hashtags needed\n")
+		sb.WriteString("\nExample guidance:\n")
+		sb.WriteString("BAD: 'We updated our webhook handler to support Bluesky authentication...'\n")
+		sb.WriteString("GOOD: 'Bluesky support is live! Connect your account and auto-post dev updates.'\n")
 	}
 
 	sb.WriteString("\nGenerate only the post content, nothing else.")
@@ -191,8 +216,8 @@ func enforceConstraints(content string, config platformConfig) string {
 
 	// Enforce max length for platforms with limits
 	if config.MaxLength > 0 && len(content) > config.MaxLength {
-		// Truncate gracefully with ellipsis
-		content = content[:config.MaxLength-1] + "…"
+		// Truncate gracefully with ellipsis (use "..." for ASCII compatibility)
+		content = content[:config.MaxLength-3] + "..."
 	}
 
 	return content

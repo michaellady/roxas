@@ -664,7 +664,11 @@ cp .env.example .env
 
 ### Webhook Endpoint
 
-**URL:** `POST /webhook`
+**Production URL:** `https://roxas.ai/webhook/{repository-id}`
+
+> **Important:** Use `https://roxas.ai` - do NOT use `www.roxas.ai` (www subdomain is not configured).
+
+**Method:** `POST /webhook/{repository-id}`
 
 **Headers:**
 - `X-Hub-Signature-256`: GitHub webhook signature (HMAC SHA256)

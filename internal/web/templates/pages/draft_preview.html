@@ -1,0 +1,71 @@
+{{define "content"}}
+<div class="auth-container">
+    <div class="page-header">
+        <div class="header-back">
+            <a href="/drafts" class="btn btn-small">&larr; Back to Drafts</a>
+        </div>
+        <h1>Edit Draft</h1>
+    </div>
+
+    {{if .Error}}
+    <div class="alert alert-error">{{.Error}}</div>
+    {{end}}
+
+    {{with .Data}}
+    <div class="card">
+        <section class="draft-content">
+            <h2>Draft Content</h2>
+            <form action="/drafts/{{.Draft.ID}}/edit" method="POST" class="draft-form">
+                <div class="form-group">
+                    <label for="content">Content</label>
+                    <textarea id="content" name="content" rows="8"
+                              maxlength="{{.CharLimit}}"
+                              placeholder="Enter your post content..."
+                              class="draft-textarea">{{.Draft.Content}}</textarea>
+                    <div class="char-counter">
+                        <span id="char-count">{{.CharCount}}</span> / <span id="char-limit">{{.CharLimit}}</span> characters
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-secondary">Save Changes</button>
+                </div>
+            </form>
+        </section>
+
+        <section class="draft-actions">
+            <h2>Actions</h2>
+            <div class="action-buttons">
+                <form action="/drafts/{{.Draft.ID}}/regenerate" method="POST" style="display: inline;">
+                    <button type="submit" class="btn btn-warning" onclick="return confirm('Regenerate this draft? Your current content will be replaced.')">Regenerate</button>
+                </form>
+                <form action="/drafts/{{.Draft.ID}}/post" method="POST" style="display: inline;">
+                    <button type="submit" class="btn btn-primary">Post</button>
+                </form>
+                <form action="/drafts/{{.Draft.ID}}/delete" method="POST" style="display: inline;">
+                    <button type="submit" class="btn btn-danger" onclick="return confirm('Are you sure you want to delete this draft?')">Delete</button>
+                </form>
+            </div>
+        </section>
+    </div>
+    {{end}}
+</div>
+
+<script>
+// Live character count
+const textarea = document.getElementById('content');
+const charCount = document.getElementById('char-count');
+const charLimit = parseInt(document.getElementById('char-limit').textContent);
+
+function updateCharCount() {
+    const count = textarea.value.length;
+    charCount.textContent = count;
+    if (count > charLimit) {
+        charCount.parentElement.classList.add('over-limit');
+    } else {
+        charCount.parentElement.classList.remove('over-limit');
+    }
+}
+
+textarea.addEventListener('input', updateCharCount);
+</script>
+{{end}}

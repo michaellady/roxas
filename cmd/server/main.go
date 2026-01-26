@@ -1,5 +1,6 @@
 package main
 
+// Test deployment trigger - webhook fix verification
 import (
 	"context"
 	"crypto/hmac"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/awslabs/aws-lambda-go-api-proxy/httpadapter"
@@ -20,6 +22,7 @@ import (
 	"github.com/mikelady/roxas/internal/database"
 	"github.com/mikelady/roxas/internal/handlers"
 	"github.com/mikelady/roxas/internal/models"
+	"github.com/mikelady/roxas/internal/oauth"
 	"github.com/mikelady/roxas/internal/orchestrator"
 	"github.com/mikelady/roxas/internal/services"
 	"github.com/mikelady/roxas/internal/web"
@@ -37,6 +40,10 @@ type Config struct {
 	WebhookSecret       string
 	DBSecretName        string
 	WebhookBaseURL      string
+	EncryptionKey       string // 32 bytes (base64 encoded or hex) for credential encryption
+	ThreadsClientID     string
+	ThreadsClientSecret string
+	OAuthCallbackURL    string // Base URL for OAuth callbacks
 }
 
 // loadConfig loads configuration from environment variables
@@ -49,6 +56,10 @@ func loadConfig() Config {
 		WebhookSecret:       os.Getenv("WEBHOOK_SECRET"),
 		DBSecretName:        os.Getenv("DB_SECRET_NAME"),
 		WebhookBaseURL:      os.Getenv("WEBHOOK_BASE_URL"),
+		EncryptionKey:       os.Getenv("CREDENTIAL_ENCRYPTION_KEY"), // 32-byte key for AES-256
+		ThreadsClientID:     os.Getenv("THREADS_CLIENT_ID"),
+		ThreadsClientSecret: os.Getenv("THREADS_CLIENT_SECRET"),
+		OAuthCallbackURL:    os.Getenv("OAUTH_CALLBACK_URL"), // e.g., https://app.example.com
 	}
 }
 
@@ -142,12 +153,567 @@ func webhookHandlerWithMocks(config Config, openAIBaseURL, linkedInBaseURL strin
 	}
 }
 
+// =============================================================================
+// Adapters to bridge database stores to handlers interfaces
+// =============================================================================
+
+// commitStoreAdapter adapts database.CommitStore to handlers.CommitStore interface
+type commitStoreAdapter struct {
+	pool *database.Pool
+}
+
+func (a *commitStoreAdapter) StoreCommit(ctx context.Context, commit *handlers.StoredCommit) error {
+	_, err := a.pool.Exec(ctx,
+		`INSERT INTO commits (repository_id, commit_sha, github_url, commit_message, author, timestamp)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 ON CONFLICT (repository_id, commit_sha) DO NOTHING`,
+		commit.RepositoryID, commit.CommitSHA, commit.GitHubURL, commit.Message, commit.Author, commit.Timestamp,
+	)
+	return err
+}
+
+func (a *commitStoreAdapter) GetCommitBySHA(ctx context.Context, repoID, sha string) (*handlers.StoredCommit, error) {
+	var commit handlers.StoredCommit
+	err := a.pool.QueryRow(ctx,
+		`SELECT id, repository_id, commit_sha, github_url, commit_message, author, timestamp
+		 FROM commits
+		 WHERE repository_id = $1 AND commit_sha = $2`,
+		repoID, sha,
+	).Scan(&commit.ID, &commit.RepositoryID, &commit.CommitSHA, &commit.GitHubURL, &commit.Message, &commit.Author, &commit.Timestamp)
+	if err != nil {
+		return nil, err
+	}
+	return &commit, nil
+}
+
+// draftWebhookStoreAdapter adapts database.DraftStore to handlers.DraftWebhookStore interface
+type draftWebhookStoreAdapter struct {
+	store *database.DraftStore
+}
+
+func (a *draftWebhookStoreAdapter) CreateDraftFromPush(ctx context.Context, userID, repoID, ref, beforeSHA, afterSHA string, commitSHAs []string) (*handlers.WebhookDraft, error) {
+	draft, err := a.store.CreateDraftFromPush(ctx, userID, repoID, ref, beforeSHA, afterSHA, commitSHAs)
+	if err != nil {
+		return nil, err
+	}
+	return convertDraftToWebhookDraft(draft), nil
+}
+
+func (a *draftWebhookStoreAdapter) GetDraftByPushSignature(ctx context.Context, repoID, beforeSHA, afterSHA string) (*handlers.WebhookDraft, error) {
+	draft, err := a.store.GetDraftByPushSignature(ctx, repoID, beforeSHA, afterSHA)
+	if err != nil {
+		return nil, err
+	}
+	if draft == nil {
+		return nil, nil
+	}
+	return convertDraftToWebhookDraft(draft), nil
+}
+
+func convertDraftToWebhookDraft(d *database.Draft) *handlers.WebhookDraft {
+	editedContent := ""
+	if d.EditedContent != nil {
+		editedContent = *d.EditedContent
+	}
+	return &handlers.WebhookDraft{
+		ID:               d.ID,
+		UserID:           d.UserID,
+		RepositoryID:     d.RepositoryID,
+		Ref:              d.Ref,
+		BeforeSHA:        d.BeforeSHA,
+		AfterSHA:         d.AfterSHA,
+		CommitSHAs:       d.CommitSHAs,
+		GeneratedContent: d.GeneratedContent,
+		EditedContent:    editedContent,
+		Status:           d.Status,
+		CreatedAt:        d.CreatedAt,
+		UpdatedAt:        d.UpdatedAt,
+	}
+}
+
+// idempotencyStoreAdapter adapts database.WebhookDeliveryStore to handlers.IdempotencyStore interface
+type idempotencyStoreAdapter struct {
+	store *database.WebhookDeliveryStore
+}
+
+func (a *idempotencyStoreAdapter) CheckDeliveryProcessed(ctx context.Context, deliveryID string) (bool, error) {
+	return a.store.CheckDeliveryProcessed(ctx, deliveryID)
+}
+
+func (a *idempotencyStoreAdapter) MarkDeliveryProcessed(ctx context.Context, deliveryID, repoID string) error {
+	return a.store.MarkDeliveryProcessed(ctx, deliveryID, repoID)
+}
+
+// activityStoreAdapter adapts database.ActivityStore to handlers.ActivityStore interface
+type activityStoreAdapter struct {
+	store *database.ActivityStore
+}
+
+func (a *activityStoreAdapter) CreateActivity(ctx context.Context, userID, activityType string, draftID *string, message string) (*handlers.WebhookActivity, error) {
+	// Database CreateActivity takes: userID, activityType, draftID, postID, platform, message (all *string for optional fields)
+	// Handler CreateActivity takes: userID, activityType, draftID *string, message string
+	activity, err := a.store.CreateActivity(ctx, userID, activityType, draftID, nil, nil, &message)
+	if err != nil {
+		return nil, err
+	}
+	// Convert database.Activity to handlers.WebhookActivity
+	platform := ""
+	if activity.Platform != nil {
+		platform = *activity.Platform
+	}
+	msg := ""
+	if activity.Message != nil {
+		msg = *activity.Message
+	}
+	return &handlers.WebhookActivity{
+		ID:        activity.ID,
+		UserID:    activity.UserID,
+		Type:      activity.Type,
+		DraftID:   activity.DraftID,
+		PostID:    activity.PostID,
+		Platform:  platform,
+		Message:   msg,
+		CreatedAt: activity.CreatedAt,
+	}, nil
+}
+
+// draftListerAdapter adapts database.DraftStore to web.DraftLister interface
+type draftListerAdapter struct {
+	draftStore *database.DraftStore
+	repoStore  *database.RepositoryStore
+}
+
+func (a *draftListerAdapter) ListDraftsByUser(ctx context.Context, userID string) ([]*web.DraftItem, error) {
+	drafts, err := a.draftStore.ListDraftsByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]*web.DraftItem, 0, len(drafts))
+	for _, d := range drafts {
+		// Get repo name for display
+		repoName := "Unknown Repository"
+		if repo, err := a.repoStore.GetRepositoryByID(ctx, d.RepositoryID); err == nil && repo != nil {
+			// Extract repo name from GitHub URL (e.g., "owner/repo" from "https://github.com/owner/repo")
+			repoName = extractRepoNameFromURL(repo.GitHubURL)
+		}
+
+		// Use generated content or edited content for preview
+		previewText := d.GeneratedContent
+		if d.EditedContent != nil && *d.EditedContent != "" {
+			previewText = *d.EditedContent
+		}
+		// Truncate for preview
+		if len(previewText) > 100 {
+			previewText = previewText[:100] + "..."
+		}
+		if previewText == "" {
+			previewText = "(Awaiting AI generation...)"
+		}
+
+		items = append(items, &web.DraftItem{
+			ID:          d.ID,
+			RepoName:    repoName,
+			PreviewText: previewText,
+			Platform:    "threads", // Default platform for now
+			CreatedAt:   d.CreatedAt,
+		})
+	}
+
+	return items, nil
+}
+
+func extractRepoNameFromURL(url string) string {
+	// Extract "owner/repo" from "https://github.com/owner/repo"
+	parts := strings.Split(url, "/")
+	if len(parts) >= 2 {
+		return parts[len(parts)-2] + "/" + parts[len(parts)-1]
+	}
+	return url
+}
+
+// aiGeneratorAdapter implements handlers.AIGeneratorService to generate content for drafts
+type aiGeneratorAdapter struct {
+	draftStore    *database.DraftStore
+	repoStore     *database.RepositoryStore
+	postGenerator services.PostGeneratorService
+}
+
+func (a *aiGeneratorAdapter) TriggerGeneration(ctx context.Context, draftID string) error {
+	// Fetch the draft
+	draft, err := a.draftStore.GetDraft(ctx, draftID)
+	if err != nil {
+		return fmt.Errorf("failed to get draft: %w", err)
+	}
+
+	// Fetch repo info for the commit URL
+	repo, err := a.repoStore.GetRepositoryByID(ctx, draft.RepositoryID)
+	if err != nil {
+		return fmt.Errorf("failed to get repository: %w", err)
+	}
+
+	// Build a commit-like object for the generator
+	// Use the after_sha as the commit ID and combine commit messages
+	commitMessage := fmt.Sprintf("Push to %s with %d commit(s)", draft.Ref, len(draft.CommitSHAs))
+	if len(draft.CommitSHAs) == 1 {
+		commitMessage = fmt.Sprintf("Commit %s to %s", draft.AfterSHA[:7], draft.Ref)
+	}
+
+	commit := &services.Commit{
+		ID:        draft.AfterSHA,
+		Message:   commitMessage,
+		Author:    "developer", // Could be enhanced to fetch from commit data
+		GitHubURL: fmt.Sprintf("%s/commit/%s", repo.GitHubURL, draft.AfterSHA),
+	}
+
+	// Generate content using PostGenerator
+	// Use "threads" as the platform (could be made configurable)
+	generated, err := a.postGenerator.Generate(ctx, "linkedin", commit)
+	if err != nil {
+		// Update draft status to error
+		_ = a.draftStore.UpdateDraftStatus(ctx, draftID, database.DraftStatusError)
+		return fmt.Errorf("failed to generate content: %w", err)
+	}
+
+	// Update draft with generated content
+	_, err = a.draftStore.CreateDraft(ctx, draft.UserID, draft.RepositoryID, draft.Ref, draft.BeforeSHA, draft.AfterSHA, draft.CommitSHAs, generated.Content)
+	if err != nil {
+		// If duplicate, just update the content
+		err = a.draftStore.UpdateDraftContent(ctx, draftID, generated.Content)
+		if err != nil {
+			return fmt.Errorf("failed to update draft content: %w", err)
+		}
+	}
+
+	log.Printf("AI generation completed for draft %s", draftID)
+	return nil
+}
+
+// draftStoreAdapter adapts database.DraftStore to web.DraftStore interface
+// Required for draft preview, edit, delete, and post operations
+type draftStoreAdapter struct {
+	store *database.DraftStore
+}
+
+func (a *draftStoreAdapter) GetDraftByID(ctx context.Context, draftID string) (*web.Draft, error) {
+	draft, err := a.store.GetDraft(ctx, draftID)
+	if err != nil {
+		return nil, err
+	}
+	// Use edited content if available, otherwise generated content
+	content := draft.GeneratedContent
+	if draft.EditedContent != nil && *draft.EditedContent != "" {
+		content = *draft.EditedContent
+	}
+	return &web.Draft{
+		ID:           draft.ID,
+		UserID:       draft.UserID,
+		RepositoryID: draft.RepositoryID,
+		Content:      content,
+		Status:       draft.Status,
+		CharLimit:    500, // Threads character limit
+		CreatedAt:    draft.CreatedAt,
+	}, nil
+}
+
+func (a *draftStoreAdapter) UpdateDraftContent(ctx context.Context, draftID, content string) (*web.Draft, error) {
+	err := a.store.UpdateDraftContent(ctx, draftID, content)
+	if err != nil {
+		return nil, err
+	}
+	return a.GetDraftByID(ctx, draftID)
+}
+
+func (a *draftStoreAdapter) DeleteDraft(ctx context.Context, draftID string) error {
+	return a.store.DeleteDraft(ctx, draftID)
+}
+
+func (a *draftStoreAdapter) UpdateDraftStatus(ctx context.Context, draftID, status string) (*web.Draft, error) {
+	err := a.store.UpdateDraftStatus(ctx, draftID, status)
+	if err != nil {
+		return nil, err
+	}
+	return a.GetDraftByID(ctx, draftID)
+}
+
+// aiRegeneratorAdapter implements web.AIRegenerator using aiGeneratorAdapter
+type aiRegeneratorAdapter struct {
+	generator *aiGeneratorAdapter
+}
+
+func (a *aiRegeneratorAdapter) RegenerateDraft(ctx context.Context, draftID string) error {
+	return a.generator.TriggerGeneration(ctx, draftID)
+}
+
+// socialPosterAdapter implements web.SocialPoster for posting to Threads
+type socialPosterAdapter struct {
+	draftStore      *database.DraftStore
+	credentialStore services.CredentialStore
+}
+
+func (a *socialPosterAdapter) PostDraft(ctx context.Context, userID, draftID string) (string, error) {
+	// Fetch the draft
+	draft, err := a.draftStore.GetDraft(ctx, draftID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get draft: %w", err)
+	}
+
+	// Get the content to post (edited or generated)
+	content := draft.GeneratedContent
+	if draft.EditedContent != nil && *draft.EditedContent != "" {
+		content = *draft.EditedContent
+	}
+
+	// Try Bluesky first, then fall back to Threads
+	bluskyCreds, bskyErr := a.credentialStore.GetCredentials(ctx, userID, "bluesky")
+	if bskyErr == nil && bluskyCreds != nil {
+		// Bluesky: AccessToken = app password, RefreshToken = handle
+		handle := bluskyCreds.RefreshToken
+		appPassword := bluskyCreds.AccessToken
+		bskyClient := clients.NewBlueskyClient(handle, appPassword, "")
+		result, err := bskyClient.Post(ctx, services.PostContent{Text: content})
+		if err != nil {
+			return "", fmt.Errorf("failed to post to Bluesky: %w", err)
+		}
+		return result.PostURL, nil
+	}
+
+	// Fall back to Threads
+	threadsCreds, threadsErr := a.credentialStore.GetCredentials(ctx, userID, "threads")
+	if threadsErr == nil && threadsCreds != nil {
+		threadsClient := clients.NewThreadsClient(threadsCreds.AccessToken, "")
+		result, err := threadsClient.Post(ctx, services.PostContent{Text: content})
+		if err != nil {
+			return "", fmt.Errorf("failed to post to Threads: %w", err)
+		}
+		return result.PostURL, nil
+	}
+
+	return "", fmt.Errorf("no social platform connected - please connect Bluesky or Threads first")
+}
+
+// threadsOAuthAdapter implements web.ThreadsOAuthConnector
+type threadsOAuthAdapter struct {
+	provider        *oauth.ThreadsOAuthProvider
+	credentialStore services.CredentialStore
+}
+
+func (a *threadsOAuthAdapter) GetAuthURL(state, redirectURL string) string {
+	return a.provider.GetAuthURL(state, redirectURL)
+}
+
+func (a *threadsOAuthAdapter) ExchangeCode(ctx context.Context, userID, code, redirectURL string) (string, error) {
+	// Exchange code for tokens
+	tokens, err := a.provider.ExchangeCode(ctx, code, redirectURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to exchange code: %w", err)
+	}
+
+	// Store credentials
+	creds := &services.PlatformCredentials{
+		UserID:         userID,
+		Platform:       "threads",
+		AccessToken:    tokens.AccessToken,
+		RefreshToken:   tokens.RefreshToken,
+		TokenExpiresAt: tokens.ExpiresAt,
+		PlatformUserID: tokens.PlatformUserID,
+		Scopes:         tokens.Scopes,
+	}
+
+	if err := a.credentialStore.SaveCredentials(ctx, creds); err != nil {
+		return "", fmt.Errorf("failed to save credentials: %w", err)
+	}
+
+	// Return platform username (or user ID if username not available)
+	username := tokens.PlatformUserID
+	if username == "" {
+		username = "connected"
+	}
+	return username, nil
+}
+
+func (a *threadsOAuthAdapter) RefreshTokens(ctx context.Context, refreshToken string) (*web.OAuthTokens, error) {
+	tokens, err := a.provider.RefreshTokens(ctx, refreshToken)
+	if err != nil {
+		return nil, err
+	}
+	return &web.OAuthTokens{
+		AccessToken:    tokens.AccessToken,
+		RefreshToken:   tokens.RefreshToken,
+		ExpiresAt:      tokens.ExpiresAt,
+		PlatformUserID: tokens.PlatformUserID,
+		Scopes:         tokens.Scopes,
+	}, nil
+}
+
+// blueskyConnectorAdapter implements web.BlueskyConnector for app password auth
+type blueskyConnectorAdapter struct {
+	credentialStore services.CredentialStore
+}
+
+func (a *blueskyConnectorAdapter) Connect(ctx context.Context, userID, handle, appPassword string) (*web.BlueskyConnectResult, error) {
+	// Normalize handle
+	handle = strings.TrimPrefix(handle, "@")
+	// Add default domain if no domain present
+	if !strings.Contains(handle, ".") {
+		handle = handle + ".bsky.social"
+	}
+
+	// Validate credentials by attempting to authenticate
+	log.Printf("Bluesky connect: attempting auth for handle %s", handle)
+	client := clients.NewBlueskyClient(handle, appPassword, "")
+	if err := client.Authenticate(ctx); err != nil {
+		log.Printf("Bluesky connect: auth failed for %s: %v", handle, err)
+		if client.IsAuthError(err) {
+			return &web.BlueskyConnectResult{
+				Success: false,
+				Error:   "Invalid handle or app password. Please check your credentials and try again.",
+			}, nil
+		}
+		// Network or other error - show more details
+		return &web.BlueskyConnectResult{
+			Success: false,
+			Error:   fmt.Sprintf("Failed to connect to Bluesky: %v", err),
+		}, nil
+	}
+	log.Printf("Bluesky connect: auth successful for %s (DID: %s)", handle, client.GetDID())
+
+	// Store credentials - use AccessToken for app password, RefreshToken for handle
+	// (App passwords don't expire, so no expiry time)
+	creds := &services.PlatformCredentials{
+		UserID:         userID,
+		Platform:       "bluesky",
+		AccessToken:    appPassword,  // The app password
+		RefreshToken:   handle,       // Store handle for later use
+		TokenExpiresAt: nil,          // App passwords don't expire
+		PlatformUserID: client.GetDID(),
+		Scopes:         "",
+	}
+
+	if err := a.credentialStore.SaveCredentials(ctx, creds); err != nil {
+		return nil, fmt.Errorf("failed to save credentials: %w", err)
+	}
+
+	return &web.BlueskyConnectResult{
+		Handle:  handle,
+		DID:     client.GetDID(),
+		Success: true,
+	}, nil
+}
+
+// connectionListerAdapter implements web.ConnectionLister to list user's social connections
+type connectionListerAdapter struct {
+	credentialStore services.CredentialStore
+}
+
+// connectionServiceAdapter implements web.ConnectionService for disconnect operations
+type connectionServiceAdapter struct {
+	credentialStore services.CredentialStore
+}
+
+func (a *connectionServiceAdapter) GetConnection(ctx context.Context, userID, platform string) (*web.Connection, error) {
+	creds, err := a.credentialStore.GetCredentials(ctx, userID, platform)
+	if err != nil {
+		return nil, err
+	}
+	if creds == nil {
+		return nil, fmt.Errorf("connection not found")
+	}
+
+	displayName := creds.PlatformUserID
+	if platform == "bluesky" {
+		displayName = creds.RefreshToken // Handle stored in RefreshToken for Bluesky
+	}
+
+	return &web.Connection{
+		Platform:    platform,
+		Status:      "connected",
+		DisplayName: displayName,
+	}, nil
+}
+
+func (a *connectionServiceAdapter) Disconnect(ctx context.Context, userID, platform string) error {
+	return a.credentialStore.DeleteCredentials(ctx, userID, platform)
+}
+
+func (a *connectionListerAdapter) ListConnectionsWithRateLimits(ctx context.Context, userID string) ([]*web.ConnectionData, error) {
+	var connections []*web.ConnectionData
+
+	// Check for Bluesky connection
+	if creds, err := a.credentialStore.GetCredentials(ctx, userID, "bluesky"); err == nil && creds != nil {
+		connections = append(connections, &web.ConnectionData{
+			Platform:    "bluesky",
+			Status:      "connected",
+			DisplayName: creds.RefreshToken, // We store handle in RefreshToken
+			IsHealthy:   true,
+		})
+	}
+
+	// Check for Threads connection
+	if creds, err := a.credentialStore.GetCredentials(ctx, userID, "threads"); err == nil && creds != nil {
+		displayName := creds.PlatformUserID
+		if displayName == "" {
+			displayName = "Connected"
+		}
+		connections = append(connections, &web.ConnectionData{
+			Platform:    "threads",
+			Status:      "connected",
+			DisplayName: displayName,
+			IsHealthy:   creds.TokenExpiresAt == nil || creds.TokenExpiresAt.After(time.Now()),
+			ExpiresSoon: creds.TokenExpiresAt != nil && creds.TokenExpiresAt.Before(time.Now().Add(7*24*time.Hour)),
+		})
+	}
+
+	return connections, nil
+}
+
 // createRouter builds the combined HTTP router for both web UI and webhook
 func createRouter(config Config, dbPool *database.Pool) http.Handler {
 	mux := http.NewServeMux()
 
-	// Webhook endpoint
+	// Legacy webhook endpoint (single-tenant, uses global WEBHOOK_SECRET)
 	mux.HandleFunc("/webhook", webhookHandler(config))
+
+	// Multi-tenant webhook endpoint: /webhooks/github/{repo_id}
+	// Each repository has its own webhook secret stored in the database
+	// Uses DraftCreatingWebhookHandler to create drafts and trigger AI generation
+	if dbPool != nil {
+		repoStore := database.NewRepositoryStore(dbPool)
+		draftStore := database.NewDraftStore(dbPool)
+		deliveryStore := database.NewWebhookDeliveryStore(dbPool)
+		activityStore := database.NewActivityStore(dbPool)
+
+		// Create adapters to bridge database types to handler interfaces
+		draftWebhookStore := &draftWebhookStoreAdapter{store: draftStore}
+		idempotencyStore := &idempotencyStoreAdapter{store: deliveryStore}
+		activityStoreForWebhook := &activityStoreAdapter{store: activityStore}
+
+		// Create AI generator if OpenAI API key is configured
+		var aiGenerator *aiGeneratorAdapter
+		if config.OpenAIAPIKey != "" {
+			openaiClient := clients.NewOpenAIClient(config.OpenAIAPIKey, "", config.OpenAIChatModel, config.OpenAIImageModel)
+			postGenerator := services.NewPostGenerator(openaiClient)
+			aiGenerator = &aiGeneratorAdapter{
+				draftStore:    draftStore,
+				repoStore:     repoStore,
+				postGenerator: postGenerator,
+			}
+			log.Println("AI content generation enabled")
+		} else {
+			log.Println("AI content generation disabled (no OPENAI_API_KEY)")
+		}
+
+		// Use DraftCreatingWebhookHandler which creates drafts on push events
+		draftHandler := handlers.NewDraftCreatingWebhookHandler(repoStore, draftWebhookStore, idempotencyStore).
+			WithActivityStore(activityStoreForWebhook)
+
+		// Add AI generator if configured
+		if aiGenerator != nil {
+			draftHandler = draftHandler.WithAIGenerator(aiGenerator)
+		}
+
+		mux.Handle("/webhooks/github/", draftHandler)
+	}
 
 	// Web UI routes (handles everything else including /, /login, /signup, /dashboard, /logout)
 	var webRouter http.Handler
@@ -157,8 +723,93 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 		repoStore := database.NewRepositoryStore(dbPool)
 		commitStore := database.NewCommitStore(dbPool)
 		postStore := database.NewPostStore(dbPool)
+		activityStore := database.NewActivityStore(dbPool)
+		draftStore := database.NewDraftStore(dbPool)
 		secretGen := handlers.NewCryptoSecretGenerator()
-		webRouter = web.NewRouterWithAllStores(userStore, repoStore, commitStore, postStore, secretGen, config.WebhookBaseURL)
+
+		// Create draft adapters
+		draftLister := &draftListerAdapter{draftStore: draftStore, repoStore: repoStore}
+		webDraftStore := &draftStoreAdapter{store: draftStore}
+
+		router := web.NewRouterWithActivityLister(userStore, repoStore, commitStore, postStore, activityStore, secretGen, config.WebhookBaseURL).
+			WithDraftLister(draftLister).
+			WithDraftStore(webDraftStore)
+
+		// Add social poster and Threads OAuth if encryption key is configured
+		if config.EncryptionKey != "" {
+			encKey, err := hex.DecodeString(config.EncryptionKey)
+			if err != nil {
+				log.Printf("Warning: Invalid CREDENTIAL_ENCRYPTION_KEY format (expected hex): %v", err)
+			} else if len(encKey) != 32 {
+				log.Printf("Warning: CREDENTIAL_ENCRYPTION_KEY must be 32 bytes (64 hex chars), got %d bytes", len(encKey))
+			} else {
+				credentialStore, err := database.NewCredentialStore(dbPool, encKey)
+				if err != nil {
+					log.Printf("Warning: Failed to create credential store: %v", err)
+				} else {
+					// Add social poster
+					socialPoster := &socialPosterAdapter{
+						draftStore:      draftStore,
+						credentialStore: credentialStore,
+					}
+					router = router.WithSocialPoster(socialPoster)
+					log.Println("Social posting enabled (Bluesky, Threads)")
+
+					// Add Threads OAuth if configured
+					if config.ThreadsClientID != "" && config.ThreadsClientSecret != "" {
+						threadsProvider := oauth.NewThreadsOAuthProvider(config.ThreadsClientID, config.ThreadsClientSecret)
+						threadsOAuth := &threadsOAuthAdapter{
+							provider:        threadsProvider,
+							credentialStore: credentialStore,
+						}
+						callbackURL := config.OAuthCallbackURL
+						if callbackURL == "" {
+							callbackURL = config.WebhookBaseURL // Fallback to webhook base URL
+						}
+						router = router.WithThreadsOAuth(threadsOAuth, callbackURL)
+						log.Println("Threads OAuth enabled")
+					} else {
+						log.Println("Threads OAuth disabled (no THREADS_CLIENT_ID/THREADS_CLIENT_SECRET)")
+					}
+
+					// Add Bluesky connector (always enabled with credential store)
+					blueskyConnector := &blueskyConnectorAdapter{
+						credentialStore: credentialStore,
+					}
+					router = router.WithBlueskyConnector(blueskyConnector)
+					log.Println("Bluesky connection enabled")
+
+					// Add connection lister to show user's connections
+					connectionLister := &connectionListerAdapter{
+						credentialStore: credentialStore,
+					}
+					router = router.WithConnectionLister(connectionLister)
+
+					// Add connection service for disconnect operations
+					connectionService := &connectionServiceAdapter{
+						credentialStore: credentialStore,
+					}
+					router = router.WithConnectionService(connectionService)
+					log.Println("Connection management enabled")
+				}
+			}
+		} else {
+			log.Println("Social posting disabled (no CREDENTIAL_ENCRYPTION_KEY)")
+		}
+
+		// Add AI regenerator if OpenAI is configured
+		if config.OpenAIAPIKey != "" {
+			openaiClient := clients.NewOpenAIClient(config.OpenAIAPIKey, "", config.OpenAIChatModel, config.OpenAIImageModel)
+			postGenerator := services.NewPostGenerator(openaiClient)
+			aiGen := &aiGeneratorAdapter{
+				draftStore:    draftStore,
+				repoStore:     repoStore,
+				postGenerator: postGenerator,
+			}
+			router = router.WithAIRegenerator(&aiRegeneratorAdapter{generator: aiGen})
+		}
+
+		webRouter = router
 	} else {
 		// No database - use router without stores (auth will show "not configured")
 		log.Println("WARNING: Database unavailable - web authentication disabled")

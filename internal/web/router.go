@@ -3,8 +3,10 @@ package web
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"embed"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"html/template"
@@ -39,11 +41,55 @@ var templateFuncs = template.FuncMap{
 	"le": func(a, b int) bool {
 		return a <= b
 	},
+	"add": func(a, b int) int {
+		return a + b
+	},
+	"gt": func(a, b int) bool {
+		return a > b
+	},
+	"lt": func(a, b int) bool {
+		return a < b
+	},
+	"timeAgo": func(t time.Time) string {
+		now := time.Now()
+		diff := now.Sub(t)
+
+		switch {
+		case diff < time.Minute:
+			return "just now"
+		case diff < time.Hour:
+			mins := int(diff.Minutes())
+			if mins == 1 {
+				return "1 minute ago"
+			}
+			return fmt.Sprintf("%d minutes ago", mins)
+		case diff < 24*time.Hour:
+			hours := int(diff.Hours())
+			if hours == 1 {
+				return "1 hour ago"
+			}
+			return fmt.Sprintf("%d hours ago", hours)
+		case diff < 7*24*time.Hour:
+			days := int(diff.Hours() / 24)
+			if days == 1 {
+				return "1 day ago"
+			}
+			return fmt.Sprintf("%d days ago", days)
+		default:
+			return t.Format("Jan 02, 2006")
+		}
+	},
+	"truncate": func(s string, maxLen int) string {
+		if len(s) <= maxLen {
+			return s
+		}
+		return s[:maxLen-3] + "..."
+	},
 }
 
 func init() {
 	pageTemplates = make(map[string]*template.Template)
-	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "connections.html", "connections_new.html", "bluesky_connect.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "repository_delete.html", "webhook_regenerate.html", "webhook_deliveries.html", "connection_disconnect.html"}
+	pages := []string{"home.html", "login.html", "signup.html", "dashboard.html", "connections.html", "connections_new.html", "bluesky_connect.html", "repositories_new.html", "repository_success.html", "repositories_list.html", "repository_view.html", "repository_edit.html", "repository_delete.html", "webhook_regenerate.html", "webhook_deliveries.html", "connection_disconnect.html", "drafts.html", "draft_preview.html"}
 
 	for _, page := range pages {
 		// Clone the base template and parse the page with functions
@@ -57,11 +103,12 @@ func init() {
 
 // PageData holds data passed to templates
 type PageData struct {
-	Title string
-	User  *UserData
-	Flash *FlashMessage
-	Error string
-	Data  interface{}
+	Title      string
+	User       *UserData
+	Flash      *FlashMessage
+	Error      string
+	Data       interface{}
+	DraftCount int // Number of pending drafts (for navigation badge)
 }
 
 // UserData represents authenticated user info for templates
@@ -105,6 +152,51 @@ type CommitLister interface {
 // PostLister interface for listing posts
 type PostLister interface {
 	ListPostsByUser(ctx context.Context, userID string) ([]*DashboardPost, error)
+}
+
+// DraftCounter interface for counting draft posts
+type DraftCounter interface {
+	CountDraftsByUser(ctx context.Context, userID string) (int, error)
+}
+
+// DraftItem represents a draft post for the drafts list page
+type DraftItem struct {
+	ID          string
+	RepoName    string
+	PreviewText string
+	Platform    string
+	CreatedAt   time.Time
+}
+
+// DraftLister interface for listing user drafts
+type DraftLister interface {
+	ListDraftsByUser(ctx context.Context, userID string) ([]*DraftItem, error)
+}
+
+// Draft represents a draft social media post
+type Draft struct {
+	ID           string
+	UserID       string
+	RepositoryID string
+	Content      string
+	Status       string
+	CharLimit    int
+	CreatedAt    time.Time
+}
+
+// DraftStore interface for draft operations
+type DraftStore interface {
+	GetDraftByID(ctx context.Context, draftID string) (*Draft, error)
+	UpdateDraftContent(ctx context.Context, draftID, content string) (*Draft, error)
+	DeleteDraft(ctx context.Context, draftID string) error
+	UpdateDraftStatus(ctx context.Context, draftID, status string) (*Draft, error)
+}
+
+// DraftPreviewData holds data for the draft preview page
+type DraftPreviewData struct {
+	Draft     *Draft
+	CharCount int
+	CharLimit int
 }
 
 // WebhookTester interface for testing webhook connectivity
@@ -159,6 +251,7 @@ func (t *HTTPWebhookTester) TestWebhook(ctx context.Context, webhookURL, secret 
 type WebhookDelivery struct {
 	ID           string
 	RepositoryID string
+	DeliveryID   string
 	EventType    string
 	Payload      string
 	StatusCode   int
@@ -166,12 +259,28 @@ type WebhookDelivery struct {
 	ProcessedAt  *string
 	CreatedAt    string
 	IsSuccess    bool
+	Ref          *string
+	BeforeSHA    *string
+	AfterSHA     *string
+}
+
+// CreateDeliveryParams contains parameters for creating a webhook delivery
+type CreateDeliveryParams struct {
+	RepositoryID string
+	DeliveryID   string
+	EventType    string
+	Payload      []byte
+	StatusCode   int
+	ErrorMessage *string
+	Ref          *string
+	BeforeSHA    *string
+	AfterSHA     *string
 }
 
 // WebhookDeliveryStore interface for webhook delivery operations
 type WebhookDeliveryStore interface {
 	ListDeliveriesByRepository(ctx context.Context, repoID string, limit int) ([]*WebhookDelivery, error)
-	CreateDelivery(ctx context.Context, repoID, eventType string, payload []byte, statusCode int, errorMessage *string) (*WebhookDelivery, error)
+	CreateDelivery(ctx context.Context, params CreateDeliveryParams) (*WebhookDelivery, error)
 }
 
 // ConnectionService interface for connection management operations
@@ -186,6 +295,21 @@ type BlueskyConnector interface {
 	// handle: Bluesky handle (e.g., "user.bsky.social" or "@user")
 	// appPassword: App password from bsky.app/settings/app-passwords
 	Connect(ctx context.Context, userID, handle, appPassword string) (*BlueskyConnectResult, error)
+}
+
+// ThreadsOAuthConnector handles Threads OAuth flow
+type ThreadsOAuthConnector interface {
+	// GetAuthURL generates the OAuth authorization URL for Threads
+	// state: Random string for CSRF protection
+	// redirectURL: Where Threads will redirect after authorization
+	GetAuthURL(state, redirectURL string) string
+
+	// ExchangeCode exchanges the authorization code for tokens and stores credentials
+	// Returns the platform username for display
+	ExchangeCode(ctx context.Context, userID, code, redirectURL string) (platformUsername string, err error)
+
+	// RefreshTokens refreshes the access token using the refresh token
+	RefreshTokens(ctx context.Context, refreshToken string) (*OAuthTokens, error)
 }
 
 // BlueskyConnectResult contains the result of connecting a Bluesky account
@@ -227,6 +351,23 @@ type DashboardPost struct {
 	Status   string
 }
 
+// DashboardActivity represents an activity for the dashboard
+type DashboardActivity struct {
+	ID        string
+	Type      string
+	DraftID   *string
+	PostID    *string
+	Platform  *string
+	Message   *string
+	CreatedAt time.Time
+}
+
+// ActivityLister interface for listing activities
+type ActivityLister interface {
+	ListActivitiesByUser(ctx context.Context, userID string, limit, offset int) ([]*DashboardActivity, error)
+	CountActivitiesByUser(ctx context.Context, userID string) (int, error)
+}
+
 // ConnectionLister retrieves connections with rate limits for a user
 type ConnectionLister interface {
 	ListConnectionsWithRateLimits(ctx context.Context, userID string) ([]*ConnectionData, error)
@@ -238,6 +379,7 @@ type ConnectionData struct {
 	Status      string
 	DisplayName string
 	IsHealthy   bool
+	ExpiresSoon bool
 	RateLimit   *RateLimitData
 }
 
@@ -248,6 +390,66 @@ type RateLimitData struct {
 	ResetAt   time.Time
 }
 
+// GitHubOAuthProvider handles GitHub OAuth flow
+type GitHubOAuthProvider interface {
+	GetAuthURL(state, redirectURL string) string
+	ExchangeCode(ctx context.Context, code, redirectURL string) (*OAuthTokens, error)
+}
+
+// OAuthTokens represents the tokens returned from OAuth authentication
+type OAuthTokens struct {
+	AccessToken    string
+	RefreshToken   string
+	ExpiresAt      *time.Time
+	PlatformUserID string
+	Scopes         string
+}
+
+// CredentialStore interface for storing platform credentials
+type CredentialStore interface {
+	SaveCredentials(ctx context.Context, creds *PlatformCredentials) error
+	GetCredentials(ctx context.Context, userID, platform string) (*PlatformCredentials, error)
+}
+
+// GitHubRepoLister interface for listing user's GitHub repositories
+type GitHubRepoLister interface {
+	ListUserRepos(ctx context.Context, accessToken string) ([]GitHubRepo, error)
+}
+
+// GitHubRepo represents a repository from GitHub API
+type GitHubRepo struct {
+	ID          int64
+	Name        string
+	FullName    string
+	HTMLURL     string
+	Description string
+	Private     bool
+}
+
+// PlatformCredentials represents OAuth credentials for a platform
+type PlatformCredentials struct {
+	UserID         string
+	Platform       string
+	AccessToken    string
+	RefreshToken   string
+	TokenExpiresAt *time.Time
+	PlatformUserID string
+	Scopes         string
+}
+
+// AIRegenerator interface for regenerating AI content for drafts
+type AIRegenerator interface {
+	// RegenerateDraft regenerates the AI content for a draft and updates it
+	RegenerateDraft(ctx context.Context, draftID string) error
+}
+
+// SocialPoster interface for posting content to social media platforms
+type SocialPoster interface {
+	// PostDraft posts the draft content to the configured social platform
+	// Returns the URL of the created post
+	PostDraft(ctx context.Context, userID, draftID string) (postURL string, err error)
+}
+
 // Router is the main HTTP router for the web UI
 type Router struct {
 	mux                  *http.ServeMux
@@ -255,6 +457,7 @@ type Router struct {
 	repoStore            RepositoryStore
 	commitLister         CommitLister
 	postLister           PostLister
+	activityLister       ActivityLister
 	secretGen            SecretGenerator
 	webhookURL           string
 	webhookTester        WebhookTester
@@ -262,6 +465,17 @@ type Router struct {
 	connectionLister     ConnectionLister
 	connectionService    ConnectionService
 	blueskyConnector     BlueskyConnector
+	draftCounter         DraftCounter
+	draftLister          DraftLister
+	draftStore           DraftStore
+	githubOAuthProvider  GitHubOAuthProvider
+	credentialStore      CredentialStore
+	baseURL              string // Base URL for constructing redirect URIs
+	githubRepoLister     GitHubRepoLister
+	threadsOAuth         ThreadsOAuthConnector
+	oauthCallbackURL     string // Base URL for OAuth callbacks (e.g., "https://app.example.com")
+	aiRegenerator        AIRegenerator
+	socialPoster         SocialPoster
 }
 
 // NewRouter creates a new web router with all routes configured (no user store)
@@ -295,6 +509,75 @@ func NewRouterWithAllStores(userStore UserStore, repoStore RepositoryStore, comm
 		webhookURL:   webhookURL,
 	}
 	r.setupRoutes()
+	return r
+}
+
+// NewRouterWithActivityLister creates a new web router with activity lister support
+func NewRouterWithActivityLister(userStore UserStore, repoStore RepositoryStore, commitLister CommitLister, postLister PostLister, activityLister ActivityLister, secretGen SecretGenerator, webhookURL string) *Router {
+	r := &Router{
+		mux:            http.NewServeMux(),
+		userStore:      userStore,
+		repoStore:      repoStore,
+		commitLister:   commitLister,
+		postLister:     postLister,
+		activityLister: activityLister,
+		secretGen:      secretGen,
+		webhookURL:     webhookURL,
+	}
+	r.setupRoutes()
+	return r
+}
+
+// WithDraftLister adds a draft lister to the router (builder pattern)
+func (r *Router) WithDraftLister(draftLister DraftLister) *Router {
+	r.draftLister = draftLister
+	return r
+}
+
+// WithDraftStore adds a draft store to the router (builder pattern)
+// Required for draft preview, edit, delete, regenerate, and post operations
+func (r *Router) WithDraftStore(draftStore DraftStore) *Router {
+	r.draftStore = draftStore
+	return r
+}
+
+// WithAIRegenerator adds an AI regenerator to the router (builder pattern)
+// Required for regenerating draft content
+func (r *Router) WithAIRegenerator(aiRegenerator AIRegenerator) *Router {
+	r.aiRegenerator = aiRegenerator
+	return r
+}
+
+// WithSocialPoster adds a social poster to the router (builder pattern)
+// Required for posting drafts to social media platforms
+func (r *Router) WithSocialPoster(socialPoster SocialPoster) *Router {
+	r.socialPoster = socialPoster
+	return r
+}
+
+// WithThreadsOAuth adds Threads OAuth support to the router (builder pattern)
+// Required for connecting Threads accounts
+func (r *Router) WithThreadsOAuth(threadsOAuth ThreadsOAuthConnector, callbackURL string) *Router {
+	r.threadsOAuth = threadsOAuth
+	r.oauthCallbackURL = callbackURL
+	return r
+}
+
+// WithBlueskyConnector configures the router with a Bluesky connector for app password auth
+func (r *Router) WithBlueskyConnector(connector BlueskyConnector) *Router {
+	r.blueskyConnector = connector
+	return r
+}
+
+// WithConnectionLister configures the router with a connection lister for displaying user connections
+func (r *Router) WithConnectionLister(lister ConnectionLister) *Router {
+	r.connectionLister = lister
+	return r
+}
+
+// WithConnectionService configures the router with a connection service for disconnect operations
+func (r *Router) WithConnectionService(service ConnectionService) *Router {
+	r.connectionService = service
 	return r
 }
 
@@ -363,6 +646,42 @@ func NewRouterWithBlueskyConnector(userStore UserStore, blueskyConnector Bluesky
 	return r
 }
 
+// NewRouterWithGitHubOAuth creates a new web router with GitHub OAuth support
+func NewRouterWithGitHubOAuth(userStore UserStore, githubOAuth GitHubOAuthProvider, credStore CredentialStore, baseURL string) *Router {
+	r := &Router{
+		mux:                 http.NewServeMux(),
+		userStore:           userStore,
+		githubOAuthProvider: githubOAuth,
+		credentialStore:     credStore,
+		baseURL:             baseURL,
+	}
+	r.setupRoutes()
+	return r
+}
+
+// NewRouterWithThreadsOAuth creates a new web router with Threads OAuth support
+func NewRouterWithThreadsOAuth(userStore UserStore, threadsOAuth ThreadsOAuthConnector, callbackURL string) *Router {
+	r := &Router{
+		mux:              http.NewServeMux(),
+		userStore:        userStore,
+		threadsOAuth:     threadsOAuth,
+		oauthCallbackURL: callbackURL,
+	}
+	r.setupRoutes()
+	return r
+}
+
+// NewRouterWithDraftLister creates a new web router with draft lister
+func NewRouterWithDraftLister(userStore UserStore, draftLister DraftLister) *Router {
+	r := &Router{
+		mux:         http.NewServeMux(),
+		userStore:   userStore,
+		draftLister: draftLister,
+	}
+	r.setupRoutes()
+	return r
+}
+
 // NewRouterWithWebhookTesterAndDeliveries creates a new web router with both webhook tester and delivery store
 func NewRouterWithWebhookTesterAndDeliveries(userStore UserStore, repoStore RepositoryStore, commitLister CommitLister, postLister PostLister, secretGen SecretGenerator, webhookURL string, webhookTester WebhookTester, webhookDeliveryStore WebhookDeliveryStore) *Router {
 	r := &Router{
@@ -375,6 +694,23 @@ func NewRouterWithWebhookTesterAndDeliveries(userStore UserStore, repoStore Repo
 		webhookURL:           webhookURL,
 		webhookTester:        webhookTester,
 		webhookDeliveryStore: webhookDeliveryStore,
+	}
+	r.setupRoutes()
+	return r
+}
+
+
+// NewRouterWithGitHubRepoLister creates a new web router with GitHub repo listing support (alice-60)
+func NewRouterWithGitHubRepoLister(userStore UserStore, repoStore RepositoryStore, commitLister CommitLister, postLister PostLister, secretGen SecretGenerator, webhookURL string, githubRepoLister GitHubRepoLister) *Router {
+	r := &Router{
+		mux:              http.NewServeMux(),
+		userStore:        userStore,
+		repoStore:        repoStore,
+		commitLister:     commitLister,
+		postLister:       postLister,
+		secretGen:        secretGen,
+		webhookURL:       webhookURL,
+		githubRepoLister: githubRepoLister,
 	}
 	r.setupRoutes()
 	return r
@@ -400,6 +736,12 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("/connections/new", r.handleConnectionsNew)
 	r.mux.HandleFunc("/repositories", r.handleRepositories)
 	r.mux.HandleFunc("/repositories/new", r.handleRepositoriesNew)
+	r.mux.HandleFunc("/drafts", r.handleDrafts)
+	r.mux.HandleFunc("GET /drafts/{id}", r.handleDraftPreview)
+	r.mux.HandleFunc("POST /drafts/{id}/edit", r.handleDraftEdit)
+	r.mux.HandleFunc("POST /drafts/{id}/regenerate", r.handleDraftRegenerate)
+	r.mux.HandleFunc("POST /drafts/{id}/delete", r.handleDraftDelete)
+	r.mux.HandleFunc("POST /drafts/{id}/post", r.handleDraftPost)
 	r.mux.HandleFunc("/repositories/success", r.handleRepositoriesSuccess)
 	r.mux.HandleFunc("/repositories/{id}", r.handleRepositoryView)
 	r.mux.HandleFunc("GET /repositories/{id}/edit", r.handleRepositoryEdit)
@@ -415,6 +757,15 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("POST /connections/bluesky/connect", r.handleBlueskyConnectPost)
 	r.mux.HandleFunc("GET /connections/{platform}/disconnect", r.handleConnectionDisconnect)
 	r.mux.HandleFunc("POST /connections/{platform}/disconnect", r.handleConnectionDisconnectPost)
+
+	// GitHub OAuth routes
+	r.mux.HandleFunc("GET /oauth/github", r.handleGitHubOAuthInitiate)
+	r.mux.HandleFunc("GET /oauth/github/callback", r.handleGitHubOAuthCallback)
+
+	// Threads OAuth routes
+	r.mux.HandleFunc("GET /oauth/threads", r.handleThreadsOAuth)
+	r.mux.HandleFunc("GET /oauth/threads/callback", r.handleThreadsOAuthCallback)
+	r.mux.HandleFunc("POST /oauth/threads/refresh", r.handleThreadsTokenRefresh)
 }
 
 func (r *Router) handleHome(w http.ResponseWriter, req *http.Request) {
@@ -613,7 +964,13 @@ type DashboardData struct {
 	Repositories []*handlers.Repository
 	Commits      []*DashboardCommit
 	Posts        []*DashboardPost
+	Activities   []*DashboardActivity
 	IsEmpty      bool
+	// Pagination for activities
+	ActivityPage       int
+	ActivityTotalPages int
+	ActivityTotal      int
+	ActivityPageSize   int
 }
 
 func (r *Router) handleDashboard(w http.ResponseWriter, req *http.Request) {
@@ -633,8 +990,20 @@ func (r *Router) handleDashboard(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Parse activity pagination params
+	const activityPageSize = 10
+	activityPage := 1
+	if pageStr := req.URL.Query().Get("activity_page"); pageStr != "" {
+		if p, err := parsePageNumber(pageStr); err == nil && p > 0 {
+			activityPage = p
+		}
+	}
+
 	// Fetch dashboard data
-	dashData := &DashboardData{}
+	dashData := &DashboardData{
+		ActivityPage:     activityPage,
+		ActivityPageSize: activityPageSize,
+	}
 
 	// Get repositories if store is available
 	if r.repoStore != nil {
@@ -660,6 +1029,24 @@ func (r *Router) handleDashboard(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
+	// Get activities if lister is available
+	if r.activityLister != nil {
+		offset := (activityPage - 1) * activityPageSize
+		activities, err := r.activityLister.ListActivitiesByUser(req.Context(), claims.UserID, activityPageSize, offset)
+		if err == nil {
+			dashData.Activities = activities
+		}
+		// Get total count for pagination
+		total, err := r.activityLister.CountActivitiesByUser(req.Context(), claims.UserID)
+		if err == nil {
+			dashData.ActivityTotal = total
+			dashData.ActivityTotalPages = (total + activityPageSize - 1) / activityPageSize
+			if dashData.ActivityTotalPages == 0 {
+				dashData.ActivityTotalPages = 1
+			}
+		}
+	}
+
 	// Check if dashboard is empty (no repos)
 	dashData.IsEmpty = len(dashData.Repositories) == 0
 
@@ -669,8 +1056,16 @@ func (r *Router) handleDashboard(w http.ResponseWriter, req *http.Request) {
 			ID:    claims.UserID,
 			Email: claims.Email,
 		},
-		Data: dashData,
+		Data:       dashData,
+		DraftCount: r.getDraftCount(req.Context(), claims.UserID),
 	})
+}
+
+// parsePageNumber parses a page number from a string, returning 1 if invalid
+func parsePageNumber(s string) (int, error) {
+	var page int
+	_, err := fmt.Sscanf(s, "%d", &page)
+	return page, err
 }
 
 func (r *Router) handleLogout(w http.ResponseWriter, req *http.Request) {
@@ -721,10 +1116,16 @@ func (r *Router) handleConnections(w http.ResponseWriter, req *http.Request) {
 	}
 
 	r.renderPage(w, "connections.html", PageData{
-		Title: "Connections",
-		User:  &UserData{ID: claims.UserID, Email: claims.Email},
-		Data:  ConnectionsPageData{Connections: connections},
+		Title:      "Connections",
+		User:       &UserData{ID: claims.UserID, Email: claims.Email},
+		Data:       ConnectionsPageData{Connections: connections},
+		DraftCount: r.getDraftCount(req.Context(), claims.UserID),
 	})
+}
+
+// ConnectionsNewData holds data for the connections_new page
+type ConnectionsNewData struct {
+	ThreadsEnabled bool
 }
 
 func (r *Router) handleConnectionsNew(w http.ResponseWriter, req *http.Request) {
@@ -741,9 +1142,15 @@ func (r *Router) handleConnectionsNew(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 
+	// Check which platforms are enabled
+	data := ConnectionsNewData{
+		ThreadsEnabled: r.threadsOAuth != nil,
+	}
+
 	r.renderPage(w, "connections_new.html", PageData{
 		Title: "Connect Account",
 		User:  &UserData{ID: claims.UserID, Email: claims.Email},
+		Data:  data,
 	})
 }
 
@@ -847,6 +1254,11 @@ type RepositoriesListData struct {
 	Repositories []*handlers.Repository
 }
 
+// DraftsListData holds data for the drafts list page
+type DraftsListData struct {
+	Drafts []*DraftItem
+}
+
 func (r *Router) handleRepositories(w http.ResponseWriter, req *http.Request) {
 	// Check for auth cookie
 	cookie, err := req.Cookie(auth.CookieName)
@@ -887,6 +1299,69 @@ func (r *Router) handleRepositories(w http.ResponseWriter, req *http.Request) {
 			ID:    claims.UserID,
 			Email: claims.Email,
 		},
+		Data:       listData,
+		DraftCount: r.getDraftCount(req.Context(), claims.UserID),
+	})
+}
+
+// RepoSelectionData holds data for the repo selection page
+type RepoSelectionData struct {
+	GitHubRepos      []GitHubRepoItem
+	HasGitHubRepos   bool
+	ConnectedRepoIDs map[string]bool // Map of GitHub URLs that are already connected
+}
+
+// GitHubRepoItem represents a repo item for display in the selection list
+type GitHubRepoItem struct {
+	ID          int64
+	Name        string
+	FullName    string
+	HTMLURL     string
+	Description string
+	Private     bool
+	IsConnected bool
+}
+
+func (r *Router) handleDrafts(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Fetch drafts
+	listData := &DraftsListData{}
+
+	if r.draftLister != nil {
+		drafts, err := r.draftLister.ListDraftsByUser(req.Context(), claims.UserID)
+		if err != nil {
+			r.renderPage(w, "drafts.html", PageData{
+				Title: "Drafts",
+				User: &UserData{
+					ID:    claims.UserID,
+					Email: claims.Email,
+				},
+				Error: "Failed to load drafts",
+			})
+			return
+		}
+		listData.Drafts = drafts
+	}
+
+	r.renderPage(w, "drafts.html", PageData{
+		Title: "Drafts",
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
 		Data: listData,
 	})
 }
@@ -911,11 +1386,82 @@ func (r *Router) handleRepositoriesNew(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
+	// If we have a GitHub repo lister, show the selection page
+	if r.githubRepoLister != nil {
+		r.handleRepoSelectionPage(w, req, claims)
+		return
+	}
+
+	// Fall back to manual URL form
 	r.renderPage(w, "repositories_new.html", PageData{
 		Title: "Add Repository",
 		User: &UserData{
 			ID:    claims.UserID,
 			Email: claims.Email,
+		},
+	})
+}
+
+// handleRepoSelectionPage renders the GitHub repo selection page
+func (r *Router) handleRepoSelectionPage(w http.ResponseWriter, req *http.Request, claims *auth.Claims) {
+	// Get connected repos to mark as already added
+	connectedRepos := make(map[string]bool)
+	if r.repoStore != nil {
+		repos, err := r.repoStore.ListRepositoriesByUser(req.Context(), claims.UserID)
+		if err == nil {
+			for _, repo := range repos {
+				connectedRepos[repo.GitHubURL] = true
+			}
+		}
+	}
+
+	// Fetch GitHub repos - for now use an empty access token since we get it from mock in tests
+	// In production, this would come from credentialStore
+	accessToken := ""
+	if r.credentialStore != nil {
+		creds, err := r.credentialStore.GetCredentials(req.Context(), claims.UserID, "github")
+		if err == nil && creds != nil {
+			accessToken = creds.AccessToken
+		}
+	}
+
+	githubRepos, err := r.githubRepoLister.ListUserRepos(req.Context(), accessToken)
+	if err != nil {
+		r.renderPage(w, "repositories_new.html", PageData{
+			Title: "Add Repository",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Failed to fetch GitHub repositories",
+		})
+		return
+	}
+
+	// Convert to display items
+	repoItems := make([]GitHubRepoItem, 0, len(githubRepos))
+	for _, repo := range githubRepos {
+		repoItems = append(repoItems, GitHubRepoItem{
+			ID:          repo.ID,
+			Name:        repo.Name,
+			FullName:    repo.FullName,
+			HTMLURL:     repo.HTMLURL,
+			Description: repo.Description,
+			Private:     repo.Private,
+			IsConnected: connectedRepos[repo.HTMLURL],
+		})
+	}
+
+	r.renderPage(w, "repositories_new.html", PageData{
+		Title: "Add Repository",
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+		Data: &RepoSelectionData{
+			GitHubRepos:      repoItems,
+			HasGitHubRepos:   len(repoItems) > 0,
+			ConnectedRepoIDs: connectedRepos,
 		},
 	})
 }
@@ -934,6 +1480,14 @@ func (r *Router) handleRepositoriesNewPost(w http.ResponseWriter, req *http.Requ
 		return
 	}
 
+	// Check if this is multi-select form (repos field) or single URL form (github_url field)
+	selectedRepos := req.Form["repos"]
+	if len(selectedRepos) > 0 {
+		r.handleRepoSelectionPost(w, req, claims, selectedRepos)
+		return
+	}
+
+	// Single URL form - fallback mode
 	githubURL := req.FormValue("github_url")
 
 	// Validate GitHub URL
@@ -995,12 +1549,52 @@ func (r *Router) handleRepositoriesNewPost(w http.ResponseWriter, req *http.Requ
 	}
 
 	// Build webhook URL
-	webhookURL := fmt.Sprintf("%s/webhook/%s", r.webhookURL, repo.ID)
+	webhookURL := fmt.Sprintf("%s/webhooks/github/%s", r.webhookURL, repo.ID)
 
 	// Redirect to success page with query params
 	http.Redirect(w, req, fmt.Sprintf("/repositories/success?webhook_url=%s&webhook_secret=%s",
 		url.QueryEscape(webhookURL),
 		url.QueryEscape(secret)), http.StatusSeeOther)
+}
+
+// handleRepoSelectionPost handles POST from the multi-select repo form
+func (r *Router) handleRepoSelectionPost(w http.ResponseWriter, req *http.Request, claims *auth.Claims, selectedRepos []string) {
+	// Check if stores are configured
+	if r.repoStore == nil || r.secretGen == nil {
+		r.renderPage(w, "repositories_new.html", PageData{
+			Title: "Add Repository",
+			User: &UserData{
+				ID:    claims.UserID,
+				Email: claims.Email,
+			},
+			Error: "Repository creation not configured",
+		})
+		return
+	}
+
+	// Create each selected repository
+	for _, repoURL := range selectedRepos {
+		// Validate GitHub URL
+		if err := r.validateGitHubURL(repoURL); err != nil {
+			continue // Skip invalid URLs
+		}
+
+		// Generate webhook secret for each repo
+		secret, err := r.secretGen.Generate()
+		if err != nil {
+			continue // Skip if we can't generate a secret
+		}
+
+		// Create repository (ignore duplicates)
+		_, err = r.repoStore.CreateRepository(req.Context(), claims.UserID, repoURL, secret)
+		if err != nil && err != handlers.ErrDuplicateRepository {
+			// Log error but continue with other repos
+			continue
+		}
+	}
+
+	// Redirect to repositories list
+	http.Redirect(w, req, "/repositories", http.StatusSeeOther)
 }
 
 // validateGitHubURL validates that the URL is a valid GitHub repository URL
@@ -1168,7 +1762,7 @@ func (r *Router) handleRepositoryView(w http.ResponseWriter, req *http.Request) 
 	repoName := extractRepoName(repo.GitHubURL)
 
 	// Build webhook URL
-	webhookURL := fmt.Sprintf("%s/webhook/%s", r.webhookURL, repo.ID)
+	webhookURL := fmt.Sprintf("%s/webhooks/github/%s", r.webhookURL, repo.ID)
 
 	r.renderPage(w, "repository_view.html", PageData{
 		Title: repoName,
@@ -1536,7 +2130,7 @@ func (r *Router) handleWebhookTest(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Build webhook URL
-	webhookURL := fmt.Sprintf("%s/webhook/%s", r.webhookURL, repo.ID)
+	webhookURL := fmt.Sprintf("%s/webhooks/github/%s", r.webhookURL, repo.ID)
 
 	// Test the webhook
 	var result WebhookTestResult
@@ -1574,7 +2168,14 @@ func (r *Router) handleWebhookTest(w http.ResponseWriter, req *http.Request) {
 				errorMsg = &result.Error
 			}
 			// Ignore errors from recording - test result is what matters to user
-			_, _ = r.webhookDeliveryStore.CreateDelivery(req.Context(), repoID, "ping", testPayload, statusCode, errorMsg)
+			_, _ = r.webhookDeliveryStore.CreateDelivery(req.Context(), CreateDeliveryParams{
+				RepositoryID: repoID,
+				DeliveryID:   fmt.Sprintf("test-ping-%d", time.Now().UnixNano()),
+				EventType:    "ping",
+				Payload:      testPayload,
+				StatusCode:   statusCode,
+				ErrorMessage: errorMsg,
+			})
 		}
 	} else {
 		result = WebhookTestResult{
@@ -1700,7 +2301,7 @@ func (r *Router) handleWebhookRegenerate(w http.ResponseWriter, req *http.Reques
 	repoName := extractRepoName(repo.GitHubURL)
 
 	// Build webhook URL
-	webhookURL := fmt.Sprintf("%s/webhook/%s", r.webhookURL, repo.ID)
+	webhookURL := fmt.Sprintf("%s/webhooks/github/%s", r.webhookURL, repo.ID)
 
 	// Render success page showing the new secret (one-time display)
 	r.renderPage(w, "webhook_regenerate.html", PageData{
@@ -1716,6 +2317,211 @@ func (r *Router) handleWebhookRegenerate(w http.ResponseWriter, req *http.Reques
 			RepoName:      repoName,
 		},
 	})
+}
+
+// =============================================================================
+// Threads OAuth Handlers (alice-69)
+// =============================================================================
+
+// oauthStateCookieName is the cookie name for storing OAuth state
+const oauthStateCookieName = "oauth_state"
+
+// generateOAuthState generates a cryptographically secure random state string
+func generateOAuthState() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.URLEncoding.EncodeToString(b), nil
+}
+
+// handleThreadsOAuth initiates the Threads OAuth flow
+// GET /oauth/threads
+func (r *Router) handleThreadsOAuth(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie - user must be logged in
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	_, err = auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Check if Threads OAuth is configured
+	if r.threadsOAuth == nil {
+		http.Redirect(w, req, "/connections?error=threads_not_configured", http.StatusSeeOther)
+		return
+	}
+
+	// Generate state for CSRF protection
+	state, err := generateOAuthState()
+	if err != nil {
+		http.Redirect(w, req, "/connections?error=state_generation_failed", http.StatusSeeOther)
+		return
+	}
+
+	// Store state in a cookie (expires in 10 minutes)
+	stateCookie := &http.Cookie{
+		Name:     oauthStateCookieName,
+		Value:    state,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   600, // 10 minutes
+	}
+	http.SetCookie(w, stateCookie)
+
+	// Build callback URL
+	callbackURL := r.oauthCallbackURL + "/oauth/threads/callback"
+
+	// Get auth URL from provider and redirect
+	authURL := r.threadsOAuth.GetAuthURL(state, callbackURL)
+	http.Redirect(w, req, authURL, http.StatusTemporaryRedirect)
+}
+
+// handleThreadsOAuthCallback handles the Threads OAuth callback
+// GET /oauth/threads/callback
+func (r *Router) handleThreadsOAuthCallback(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie - user must be logged in
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login?error=unauthorized", http.StatusSeeOther)
+		return
+	}
+
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login?error=unauthorized", http.StatusSeeOther)
+		return
+	}
+
+	// Check if Threads OAuth is configured
+	if r.threadsOAuth == nil {
+		http.Redirect(w, req, "/connections?error=threads_not_configured", http.StatusSeeOther)
+		return
+	}
+
+	// Check for OAuth error from provider
+	if oauthError := req.URL.Query().Get("error"); oauthError != "" {
+		errorDesc := req.URL.Query().Get("error_description")
+		if errorDesc == "" {
+			errorDesc = oauthError
+		}
+		http.Redirect(w, req, "/connections?error="+url.QueryEscape(errorDesc), http.StatusSeeOther)
+		return
+	}
+
+	// Get the authorization code
+	code := req.URL.Query().Get("code")
+	if code == "" {
+		http.Redirect(w, req, "/connections?error=missing_code", http.StatusSeeOther)
+		return
+	}
+
+	// Get and validate state
+	state := req.URL.Query().Get("state")
+	if state == "" {
+		http.Redirect(w, req, "/connections?error=missing_state", http.StatusSeeOther)
+		return
+	}
+
+	// Verify state matches the cookie
+	stateCookie, err := req.Cookie(oauthStateCookieName)
+	if err != nil || stateCookie.Value == "" {
+		http.Redirect(w, req, "/connections?error=state_cookie_missing", http.StatusSeeOther)
+		return
+	}
+
+	if state != stateCookie.Value {
+		http.Redirect(w, req, "/connections?error=invalid_state", http.StatusSeeOther)
+		return
+	}
+
+	// Clear the state cookie
+	clearStateCookie := &http.Cookie{
+		Name:     oauthStateCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		MaxAge:   -1, // Delete the cookie
+	}
+	http.SetCookie(w, clearStateCookie)
+
+	// Build callback URL (same as used in initiation)
+	callbackURL := r.oauthCallbackURL + "/oauth/threads/callback"
+
+	// Exchange code for tokens and store credentials
+	_, err = r.threadsOAuth.ExchangeCode(req.Context(), claims.UserID, code, callbackURL)
+	if err != nil {
+		http.Redirect(w, req, "/connections?error="+url.QueryEscape("Failed to connect Threads: "+err.Error()), http.StatusSeeOther)
+		return
+	}
+
+	// Success - redirect to connections page
+	http.Redirect(w, req, "/connections?connected=threads", http.StatusSeeOther)
+}
+
+// handleThreadsTokenRefresh refreshes the Threads OAuth access token
+// POST /oauth/threads/refresh
+func (r *Router) handleThreadsTokenRefresh(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie - user must be logged in
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate the token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get existing credentials from credential store
+	if r.credentialStore == nil {
+		http.Error(w, "Credential store not configured", http.StatusInternalServerError)
+		return
+	}
+
+	creds, err := r.credentialStore.GetCredentials(req.Context(), claims.UserID, "threads")
+	if err != nil {
+		http.Error(w, "No Threads credentials found", http.StatusBadRequest)
+		return
+	}
+
+	// Call RefreshTokens on the OAuth provider
+	if r.threadsOAuth == nil {
+		http.Error(w, "Threads OAuth provider not configured", http.StatusInternalServerError)
+		return
+	}
+
+	newTokens, err := r.threadsOAuth.RefreshTokens(req.Context(), creds.RefreshToken)
+	if err != nil {
+		http.Error(w, "Failed to refresh token: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Update stored credentials
+	creds.AccessToken = newTokens.AccessToken
+	creds.RefreshToken = newTokens.RefreshToken
+	creds.TokenExpiresAt = newTokens.ExpiresAt
+	if newTokens.Scopes != "" {
+		creds.Scopes = newTokens.Scopes
+	}
+
+	if err := r.credentialStore.SaveCredentials(req.Context(), creds); err != nil {
+		http.Error(w, "Failed to save refreshed credentials", http.StatusInternalServerError)
+		return
+	}
+
+	// Success - redirect to connections page
+	http.Redirect(w, req, "/connections?refreshed=threads", http.StatusSeeOther)
 }
 
 func (r *Router) renderPage(w http.ResponseWriter, page string, data PageData) {
@@ -1734,6 +2540,18 @@ func (r *Router) renderPage(w http.ResponseWriter, page string, data PageData) {
 		http.Error(w, "Template error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+}
+
+// getDraftCount returns the draft count for a user, or 0 if not available
+func (r *Router) getDraftCount(ctx context.Context, userID string) int {
+	if r.draftCounter == nil {
+		return 0
+	}
+	count, err := r.draftCounter.CountDraftsByUser(ctx, userID)
+	if err != nil {
+		return 0
+	}
+	return count
 }
 
 // WebhookDeliveriesData holds data for the webhook deliveries page
@@ -1966,3 +2784,446 @@ func (r *Router) handleConnectionDisconnectPost(w http.ResponseWriter, req *http
 	// Using query param for flash message since we don't have session-based flash
 	http.Redirect(w, req, "/dashboard?disconnected="+platform, http.StatusSeeOther)
 }
+
+// =============================================================================
+// GitHub OAuth Routes (alice-58)
+// =============================================================================
+
+// handleGitHubOAuthInitiate initiates the GitHub OAuth flow.
+// GET /oauth/github
+// Redirects to GitHub authorization page.
+func (r *Router) handleGitHubOAuthInitiate(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	_, err = auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Check if GitHub OAuth provider is configured
+	if r.githubOAuthProvider == nil {
+		http.Error(w, "GitHub OAuth not configured", http.StatusInternalServerError)
+		return
+	}
+
+	// Generate state parameter for CSRF protection
+	// Store the state in a cookie for validation on callback
+	state, err := generateOAuthState()
+	if err != nil {
+		http.Redirect(w, req, "/connections?error=state_generation_failed", http.StatusSeeOther)
+		return
+	}
+	stateCookie := &http.Cookie{
+		Name:     "github_oauth_state",
+		Value:    state,
+		Path:     "/",
+		MaxAge:   600, // 10 minutes
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	}
+	http.SetCookie(w, stateCookie)
+
+	// Build redirect URL
+	redirectURL := r.baseURL + "/oauth/github/callback"
+	authURL := r.githubOAuthProvider.GetAuthURL(state, redirectURL)
+
+	// Redirect to GitHub authorization page
+	http.Redirect(w, req, authURL, http.StatusTemporaryRedirect)
+}
+
+// handleGitHubOAuthCallback handles the OAuth callback from GitHub.
+// GET /oauth/github/callback
+// Exchanges code for token, stores credentials, redirects to repo selection.
+func (r *Router) handleGitHubOAuthCallback(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Check for error from GitHub
+	if errParam := req.URL.Query().Get("error"); errParam != "" {
+		errDesc := req.URL.Query().Get("error_description")
+		http.Error(w, fmt.Sprintf("GitHub OAuth error: %s - %s", errParam, errDesc), http.StatusBadRequest)
+		return
+	}
+
+	// Validate state parameter
+	stateCookie, err := req.Cookie("github_oauth_state")
+	if err != nil {
+		http.Error(w, "Missing OAuth state", http.StatusBadRequest)
+		return
+	}
+
+	state := req.URL.Query().Get("state")
+	if state == "" || state != stateCookie.Value {
+		http.Error(w, "Invalid OAuth state", http.StatusBadRequest)
+		return
+	}
+
+	// Clear the state cookie
+	clearStateCookie := &http.Cookie{
+		Name:     "github_oauth_state",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+	}
+	http.SetCookie(w, clearStateCookie)
+
+	// Get authorization code
+	code := req.URL.Query().Get("code")
+	if code == "" {
+		http.Error(w, "Missing authorization code", http.StatusBadRequest)
+		return
+	}
+
+	// Check if GitHub OAuth provider is configured
+	if r.githubOAuthProvider == nil {
+		http.Error(w, "GitHub OAuth not configured", http.StatusInternalServerError)
+		return
+	}
+
+	// Exchange code for tokens
+	redirectURL := r.baseURL + "/oauth/github/callback"
+	tokens, err := r.githubOAuthProvider.ExchangeCode(req.Context(), code, redirectURL)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to exchange code: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Store credentials
+	if r.credentialStore != nil {
+		creds := &PlatformCredentials{
+			UserID:         claims.UserID,
+			Platform:       "github",
+			AccessToken:    tokens.AccessToken,
+			RefreshToken:   tokens.RefreshToken,
+			TokenExpiresAt: tokens.ExpiresAt,
+			PlatformUserID: tokens.PlatformUserID,
+			Scopes:         tokens.Scopes,
+		}
+		if err := r.credentialStore.SaveCredentials(req.Context(), creds); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to store credentials: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Redirect to repo selection page
+	http.Redirect(w, req, "/repositories/new", http.StatusSeeOther)
+}
+
+func (r *Router) handleDraftPreview(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get draft ID from path
+	draftID := req.PathValue("id")
+	if draftID == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Check if draft store is available
+	if r.draftStore == nil {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Get draft
+	draft, err := r.draftStore.GetDraftByID(req.Context(), draftID)
+	if err != nil {
+		http.Error(w, "Failed to load draft", http.StatusInternalServerError)
+		return
+	}
+
+	// Draft not found
+	if draft == nil {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Verify the draft belongs to the current user
+	if draft.UserID != claims.UserID {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Calculate character count
+	charCount := len(draft.Content)
+	charLimit := draft.CharLimit
+	if charLimit == 0 {
+		charLimit = 500 // Default limit
+	}
+
+	r.renderPage(w, "draft_preview.html", PageData{
+		Title: "Edit Draft",
+		User: &UserData{
+			ID:    claims.UserID,
+			Email: claims.Email,
+		},
+		Data: &DraftPreviewData{
+			Draft:     draft,
+			CharCount: charCount,
+			CharLimit: charLimit,
+		},
+	})
+}
+
+func (r *Router) handleDraftEdit(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get draft ID from path
+	draftID := req.PathValue("id")
+	if draftID == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Check if draft store is available
+	if r.draftStore == nil {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Get draft to verify ownership
+	draft, err := r.draftStore.GetDraftByID(req.Context(), draftID)
+	if err != nil || draft == nil {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Verify ownership
+	if draft.UserID != claims.UserID {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Parse form
+	if err := req.ParseForm(); err != nil {
+		http.Error(w, "Invalid form data", http.StatusBadRequest)
+		return
+	}
+
+	content := req.FormValue("content")
+
+	// Update draft content
+	_, err = r.draftStore.UpdateDraftContent(req.Context(), draftID, content)
+	if err != nil {
+		http.Error(w, "Failed to update draft", http.StatusInternalServerError)
+		return
+	}
+
+	// Redirect back to draft preview
+	http.Redirect(w, req, "/drafts/"+draftID, http.StatusSeeOther)
+}
+
+func (r *Router) handleDraftRegenerate(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get draft ID from path
+	draftID := req.PathValue("id")
+	if draftID == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Check if draft store is available
+	if r.draftStore == nil {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Get draft to verify ownership
+	draft, err := r.draftStore.GetDraftByID(req.Context(), draftID)
+	if err != nil || draft == nil {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Verify ownership
+	if draft.UserID != claims.UserID {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Check if AI regenerator is available
+	if r.aiRegenerator == nil {
+		http.Error(w, "AI regeneration not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Regenerate draft content using AI generator
+	if err := r.aiRegenerator.RegenerateDraft(req.Context(), draftID); err != nil {
+		http.Error(w, "Failed to regenerate draft", http.StatusInternalServerError)
+		return
+	}
+
+	// Redirect back to draft preview with success message
+	http.Redirect(w, req, "/drafts/"+draftID+"?regenerated=true", http.StatusSeeOther)
+}
+
+func (r *Router) handleDraftDelete(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get draft ID from path
+	draftID := req.PathValue("id")
+	if draftID == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Check if draft store is available
+	if r.draftStore == nil {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Get draft to verify ownership
+	draft, err := r.draftStore.GetDraftByID(req.Context(), draftID)
+	if err != nil || draft == nil {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Verify ownership
+	if draft.UserID != claims.UserID {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Delete the draft
+	err = r.draftStore.DeleteDraft(req.Context(), draftID)
+	if err != nil {
+		http.Error(w, "Failed to delete draft", http.StatusInternalServerError)
+		return
+	}
+
+	// Redirect to drafts list or dashboard
+	http.Redirect(w, req, "/dashboard", http.StatusSeeOther)
+}
+
+func (r *Router) handleDraftPost(w http.ResponseWriter, req *http.Request) {
+	// Check for auth cookie
+	cookie, err := req.Cookie(auth.CookieName)
+	if err != nil || cookie.Value == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Validate token
+	claims, err := auth.ValidateToken(cookie.Value)
+	if err != nil {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	// Get draft ID from path
+	draftID := req.PathValue("id")
+	if draftID == "" {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Check if draft store is available
+	if r.draftStore == nil {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Get draft to verify ownership
+	draft, err := r.draftStore.GetDraftByID(req.Context(), draftID)
+	if err != nil || draft == nil {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Verify ownership
+	if draft.UserID != claims.UserID {
+		http.NotFound(w, req)
+		return
+	}
+
+	// Post to social media if configured
+	if r.socialPoster != nil {
+		_, err = r.socialPoster.PostDraft(req.Context(), claims.UserID, draftID)
+		if err != nil {
+			http.Error(w, "Failed to post to social media: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Update draft status to posted
+	_, err = r.draftStore.UpdateDraftStatus(req.Context(), draftID, "posted")
+	if err != nil {
+		http.Error(w, "Failed to update draft status", http.StatusInternalServerError)
+		return
+	}
+
+	// Redirect to dashboard with success message
+	http.Redirect(w, req, "/dashboard?posted=true", http.StatusSeeOther)
+}
+

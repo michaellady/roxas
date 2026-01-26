@@ -99,6 +99,12 @@ func GetEmailFromContext(ctx context.Context) string {
 	return ""
 }
 
+// WithUserID returns a new context with the user ID set
+// This is primarily used for testing handlers that require authentication
+func WithUserID(ctx context.Context, userID string) context.Context {
+	return context.WithValue(ctx, userIDKey, userID)
+}
+
 // writeAuthError writes a 401 Unauthorized response with JSON body
 func writeAuthError(w http.ResponseWriter, message string) {
 	w.Header().Set("Content-Type", "application/json")

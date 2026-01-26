@@ -12,7 +12,7 @@
 
     <div class="connections-list">
         {{range .Data.Connections}}
-        <div class="connection-card">
+        <div class="connection-card{{if eq .Status "expired"}} connection-expired{{else if .ExpiresSoon}} connection-expiring{{end}}">
             <div class="connection-header">
                 <span class="platform-badge platform-{{.Platform}}">{{.Platform}}</span>
                 {{if eq .Status "connected"}}
@@ -26,6 +26,18 @@
 
             {{if .DisplayName}}
             <p class="connection-name">{{.DisplayName}}</p>
+            {{end}}
+
+            {{if eq .Status "expired"}}
+            <div class="token-warning token-expired">
+                <strong>Token Expired</strong>
+                <p>Your connection to {{.Platform}} has expired. Please reconnect to continue posting.</p>
+            </div>
+            {{else if .ExpiresSoon}}
+            <div class="token-warning token-expiring-soon">
+                <strong>Token Expiring Soon</strong>
+                <p>Your {{.Platform}} connection will expire soon. Reconnect to avoid interruption.</p>
+            </div>
             {{end}}
 
             {{if .RateLimit}}
@@ -48,8 +60,16 @@
             {{end}}
 
             <div class="connection-actions">
+                {{if eq .Status "expired"}}
+                <a href="/connections/new?platform={{.Platform}}" class="btn btn-primary btn-sm">Reconnect</a>
+                <a href="/connections/{{.Platform}}/disconnect" class="btn btn-danger btn-sm">Remove</a>
+                {{else}}
                 <a href="/connections/{{.Platform}}/test" class="btn btn-secondary btn-sm">Test</a>
+                {{if .ExpiresSoon}}
+                <a href="/connections/new?platform={{.Platform}}" class="btn btn-warning btn-sm">Reconnect</a>
+                {{end}}
                 <a href="/connections/{{.Platform}}/disconnect" class="btn btn-danger btn-sm">Disconnect</a>
+                {{end}}
             </div>
         </div>
         {{end}}
@@ -182,6 +202,55 @@
 .empty-state p {
     color: #666;
     margin-bottom: 20px;
+}
+
+/* Token expiration warnings */
+.token-warning {
+    margin: 15px 0;
+    padding: 12px 15px;
+    border-radius: 4px;
+    font-size: 14px;
+}
+
+.token-warning strong {
+    display: block;
+    margin-bottom: 4px;
+}
+
+.token-warning p {
+    margin: 0;
+    color: inherit;
+    opacity: 0.9;
+}
+
+.token-expired {
+    background: #ffebee;
+    border: 1px solid #f44336;
+    color: #c62828;
+}
+
+.token-expiring-soon {
+    background: #fff3e0;
+    border: 1px solid #ff9800;
+    color: #e65100;
+}
+
+.connection-expired {
+    border-color: #f44336;
+}
+
+.connection-expiring {
+    border-color: #ff9800;
+}
+
+.btn-warning {
+    background: #ff9800;
+    color: white;
+    border: none;
+}
+
+.btn-warning:hover {
+    background: #f57c00;
 }
 </style>
 {{end}}

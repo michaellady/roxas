@@ -28,6 +28,7 @@ var validPostStatuses = map[string]bool{
 var (
 	_ web.PostLister     = (*PostStore)(nil)
 	_ handlers.PostStore = (*PostStore)(nil)
+	_ web.DraftCounter   = (*PostStore)(nil)
 )
 
 // PostStore implements web.PostLister using PostgreSQL
@@ -40,7 +41,7 @@ func NewPostStore(pool *Pool) *PostStore {
 	return &PostStore{pool: pool}
 }
 
-// CreatePost creates a new post in the database with status 'draft'
+// CreatePost creates a new post in the database with status 'draft' (legacy method using commit_id)
 func (s *PostStore) CreatePost(ctx context.Context, commitID, platform, content string) (*handlers.Post, error) {
 	var post handlers.Post
 	var createdAt time.Time
@@ -48,12 +49,36 @@ func (s *PostStore) CreatePost(ctx context.Context, commitID, platform, content 
 	err := s.pool.QueryRow(ctx,
 		`INSERT INTO posts (commit_id, platform, content, status)
 		 VALUES ($1, $2, $3, 'draft')
-		 RETURNING id, commit_id, platform, content, status, created_at`,
+		 RETURNING id, commit_id, draft_id, platform, platform_post_id, platform_post_url, content, status, error_message, posted_at, created_at`,
 		commitID, platform, content,
-	).Scan(&post.ID, &post.CommitID, &post.Platform, &post.Content, &post.Status, &createdAt)
+	).Scan(&post.ID, &post.CommitID, &post.DraftID, &post.Platform, &post.PlatformPostID, &post.PlatformPostURL, &post.Content, &post.Status, &post.ErrorMessage, &post.PostedAt, &createdAt)
 
 	if err != nil {
 		// Check for unique constraint violation (duplicate commit_id + platform + version)
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return nil, handlers.ErrDuplicatePost
+		}
+		return nil, err
+	}
+
+	post.CreatedAt = createdAt
+	return &post, nil
+}
+
+// CreatePostFromDraft creates a new post from a draft (new method)
+func (s *PostStore) CreatePostFromDraft(ctx context.Context, draftID, platform, content string) (*handlers.Post, error) {
+	var post handlers.Post
+	var createdAt time.Time
+
+	err := s.pool.QueryRow(ctx,
+		`INSERT INTO posts (draft_id, platform, content, status)
+		 VALUES ($1, $2, $3, 'draft')
+		 RETURNING id, commit_id, draft_id, platform, platform_post_id, platform_post_url, content, status, error_message, posted_at, created_at`,
+		draftID, platform, content,
+	).Scan(&post.ID, &post.CommitID, &post.DraftID, &post.Platform, &post.PlatformPostID, &post.PlatformPostURL, &post.Content, &post.Status, &post.ErrorMessage, &post.PostedAt, &createdAt)
+
+	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return nil, handlers.ErrDuplicatePost
@@ -71,11 +96,11 @@ func (s *PostStore) GetPostByID(ctx context.Context, postID string) (*handlers.P
 	var createdAt time.Time
 
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, commit_id, platform, content, status, created_at
+		`SELECT id, commit_id, draft_id, platform, platform_post_id, platform_post_url, content, status, error_message, posted_at, created_at
 		 FROM posts
 		 WHERE id = $1`,
 		postID,
-	).Scan(&post.ID, &post.CommitID, &post.Platform, &post.Content, &post.Status, &createdAt)
+	).Scan(&post.ID, &post.CommitID, &post.DraftID, &post.Platform, &post.PlatformPostID, &post.PlatformPostURL, &post.Content, &post.Status, &post.ErrorMessage, &post.PostedAt, &createdAt)
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -88,14 +113,16 @@ func (s *PostStore) GetPostByID(ctx context.Context, postID string) (*handlers.P
 	return &post, nil
 }
 
-// GetPostsByUserID retrieves all posts for a user (via their commits)
+// GetPostsByUserID retrieves all posts for a user (via their commits or drafts)
 func (s *PostStore) GetPostsByUserID(ctx context.Context, userID string) ([]*handlers.Post, error) {
+	// Query posts via commits (legacy) or drafts (new)
 	rows, err := s.pool.Query(ctx,
-		`SELECT p.id, p.commit_id, p.platform, p.content, p.status, p.created_at
+		`SELECT p.id, p.commit_id, p.draft_id, p.platform, p.platform_post_id, p.platform_post_url, p.content, p.status, p.error_message, p.posted_at, p.created_at
 		 FROM posts p
-		 JOIN commits c ON p.commit_id = c.id
-		 JOIN repositories r ON c.repository_id = r.id
-		 WHERE r.user_id = $1
+		 LEFT JOIN commits c ON p.commit_id = c.id
+		 LEFT JOIN repositories r ON c.repository_id = r.id
+		 LEFT JOIN drafts d ON p.draft_id = d.id
+		 WHERE r.user_id = $1 OR d.user_id = $1
 		 ORDER BY p.created_at DESC`,
 		userID,
 	)
@@ -108,7 +135,7 @@ func (s *PostStore) GetPostsByUserID(ctx context.Context, userID string) ([]*han
 	for rows.Next() {
 		var post handlers.Post
 		var createdAt time.Time
-		if err := rows.Scan(&post.ID, &post.CommitID, &post.Platform, &post.Content, &post.Status, &createdAt); err != nil {
+		if err := rows.Scan(&post.ID, &post.CommitID, &post.DraftID, &post.Platform, &post.PlatformPostID, &post.PlatformPostURL, &post.Content, &post.Status, &post.ErrorMessage, &post.PostedAt, &createdAt); err != nil {
 			return nil, err
 		}
 		post.CreatedAt = createdAt
@@ -192,4 +219,21 @@ func (s *PostStore) UpdatePostStatus(ctx context.Context, postID, status string)
 	}
 
 	return nil
+}
+
+// CountDraftsByUser returns the number of draft posts for a user
+func (s *PostStore) CountDraftsByUser(ctx context.Context, userID string) (int, error) {
+	var count int
+	err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*)
+		 FROM posts p
+		 JOIN commits c ON p.commit_id = c.id
+		 JOIN repositories r ON c.repository_id = r.id
+		 WHERE r.user_id = $1 AND p.status = 'draft'`,
+		userID,
+	).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
 }

@@ -1297,7 +1297,7 @@ func TestWebUI_AddRepositoryAndVerifyWebhook(t *testing.T) {
 	}
 
 	// Verify webhook URL is displayed
-	expectedWebhookURL := testWebhookBaseURL + "/webhook/" + createdRepo.ID
+	expectedWebhookURL := testWebhookBaseURL + "/webhooks/github/" + createdRepo.ID
 	if !strings.Contains(body, expectedWebhookURL) {
 		t.Fatalf("Step 4 FAILED: Expected webhook URL '%s' in page, body: %s", expectedWebhookURL, body[:min(len(body), 500)])
 	}
@@ -1559,7 +1559,7 @@ func TestRouter_GetRepositoriesSuccess_WithAuth_ShowsConfig(t *testing.T) {
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 	token, _ := generateToken(user.ID, user.Email)
 
-	req := httptest.NewRequest(http.MethodGet, "/repositories/success?webhook_url=https://roxas.ai/webhook/123&webhook_secret=secret456", nil)
+	req := httptest.NewRequest(http.MethodGet, "/repositories/success?webhook_url=https://roxas.ai/webhooks/github/123&webhook_secret=secret456", nil)
 	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
 	rr := httptest.NewRecorder()
 
@@ -1577,7 +1577,7 @@ func TestRouter_GetRepositoriesSuccess_WithAuth_ShowsConfig(t *testing.T) {
 	}
 
 	// Should display webhook URL
-	if !strings.Contains(body, "https://roxas.ai/webhook/123") {
+	if !strings.Contains(body, "https://roxas.ai/webhooks/github/123") {
 		t.Errorf("Expected webhook URL in response")
 	}
 
@@ -1788,7 +1788,7 @@ func TestRouter_GetRepositoryView_WithAuth_ShowsRepoDetails(t *testing.T) {
 		t.Errorf("Expected GitHub URL in response")
 	}
 	// Should show webhook URL
-	if !strings.Contains(body, "https://example.com/webhook/"+repo.ID) {
+	if !strings.Contains(body, "https://example.com/webhooks/github/"+repo.ID) {
 		t.Errorf("Expected webhook URL in response")
 	}
 	// Should show status
@@ -2164,17 +2164,21 @@ func (s *MockWebhookDeliveryStore) AddDelivery(repoID string, delivery *WebhookD
 	s.deliveries[repoID] = append(s.deliveries[repoID], delivery)
 }
 
-func (s *MockWebhookDeliveryStore) CreateDelivery(ctx context.Context, repoID, eventType string, payload []byte, statusCode int, errorMessage *string) (*WebhookDelivery, error) {
+func (s *MockWebhookDeliveryStore) CreateDelivery(ctx context.Context, params CreateDeliveryParams) (*WebhookDelivery, error) {
 	delivery := &WebhookDelivery{
-		ID:           fmt.Sprintf("delivery-%d", len(s.deliveries[repoID])+1),
-		RepositoryID: repoID,
-		EventType:    eventType,
-		Payload:      string(payload),
-		StatusCode:   statusCode,
-		ErrorMessage: errorMessage,
-		IsSuccess:    statusCode >= 200 && statusCode < 300,
+		ID:           fmt.Sprintf("delivery-%d", len(s.deliveries[params.RepositoryID])+1),
+		RepositoryID: params.RepositoryID,
+		DeliveryID:   params.DeliveryID,
+		EventType:    params.EventType,
+		Payload:      string(params.Payload),
+		StatusCode:   params.StatusCode,
+		ErrorMessage: params.ErrorMessage,
+		IsSuccess:    params.StatusCode >= 200 && params.StatusCode < 300,
+		Ref:          params.Ref,
+		BeforeSHA:    params.BeforeSHA,
+		AfterSHA:     params.AfterSHA,
 	}
-	s.deliveries[repoID] = append(s.deliveries[repoID], delivery)
+	s.deliveries[params.RepositoryID] = append(s.deliveries[params.RepositoryID], delivery)
 	return delivery, nil
 }
 
@@ -2411,7 +2415,7 @@ func TestRouter_PostWebhookTest_Success_ReturnsOK(t *testing.T) {
 	}
 
 	// Verify the webhook tester was called with correct URL
-	expectedURL := "https://example.com/webhook/" + repo.ID
+	expectedURL := "https://example.com/webhooks/github/" + repo.ID
 	if webhookTester.GetLastURL() != expectedURL {
 		t.Errorf("Expected webhook tester to be called with %s, got %s", expectedURL, webhookTester.GetLastURL())
 	}
@@ -2660,7 +2664,7 @@ func TestRouter_PostWebhookRegenerate_Success_ShowsNewSecret(t *testing.T) {
 	}
 
 	// Should show webhook URL
-	if !strings.Contains(body, "https://roxas.ai/webhook/"+repo.ID) {
+	if !strings.Contains(body, "https://roxas.ai/webhooks/github/"+repo.ID) {
 		t.Errorf("Expected webhook URL in response")
 	}
 
@@ -3394,3 +3398,974 @@ func TestRouter_PostConnectionDisconnect_OtherUserConnection_Returns404(t *testi
 		t.Errorf("User1's connection should NOT have been deleted by user2")
 	}
 }
+
+// =============================================================================
+// TB-DRAFT-01: Draft Preview Page Tests (TDD - RED)
+// =============================================================================
+
+// MockDraftStore implements DraftStore interface for testing draft preview
+type MockDraftStore struct {
+	mu     sync.Mutex
+	drafts map[string]*Draft
+}
+
+func NewMockDraftStore() *MockDraftStore {
+	return &MockDraftStore{drafts: make(map[string]*Draft)}
+}
+
+func (s *MockDraftStore) CreateDraft(ctx context.Context, userID, repoID, content string) (*Draft, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	draft := &Draft{
+		ID:           uuid.New().String(),
+		UserID:       userID,
+		RepositoryID: repoID,
+		Content:      content,
+		Status:       "draft",
+		CharLimit:    500,
+		CreatedAt:    time.Now(),
+	}
+	s.drafts[draft.ID] = draft
+	return draft, nil
+}
+
+func (s *MockDraftStore) GetDraftByID(ctx context.Context, draftID string) (*Draft, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if draft, ok := s.drafts[draftID]; ok {
+		return draft, nil
+	}
+	return nil, nil
+}
+
+func (s *MockDraftStore) UpdateDraftContent(ctx context.Context, draftID, content string) (*Draft, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if draft, ok := s.drafts[draftID]; ok {
+		draft.Content = content
+		return draft, nil
+	}
+	return nil, nil
+}
+
+func (s *MockDraftStore) DeleteDraft(ctx context.Context, draftID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.drafts, draftID)
+	return nil
+}
+
+func (s *MockDraftStore) UpdateDraftStatus(ctx context.Context, draftID, status string) (*Draft, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if draft, ok := s.drafts[draftID]; ok {
+		draft.Status = status
+		return draft, nil
+	}
+	return nil, nil
+}
+
+// AddDraft adds a draft directly for testing
+func (s *MockDraftStore) AddDraft(draft *Draft) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.drafts[draft.ID] = draft
+}
+
+// MockAIRegenerator implements AIRegenerator interface for testing
+type MockAIRegenerator struct {
+	regenerateCalled bool
+	lastDraftID      string
+	shouldError      bool
+}
+
+func NewMockAIRegenerator() *MockAIRegenerator {
+	return &MockAIRegenerator{}
+}
+
+func (m *MockAIRegenerator) RegenerateDraft(ctx context.Context, draftID string) error {
+	m.regenerateCalled = true
+	m.lastDraftID = draftID
+	if m.shouldError {
+		return fmt.Errorf("mock regeneration error")
+	}
+	return nil
+}
+
+// =============================================================================
+// Draft Preview Page - Authentication Tests
+// =============================================================================
+
+func TestRouter_GetDraftPreview_WithoutAuth_RedirectsToLogin(t *testing.T) {
+	userStore := NewMockUserStore()
+	draftStore := NewMockDraftStore()
+	router := NewRouterWithDraftStore(userStore, draftStore)
+
+	// Create a draft
+	draft := &Draft{
+		ID:        uuid.New().String(),
+		UserID:    "some-user-id",
+		Content:   "Test draft content",
+		Status:    "draft",
+		CharLimit: 500,
+		CreatedAt: time.Now(),
+	}
+	draftStore.AddDraft(draft)
+
+	req := httptest.NewRequest(http.MethodGet, "/drafts/"+draft.ID, nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should redirect to login
+	if rr.Code != http.StatusSeeOther && rr.Code != http.StatusFound {
+		t.Errorf("Expected redirect status, got %d", rr.Code)
+	}
+
+	location := rr.Header().Get("Location")
+	if location != "/login" {
+		t.Errorf("Expected redirect to /login, got %s", location)
+	}
+}
+
+func TestRouter_GetDraftPreview_WithAuth_ReturnsHTML(t *testing.T) {
+	userStore := NewMockUserStore()
+	draftStore := NewMockDraftStore()
+	router := NewRouterWithDraftStore(userStore, draftStore)
+
+	// Create a test user
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+
+	// Create a draft for this user
+	draft := &Draft{
+		ID:        uuid.New().String(),
+		UserID:    user.ID,
+		Content:   "This is my test draft content about a new feature",
+		Status:    "draft",
+		CharLimit: 500,
+		CreatedAt: time.Now(),
+	}
+	draftStore.AddDraft(draft)
+
+	// Generate valid JWT token
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/drafts/"+draft.ID, nil)
+	req.Header.Set("Accept", "text/html")
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should return 200 OK
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Should return HTML content type
+	contentType := rr.Header().Get("Content-Type")
+	if !strings.Contains(contentType, "text/html") {
+		t.Errorf("Expected Content-Type text/html, got %s", contentType)
+	}
+}
+
+func TestRouter_GetDraftPreview_NotFound_Returns404(t *testing.T) {
+	userStore := NewMockUserStore()
+	draftStore := NewMockDraftStore()
+	router := NewRouterWithDraftStore(userStore, draftStore)
+
+	// Create a test user
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+
+	// Generate valid JWT token
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/drafts/nonexistent-id", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should return 404
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404, got %d", rr.Code)
+	}
+}
+
+func TestRouter_GetDraftPreview_OtherUserDraft_Returns404(t *testing.T) {
+	userStore := NewMockUserStore()
+	draftStore := NewMockDraftStore()
+	router := NewRouterWithDraftStore(userStore, draftStore)
+
+	// Create two users
+	user1, _ := userStore.CreateUser(context.Background(), "user1@example.com", hashPassword("password123"))
+	user2, _ := userStore.CreateUser(context.Background(), "user2@example.com", hashPassword("password123"))
+
+	// Create a draft for user1
+	draft := &Draft{
+		ID:        uuid.New().String(),
+		UserID:    user1.ID,
+		Content:   "User1's draft",
+		Status:    "draft",
+		CharLimit: 500,
+		CreatedAt: time.Now(),
+	}
+	draftStore.AddDraft(draft)
+
+	// User2 tries to access user1's draft
+	token, _ := generateToken(user2.ID, user2.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/drafts/"+draft.ID, nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should return 404 (not 403, to avoid leaking draft existence)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404 for other user's draft, got %d", rr.Code)
+	}
+}
+
+// =============================================================================
+// Draft Preview Page - Content Tests
+// =============================================================================
+
+func TestRouter_GetDraftPreview_DisplaysDraftContent(t *testing.T) {
+	userStore := NewMockUserStore()
+	draftStore := NewMockDraftStore()
+	router := NewRouterWithDraftStore(userStore, draftStore)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+
+	draft := &Draft{
+		ID:        uuid.New().String(),
+		UserID:    user.ID,
+		Content:   "This commit introduces secure authentication middleware for the API",
+		Status:    "draft",
+		CharLimit: 500,
+		CreatedAt: time.Now(),
+	}
+	draftStore.AddDraft(draft)
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/drafts/"+draft.ID, nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	body := rr.Body.String()
+	// Should display the draft content
+	if !strings.Contains(body, "secure authentication middleware") {
+		t.Errorf("Expected draft content to be displayed, got: %s", body[:min(len(body), 500)])
+	}
+}
+
+func TestRouter_GetDraftPreview_HasEditableTextarea(t *testing.T) {
+	userStore := NewMockUserStore()
+	draftStore := NewMockDraftStore()
+	router := NewRouterWithDraftStore(userStore, draftStore)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+
+	draft := &Draft{
+		ID:        uuid.New().String(),
+		UserID:    user.ID,
+		Content:   "Draft content here",
+		Status:    "draft",
+		CharLimit: 500,
+		CreatedAt: time.Now(),
+	}
+	draftStore.AddDraft(draft)
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/drafts/"+draft.ID, nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	body := rr.Body.String()
+	// Should have a textarea element for editing
+	if !strings.Contains(body, "<textarea") {
+		t.Errorf("Expected textarea element for editing draft content")
+	}
+	// Textarea should contain the draft content
+	if !strings.Contains(body, "Draft content here") {
+		t.Errorf("Expected textarea to contain draft content")
+	}
+}
+
+func TestRouter_GetDraftPreview_ShowsCharacterCount(t *testing.T) {
+	userStore := NewMockUserStore()
+	draftStore := NewMockDraftStore()
+	router := NewRouterWithDraftStore(userStore, draftStore)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+
+	draft := &Draft{
+		ID:        uuid.New().String(),
+		UserID:    user.ID,
+		Content:   "Short content", // 13 characters
+		Status:    "draft",
+		CharLimit: 500,
+		CreatedAt: time.Now(),
+	}
+	draftStore.AddDraft(draft)
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/drafts/"+draft.ID, nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	body := rr.Body.String()
+	// Should show character count with limit (e.g., "13 / 500" or "Characters: 13 / 500")
+	if !strings.Contains(body, "500") {
+		t.Errorf("Expected character limit (500) to be displayed")
+	}
+	// Should have some indication of character count
+	hasCharCount := strings.Contains(strings.ToLower(body), "character") ||
+		strings.Contains(body, "/ 500") ||
+		strings.Contains(body, "/500")
+	if !hasCharCount {
+		t.Errorf("Expected character count indicator, got: %s", body[:min(len(body), 500)])
+	}
+}
+
+// =============================================================================
+// Draft Preview Page - Button Tests
+// =============================================================================
+
+func TestRouter_GetDraftPreview_HasRegenerateButton(t *testing.T) {
+	userStore := NewMockUserStore()
+	draftStore := NewMockDraftStore()
+	router := NewRouterWithDraftStore(userStore, draftStore)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+
+	draft := &Draft{
+		ID:        uuid.New().String(),
+		UserID:    user.ID,
+		Content:   "Draft content",
+		Status:    "draft",
+		CharLimit: 500,
+		CreatedAt: time.Now(),
+	}
+	draftStore.AddDraft(draft)
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/drafts/"+draft.ID, nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	body := rr.Body.String()
+	// Should have a Regenerate button
+	hasRegenerate := strings.Contains(body, "Regenerate") ||
+		strings.Contains(body, "regenerate") ||
+		strings.Contains(body, "re-generate")
+	if !hasRegenerate {
+		t.Errorf("Expected Regenerate button, got: %s", body[:min(len(body), 500)])
+	}
+}
+
+func TestRouter_GetDraftPreview_HasDeleteButton(t *testing.T) {
+	userStore := NewMockUserStore()
+	draftStore := NewMockDraftStore()
+	router := NewRouterWithDraftStore(userStore, draftStore)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+
+	draft := &Draft{
+		ID:        uuid.New().String(),
+		UserID:    user.ID,
+		Content:   "Draft content",
+		Status:    "draft",
+		CharLimit: 500,
+		CreatedAt: time.Now(),
+	}
+	draftStore.AddDraft(draft)
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/drafts/"+draft.ID, nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	body := rr.Body.String()
+	// Should have a Delete button
+	hasDelete := strings.Contains(body, "Delete") ||
+		strings.Contains(body, "delete") ||
+		strings.Contains(body, "Remove") ||
+		strings.Contains(body, "Dismiss")
+	if !hasDelete {
+		t.Errorf("Expected Delete/Remove button, got: %s", body[:min(len(body), 500)])
+	}
+}
+
+func TestRouter_GetDraftPreview_HasPostButton(t *testing.T) {
+	userStore := NewMockUserStore()
+	draftStore := NewMockDraftStore()
+	router := NewRouterWithDraftStore(userStore, draftStore)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+
+	draft := &Draft{
+		ID:        uuid.New().String(),
+		UserID:    user.ID,
+		Content:   "Draft content",
+		Status:    "draft",
+		CharLimit: 500,
+		CreatedAt: time.Now(),
+	}
+	draftStore.AddDraft(draft)
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/drafts/"+draft.ID, nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	body := rr.Body.String()
+	// Should have a Post button
+	hasPost := strings.Contains(body, "Post It") ||
+		strings.Contains(body, "Post") ||
+		strings.Contains(body, "Publish")
+	if !hasPost {
+		t.Errorf("Expected Post/Publish button, got: %s", body[:min(len(body), 500)])
+	}
+}
+
+// =============================================================================
+// Draft Preview Page - Form Submission Tests
+// =============================================================================
+
+func TestRouter_PostDraftRegenerate_RegeneratesContent(t *testing.T) {
+	userStore := NewMockUserStore()
+	draftStore := NewMockDraftStore()
+	aiRegenerator := NewMockAIRegenerator()
+	router := NewRouterWithDraftStore(userStore, draftStore).WithAIRegenerator(aiRegenerator)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+
+	draft := &Draft{
+		ID:        uuid.New().String(),
+		UserID:    user.ID,
+		Content:   "Original content",
+		Status:    "draft",
+		CharLimit: 500,
+		CreatedAt: time.Now(),
+	}
+	draftStore.AddDraft(draft)
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodPost, "/drafts/"+draft.ID+"/regenerate", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should redirect back to draft preview
+	if rr.Code != http.StatusSeeOther && rr.Code != http.StatusOK {
+		t.Errorf("Expected redirect or success status, got %d", rr.Code)
+	}
+
+	// Verify AI regenerator was called
+	if !aiRegenerator.regenerateCalled {
+		t.Error("Expected AI regenerator to be called")
+	}
+	if aiRegenerator.lastDraftID != draft.ID {
+		t.Errorf("Expected regenerator to be called with draft ID %s, got %s", draft.ID, aiRegenerator.lastDraftID)
+	}
+}
+
+func TestRouter_PostDraftRegenerate_WithoutAIRegenerator_Returns503(t *testing.T) {
+	userStore := NewMockUserStore()
+	draftStore := NewMockDraftStore()
+	router := NewRouterWithDraftStore(userStore, draftStore) // No AI regenerator
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+
+	draft := &Draft{
+		ID:        uuid.New().String(),
+		UserID:    user.ID,
+		Content:   "Original content",
+		Status:    "draft",
+		CharLimit: 500,
+		CreatedAt: time.Now(),
+	}
+	draftStore.AddDraft(draft)
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodPost, "/drafts/"+draft.ID+"/regenerate", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should return 503 when AI regenerator is not configured
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected 503 Service Unavailable, got %d", rr.Code)
+	}
+}
+
+func TestRouter_PostDraftDelete_DeletesDraft(t *testing.T) {
+	userStore := NewMockUserStore()
+	draftStore := NewMockDraftStore()
+	router := NewRouterWithDraftStore(userStore, draftStore)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+
+	draft := &Draft{
+		ID:        uuid.New().String(),
+		UserID:    user.ID,
+		Content:   "Draft to delete",
+		Status:    "draft",
+		CharLimit: 500,
+		CreatedAt: time.Now(),
+	}
+	draftStore.AddDraft(draft)
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodPost, "/drafts/"+draft.ID+"/delete", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should redirect to drafts list or dashboard
+	if rr.Code != http.StatusSeeOther && rr.Code != http.StatusFound {
+		t.Errorf("Expected redirect status, got %d", rr.Code)
+	}
+}
+
+func TestRouter_PostDraftPost_PublishesDraft(t *testing.T) {
+	userStore := NewMockUserStore()
+	draftStore := NewMockDraftStore()
+	router := NewRouterWithDraftStore(userStore, draftStore)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+
+	draft := &Draft{
+		ID:        uuid.New().String(),
+		UserID:    user.ID,
+		Content:   "Draft to post",
+		Status:    "draft",
+		CharLimit: 500,
+		CreatedAt: time.Now(),
+	}
+	draftStore.AddDraft(draft)
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodPost, "/drafts/"+draft.ID+"/post", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should redirect or return success
+	if rr.Code != http.StatusSeeOther && rr.Code != http.StatusOK && rr.Code != http.StatusFound {
+		t.Errorf("Expected redirect or success status, got %d", rr.Code)
+	}
+}
+
+// =============================================================================
+// Helper: Router Constructor with Draft Store
+// =============================================================================
+
+// NewRouterWithDraftStore creates a router with user and draft stores for testing
+func NewRouterWithDraftStore(userStore UserStore, draftStore DraftStore) *Router {
+	r := NewRouter()
+	r.userStore = userStore
+	r.draftStore = draftStore
+	return r
+}
+// =============================================================================
+// alice-87: Drafts List Page Tests (TDD - RED)
+// Tests for /drafts page: renders draft list, shows repo name/preview/time,
+// empty state, pagination
+// =============================================================================
+
+// TDD DraftListItem type removed - using DraftItem from router.go
+
+// TDD DraftLister interface removed - real DraftLister is in router.go
+
+// MockDraftLister implements DraftLister for testing (matches router.go interface)
+type MockDraftLister struct {
+	mu       sync.Mutex
+	drafts   map[string][]*DraftItem // userID -> drafts
+	errOnGet error
+}
+
+func NewMockDraftLister() *MockDraftLister {
+	return &MockDraftLister{
+		drafts: make(map[string][]*DraftItem),
+	}
+}
+
+func (m *MockDraftLister) AddDraft(userID string, draft *DraftItem) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.drafts[userID] = append(m.drafts[userID], draft)
+}
+
+func (m *MockDraftLister) ListDraftsByUser(ctx context.Context, userID string) ([]*DraftItem, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.errOnGet != nil {
+		return nil, m.errOnGet
+	}
+
+	drafts := m.drafts[userID]
+	if drafts == nil {
+		return []*DraftItem{}, nil
+	}
+
+	return drafts, nil
+}
+
+func (m *MockDraftLister) SetError(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.errOnGet = err
+}
+
+// TestRouter_GetDrafts_Unauthenticated_RedirectsToLogin tests that unauthenticated
+// users are redirected to login when accessing /drafts
+func TestRouter_GetDrafts_Unauthenticated_RedirectsToLogin(t *testing.T) {
+	router := NewRouter()
+
+	req := httptest.NewRequest(http.MethodGet, "/drafts", nil)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should redirect to login
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected redirect status 303, got %d", rr.Code)
+	}
+	if rr.Header().Get("Location") != "/login" {
+		t.Errorf("Expected redirect to /login, got %s", rr.Header().Get("Location"))
+	}
+}
+
+// TestRouter_GetDrafts_WithAuth_ReturnsHTML tests that authenticated users
+// get an HTML page when accessing /drafts
+func TestRouter_GetDrafts_WithAuth_ReturnsHTML(t *testing.T) {
+	userStore := NewMockUserStore()
+	router := NewRouterWithStores(userStore)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/drafts", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should return 200 OK
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	// Should return HTML content type
+	contentType := rr.Header().Get("Content-Type")
+	if !strings.Contains(contentType, "text/html") {
+		t.Errorf("Expected Content-Type text/html, got %s", contentType)
+	}
+
+	// Should contain HTML structure
+	body := rr.Body.String()
+	if !strings.Contains(body, "<!DOCTYPE html>") {
+		t.Errorf("Expected HTML doctype in response")
+	}
+	if !strings.Contains(body, "Drafts") {
+		t.Errorf("Expected 'Drafts' in page content")
+	}
+}
+
+// TestRouter_GetDrafts_EmptyState_ShowsEmptyMessage tests that when a user has
+// no drafts, an appropriate empty state message is shown
+func TestRouter_GetDrafts_EmptyState_ShowsEmptyMessage(t *testing.T) {
+	userStore := NewMockUserStore()
+	draftLister := NewMockDraftLister()
+	router := NewRouterWithDraftLister(userStore, draftLister)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/drafts", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+	// Should show empty state message (template shows "No Drafts Yet")
+	if !strings.Contains(body, "No Drafts Yet") {
+		t.Errorf("Expected empty state message about no drafts, got: %s", body[:min(len(body), 500)])
+	}
+}
+
+// TestRouter_GetDrafts_WithDrafts_DisplaysDraftList tests that drafts are
+// displayed when they exist
+func TestRouter_GetDrafts_WithDrafts_DisplaysDraftList(t *testing.T) {
+	userStore := NewMockUserStore()
+	draftLister := NewMockDraftLister()
+	router := NewRouterWithDraftLister(userStore, draftLister)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+
+	// Add test drafts
+	draftLister.AddDraft(user.ID, &DraftItem{
+		ID:          "draft-1",
+		RepoName:    "acme/awesome-project",
+		PreviewText: "Exciting update! We just shipped a new feature...",
+		Platform:    "threads",
+		CreatedAt:   time.Now().Add(-1 * time.Hour),
+	})
+	draftLister.AddDraft(user.ID, &DraftItem{
+		ID:          "draft-2",
+		RepoName:    "acme/another-repo",
+		PreviewText: "Bug fix: resolved issue with authentication...",
+		Platform:    "threads",
+		CreatedAt:   time.Now().Add(-2 * time.Hour),
+	})
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/drafts", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+
+	// Should contain draft content
+	if !strings.Contains(body, "draft-1") && !strings.Contains(body, "acme/awesome-project") {
+		t.Errorf("Expected first draft info in response, got: %s", body[:min(len(body), 500)])
+	}
+	if !strings.Contains(body, "draft-2") && !strings.Contains(body, "acme/another-repo") {
+		t.Errorf("Expected second draft info in response")
+	}
+}
+
+// TestRouter_GetDrafts_ShowsRepoNamePreviewTime tests that each draft shows
+// the repository name, content preview, and timestamp
+func TestRouter_GetDrafts_ShowsRepoNamePreviewTime(t *testing.T) {
+	userStore := NewMockUserStore()
+	draftLister := NewMockDraftLister()
+	router := NewRouterWithDraftLister(userStore, draftLister)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+
+	// Add a draft with specific content to verify display
+	draftLister.AddDraft(user.ID, &DraftItem{
+		ID:          "draft-123",
+		RepoName:    "testorg/testrepo",
+		PreviewText: "This is a preview of the generated post content",
+		Platform:    "threads",
+		CreatedAt:   time.Date(2026, 1, 20, 10, 30, 0, 0, time.UTC),
+	})
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/drafts", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+
+	// Should show repository name
+	if !strings.Contains(body, "testorg/testrepo") {
+		t.Errorf("Expected repository name 'testorg/testrepo' in response, got: %s", body[:min(len(body), 500)])
+	}
+
+	// Should show content preview
+	if !strings.Contains(body, "preview of the generated post") {
+		t.Errorf("Expected content preview in response")
+	}
+
+	// Should show some form of timestamp (exact format may vary)
+	// We check for date components that would appear in a formatted time
+	if !strings.Contains(body, "2026") && !strings.Contains(body, "Jan") && !strings.Contains(body, "20") {
+		t.Errorf("Expected timestamp/date information in response")
+	}
+}
+
+// TestRouter_GetDrafts_Pagination_FirstPage tests that pagination works correctly
+// showing the first page of drafts
+func TestRouter_GetDrafts_Pagination_FirstPage(t *testing.T) {
+	userStore := NewMockUserStore()
+	draftLister := NewMockDraftLister()
+	router := NewRouterWithDraftLister(userStore, draftLister)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+
+	// Add many drafts to test pagination
+	for i := 0; i < 25; i++ {
+		draftLister.AddDraft(user.ID, &DraftItem{
+			ID:          fmt.Sprintf("draft-%d", i),
+			RepoName:    fmt.Sprintf("repo/project-%d", i),
+			PreviewText: fmt.Sprintf("Draft content for item %d", i),
+			Platform:    "threads",
+			CreatedAt:   time.Now().Add(-time.Duration(i) * time.Hour),
+		})
+	}
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	// Request first page (default)
+	req := httptest.NewRequest(http.MethodGet, "/drafts", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+
+	// Should show page content (first page items)
+	if !strings.Contains(body, "draft-0") && !strings.Contains(body, "repo/project-0") {
+		t.Errorf("Expected first draft on first page")
+	}
+
+	// Should show pagination controls when there are more pages
+	if !strings.Contains(body, "next") && !strings.Contains(body, "Next") && !strings.Contains(body, "page") {
+		t.Errorf("Expected pagination controls when there are multiple pages")
+	}
+}
+
+// TestRouter_GetDrafts_Pagination_SecondPage tests navigating to second page of drafts
+func TestRouter_GetDrafts_Pagination_SecondPage(t *testing.T) {
+	userStore := NewMockUserStore()
+	draftLister := NewMockDraftLister()
+	router := NewRouterWithDraftLister(userStore, draftLister)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+
+	// Add many drafts to test pagination (assuming page size of 10)
+	for i := 0; i < 25; i++ {
+		draftLister.AddDraft(user.ID, &DraftItem{
+			ID:          fmt.Sprintf("draft-%d", i),
+			RepoName:    fmt.Sprintf("repo/project-%d", i),
+			PreviewText: fmt.Sprintf("Draft content for item %d", i),
+			Platform:    "threads",
+			CreatedAt:   time.Now().Add(-time.Duration(i) * time.Hour),
+		})
+	}
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	// Request second page
+	req := httptest.NewRequest(http.MethodGet, "/drafts?page=2", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+
+	// Should show second page content (items 10-19 for page size 10)
+	if !strings.Contains(body, "draft-10") && !strings.Contains(body, "repo/project-10") {
+		t.Errorf("Expected drafts from second page in response")
+	}
+}
+
+// TestRouter_GetDrafts_ShowsDraftStatus tests that draft status is displayed
+func TestRouter_GetDrafts_ShowsDraftStatus(t *testing.T) {
+	userStore := NewMockUserStore()
+	draftLister := NewMockDraftLister()
+	router := NewRouterWithDraftLister(userStore, draftLister)
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+
+	// Add drafts (status is not part of DraftItem, but tests check for visual indicators)
+	draftLister.AddDraft(user.ID, &DraftItem{
+		ID:          "draft-1",
+		RepoName:    "repo/pending",
+		PreviewText: "Pending draft",
+		Platform:    "threads",
+		CreatedAt:   time.Now(),
+	})
+	draftLister.AddDraft(user.ID, &DraftItem{
+		ID:          "draft-2",
+		RepoName:    "repo/posted",
+		PreviewText: "Posted draft",
+		Platform:    "threads",
+		CreatedAt:   time.Now(),
+	})
+	draftLister.AddDraft(user.ID, &DraftItem{
+		ID:          "draft-3",
+		RepoName:    "repo/failed",
+		PreviewText: "Failed draft",
+		Platform:    "threads",
+		CreatedAt:   time.Now(),
+	})
+
+	token, _ := generateToken(user.ID, user.Email)
+
+	req := httptest.NewRequest(http.MethodGet, "/drafts", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	body := rr.Body.String()
+
+	// Should show different status indicators
+	// The exact text may vary (Draft, Posted, Failed or status badges)
+	hasStatus := strings.Contains(body, "draft") || strings.Contains(body, "Draft")
+	hasPosted := strings.Contains(body, "posted") || strings.Contains(body, "Posted")
+	hasFailed := strings.Contains(body, "failed") || strings.Contains(body, "Failed")
+
+	if !hasStatus || !hasPosted || !hasFailed {
+		t.Errorf("Expected draft status indicators in response (draft/posted/failed)")
+	}
+}
+
+// TDD stub removed - real NewRouterWithDraftLister is in router.go

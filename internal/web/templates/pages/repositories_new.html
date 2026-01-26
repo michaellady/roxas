@@ -4,6 +4,39 @@
     {{if .Error}}
     <div class="alert alert-error">{{.Error}}</div>
     {{end}}
+
+    {{if .Data}}
+    {{/* GitHub repo selection mode */}}
+    {{if .Data.HasGitHubRepos}}
+    <form action="/repositories/new" method="POST" class="auth-form">
+        <p class="form-help">Select the repositories you want to connect:</p>
+        <div class="repo-list">
+            {{range .Data.GitHubRepos}}
+            <div class="repo-item">
+                <label class="repo-checkbox{{if .IsConnected}} repo-connected{{end}}">
+                    <input type="checkbox" name="repos" value="{{.HTMLURL}}"
+                           {{if .IsConnected}}disabled checked{{end}}>
+                    <span class="repo-info">
+                        <span class="repo-name">{{.FullName}}</span>
+                        {{if .Private}}<span class="repo-private">Private</span>{{end}}
+                        {{if .IsConnected}}<span class="repo-status">Connected</span>{{end}}
+                        {{if .Description}}<span class="repo-description">{{.Description}}</span>{{end}}
+                    </span>
+                </label>
+            </div>
+            {{end}}
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">Connect Selected Repositories</button>
+    </form>
+    {{else}}
+    {{/* Empty state - no GitHub repos */}}
+    <div class="empty-state">
+        <p>No repositories found in your GitHub account.</p>
+        <p class="form-help">Make sure you have repositories and have granted the necessary permissions.</p>
+    </div>
+    {{end}}
+    {{else}}
+    {{/* Manual URL form - fallback mode */}}
     <form action="/repositories/new" method="POST" class="auth-form">
         <div class="form-group">
             <label for="github_url">GitHub Repository URL</label>
@@ -15,6 +48,7 @@
         </div>
         <button type="submit" class="btn btn-primary btn-block">Add Repository</button>
     </form>
+    {{end}}
     <p class="auth-link"><a href="/dashboard">&larr; Back to Dashboard</a></p>
 </div>
 {{end}}

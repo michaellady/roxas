@@ -68,6 +68,13 @@ variable "webhook_secret" {
   sensitive   = true
 }
 
+variable "credential_encryption_key" {
+  description = "32-byte hex key for encrypting stored credentials (Bluesky, Threads)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "tags" {
   description = "Common tags for all resources"
   type        = map(string)

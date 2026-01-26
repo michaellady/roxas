@@ -135,6 +135,7 @@ jobs:
           TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           TF_VAR_linkedin_access_token: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
           TF_VAR_webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
+          TF_VAR_credential_encryption_key: ${{ secrets.CREDENTIAL_ENCRYPTION_KEY }}
           TF_VAR_function_name: roxas-webhook-handler-pr-${{ env.PR_NUMBER }}
           TF_VAR_environment: dev
           TF_VAR_pr_number: ${{ env.PR_NUMBER }}
@@ -148,6 +149,7 @@ jobs:
           TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           TF_VAR_linkedin_access_token: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
           TF_VAR_webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
+          TF_VAR_credential_encryption_key: ${{ secrets.CREDENTIAL_ENCRYPTION_KEY }}
           TF_VAR_function_name: roxas-webhook-handler-pr-${{ env.PR_NUMBER }}
           TF_VAR_environment: dev
           TF_VAR_pr_number: ${{ env.PR_NUMBER }}
@@ -263,12 +265,13 @@ jobs:
         with:
           script: |
             const functionName = '${{ steps.deployment-info.outputs.function_name }}';
-            const webhookUrl = '${{ steps.deployment-info.outputs.url }}';
+            const prNumber = '${{ env.PR_NUMBER }}';
+            const baseUrl = `https://pr-${prNumber}.roxasapp.com`;
 
             const body = `### 🚀 Deployed to Dev Environment
 
             **Function:** \`${functionName}\`
-            **Webhook URL:** ${webhookUrl}
+            **URL:** ${baseUrl}
             **Region:** us-east-1
 
             This PR-specific environment will be automatically destroyed when the PR is closed.`;
