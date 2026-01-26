@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -255,7 +256,12 @@ func (m *MockCredentialStoreForThreads) GetCredentials(ctx context.Context, user
 func createAuthenticatedRequestForThreads(t *testing.T, method, path string, body []byte, userID, email string) *http.Request {
 	t.Helper()
 
-	req := httptest.NewRequest(method, path, nil)
+	var req *http.Request
+	if body != nil {
+		req = httptest.NewRequest(method, path, bytes.NewReader(body))
+	} else {
+		req = httptest.NewRequest(method, path, nil)
+	}
 	req.Header.Set("Content-Type", "application/json")
 
 	// Generate JWT token for the user
