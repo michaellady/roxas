@@ -6,9 +6,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/leanovate/gopter"
+	"github.com/leanovate/gopter/gen"
+	"github.com/leanovate/gopter/prop"
 )
 
 // =============================================================================
@@ -1192,6 +1197,172 @@ func TestGitHubExpiryFromResponse(t *testing.T) {
 			}
 		})
 	}
+}
+
+// =============================================================================
+// Property-Based Tests (using gopter)
+// =============================================================================
+
+// TestProperty_GitHubOAuthURL_ContainsRequiredScopes validates that the GitHub
+// OAuth authorization URL always contains the required scopes 'repo' and
+// 'admin:repo_hook', regardless of the input parameters provided.
+// This is Property 5 from Requirements 2.1.
+func TestProperty_GitHubOAuthURL_ContainsRequiredScopes(t *testing.T) {
+	parameters := gopter.DefaultTestParameters()
+	parameters.MinSuccessfulTests = 100
+	properties := gopter.NewProperties(parameters)
+
+	// Generator for valid OAuth state strings (non-empty alphanumeric)
+	genState := gen.AlphaString().SuchThat(func(s string) bool {
+		return len(s) > 0 && len(s) <= 128
+	})
+
+	// Generator for valid redirect URLs
+	genRedirectURL := gen.AnyString().Map(func(s string) string {
+		// Create a valid HTTPS URL for testing
+		return "https://example.com/callback/" + url.PathEscape(s)
+	})
+
+	// Generator for valid client IDs (non-empty)
+	genClientID := gen.AlphaString().SuchThat(func(s string) bool {
+		return len(s) > 0
+	})
+
+	// Generator for client secrets (can be empty for this test)
+	genClientSecret := gen.AlphaString()
+
+	properties.Property("GitHub OAuth URL always contains 'repo' scope", prop.ForAll(
+		func(state, redirectURL, clientID, clientSecret string) bool {
+			provider := &GitHubOAuthProvider{
+				ClientID:     clientID,
+				ClientSecret: clientSecret,
+			}
+
+			authURL := provider.GetAuthURL(state, redirectURL)
+
+			// Parse the URL to extract the scope parameter
+			parsedURL, err := url.Parse(authURL)
+			if err != nil {
+				return false
+			}
+
+			scopeParam := parsedURL.Query().Get("scope")
+			// The scope parameter should contain 'repo'
+			return strings.Contains(scopeParam, "repo")
+		},
+		genState,
+		genRedirectURL,
+		genClientID,
+		genClientSecret,
+	))
+
+	properties.Property("GitHub OAuth URL always contains 'admin:repo_hook' scope", prop.ForAll(
+		func(state, redirectURL, clientID, clientSecret string) bool {
+			provider := &GitHubOAuthProvider{
+				ClientID:     clientID,
+				ClientSecret: clientSecret,
+			}
+
+			authURL := provider.GetAuthURL(state, redirectURL)
+
+			// Parse the URL to extract the scope parameter
+			parsedURL, err := url.Parse(authURL)
+			if err != nil {
+				return false
+			}
+
+			scopeParam := parsedURL.Query().Get("scope")
+			// The scope parameter should contain 'admin:repo_hook'
+			return strings.Contains(scopeParam, "admin:repo_hook")
+		},
+		genState,
+		genRedirectURL,
+		genClientID,
+		genClientSecret,
+	))
+
+	properties.Property("GitHub OAuth URL contains both required scopes", prop.ForAll(
+		func(state, redirectURL, clientID, clientSecret string) bool {
+			provider := &GitHubOAuthProvider{
+				ClientID:     clientID,
+				ClientSecret: clientSecret,
+			}
+
+			authURL := provider.GetAuthURL(state, redirectURL)
+
+			// Parse the URL to extract the scope parameter
+			parsedURL, err := url.Parse(authURL)
+			if err != nil {
+				return false
+			}
+
+			scopeParam := parsedURL.Query().Get("scope")
+
+			// Both required scopes must be present
+			hasRepo := strings.Contains(scopeParam, "repo")
+			hasAdminRepoHook := strings.Contains(scopeParam, "admin:repo_hook")
+
+			return hasRepo && hasAdminRepoHook
+		},
+		genState,
+		genRedirectURL,
+		genClientID,
+		genClientSecret,
+	))
+
+	properties.TestingRun(t)
+}
+
+// TestProperty_GitHubOAuthURL_ScopesMatchGetRequiredScopes validates that the
+// scopes in the OAuth URL exactly match what GetRequiredScopes() returns.
+func TestProperty_GitHubOAuthURL_ScopesMatchGetRequiredScopes(t *testing.T) {
+	parameters := gopter.DefaultTestParameters()
+	parameters.MinSuccessfulTests = 100
+	properties := gopter.NewProperties(parameters)
+
+	genState := gen.AlphaString().SuchThat(func(s string) bool {
+		return len(s) > 0 && len(s) <= 128
+	})
+
+	genRedirectURL := gen.AnyString().Map(func(s string) string {
+		return "https://example.com/callback/" + url.PathEscape(s)
+	})
+
+	genClientID := gen.AlphaString().SuchThat(func(s string) bool {
+		return len(s) > 0
+	})
+
+	properties.Property("OAuth URL scope parameter contains all required scopes", prop.ForAll(
+		func(state, redirectURL, clientID string) bool {
+			provider := &GitHubOAuthProvider{
+				ClientID: clientID,
+			}
+
+			authURL := provider.GetAuthURL(state, redirectURL)
+			requiredScopes := provider.GetRequiredScopes()
+
+			parsedURL, err := url.Parse(authURL)
+			if err != nil {
+				return false
+			}
+
+			scopeParam := parsedURL.Query().Get("scope")
+
+			// Check each required scope is present in the URL
+			for _, scope := range requiredScopes {
+				if !strings.Contains(scopeParam, scope) {
+					return false
+				}
+			}
+
+			return true
+		},
+		genState,
+		genRedirectURL,
+		genClientID,
+	))
+
+	properties.TestingRun(t)
 }
 
 // =============================================================================
