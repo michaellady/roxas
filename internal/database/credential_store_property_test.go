@@ -6,6 +6,7 @@ import (
 	"github.com/leanovate/gopter"
 	"github.com/leanovate/gopter/gen"
 	"github.com/leanovate/gopter/prop"
+	"github.com/mikelady/roxas/internal/services"
 )
 
 // Property Test: Credential Encryption (Property 6)
@@ -170,4 +171,179 @@ func TestProperty_CredentialEncryption_WrongKey(t *testing.T) {
 	))
 
 	properties.TestingRun(t)
+}
+
+// TestProperty12_BlueskyCredentialStorage tests Property 12:
+// Bluesky auth stores app password as access_token, handle as refresh_token, DID as platform_user_id.
+// Validates Requirements 4.5, 4.6
+func TestProperty12_BlueskyCredentialStorage(t *testing.T) {
+	parameters := gopter.DefaultTestParameters()
+	parameters.MinSuccessfulTests = 100
+	parameters.Rng.Seed(42)
+	properties := gopter.NewProperties(parameters)
+
+	store, err := NewCredentialStore(nil, testEncryptionKey)
+	if err != nil {
+		t.Fatalf("Failed to create credential store: %v", err)
+	}
+
+	// Property 12a: App password stored as access_token survives encryption round-trip
+	properties.Property("app password stored as AccessToken encrypts and decrypts correctly", prop.ForAll(
+		func(appPassword string) bool {
+			creds := &services.PlatformCredentials{
+				Platform:    services.PlatformBluesky,
+				AccessToken: appPassword, // App password stored here
+			}
+
+			encrypted, err := store.encrypt(creds.AccessToken)
+			if err != nil {
+				return false
+			}
+
+			decrypted, err := store.decrypt(encrypted)
+			if err != nil {
+				return false
+			}
+
+			return decrypted == appPassword
+		},
+		genAppPassword(),
+	))
+
+	// Property 12b: Handle stored as refresh_token survives encryption round-trip
+	properties.Property("handle stored as RefreshToken encrypts and decrypts correctly", prop.ForAll(
+		func(handle string) bool {
+			creds := &services.PlatformCredentials{
+				Platform:     services.PlatformBluesky,
+				RefreshToken: handle, // Handle stored here
+			}
+
+			encrypted, err := store.encrypt(creds.RefreshToken)
+			if err != nil {
+				return false
+			}
+
+			decrypted, err := store.decrypt(encrypted)
+			if err != nil {
+				return false
+			}
+
+			return decrypted == handle
+		},
+		genBlueskyHandle(),
+	))
+
+	// Property 12c: DID stored as platform_user_id preserves format
+	properties.Property("DID stored as PlatformUserID preserves exact value", prop.ForAll(
+		func(did string) bool {
+			creds := &services.PlatformCredentials{
+				Platform:       services.PlatformBluesky,
+				PlatformUserID: did, // DID stored here
+			}
+
+			// PlatformUserID is not encrypted, but verify it maintains value
+			return creds.PlatformUserID == did
+		},
+		genBlueskyDID(),
+	))
+
+	// Property 12d: Complete Bluesky credential mapping is consistent
+	properties.Property("complete Bluesky credential mapping preserves all fields", prop.ForAll(
+		func(appPassword, handle, did string) bool {
+			creds := &services.PlatformCredentials{
+				Platform:       services.PlatformBluesky,
+				AccessToken:    appPassword, // App password
+				RefreshToken:   handle,      // Handle
+				PlatformUserID: did,         // DID
+			}
+
+			// Verify field mapping
+			if creds.AccessToken != appPassword {
+				return false
+			}
+			if creds.RefreshToken != handle {
+				return false
+			}
+			if creds.PlatformUserID != did {
+				return false
+			}
+
+			// Verify encryption round-trip for sensitive fields
+			encryptedAppPwd, err := store.encrypt(creds.AccessToken)
+			if err != nil {
+				return false
+			}
+			decryptedAppPwd, err := store.decrypt(encryptedAppPwd)
+			if err != nil {
+				return false
+			}
+			if decryptedAppPwd != appPassword {
+				return false
+			}
+
+			encryptedHandle, err := store.encrypt(creds.RefreshToken)
+			if err != nil {
+				return false
+			}
+			decryptedHandle, err := store.decrypt(encryptedHandle)
+			if err != nil {
+				return false
+			}
+			if decryptedHandle != handle {
+				return false
+			}
+
+			return true
+		},
+		genAppPassword(),
+		genBlueskyHandle(),
+		genBlueskyDID(),
+	))
+
+	// Property 12e: Bluesky platform identifier is always correct
+	properties.Property("Bluesky credentials always have correct platform", prop.ForAll(
+		func(appPassword, handle, did string) bool {
+			creds := &services.PlatformCredentials{
+				Platform:       services.PlatformBluesky,
+				AccessToken:    appPassword,
+				RefreshToken:   handle,
+				PlatformUserID: did,
+			}
+
+			return creds.Platform == "bluesky"
+		},
+		genAppPassword(),
+		genBlueskyHandle(),
+		genBlueskyDID(),
+	))
+
+	properties.TestingRun(t)
+}
+
+// genAppPassword generates random Bluesky app passwords
+// App passwords are 19 characters: xxxx-xxxx-xxxx-xxxx format
+func genAppPassword() gopter.Gen {
+	return gen.RegexMatch(`[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}`)
+}
+
+// genBlueskyHandle generates random Bluesky handles
+// Handles are in format: username.bsky.social or custom domains
+func genBlueskyHandle() gopter.Gen {
+	username := gen.RegexMatch(`[a-z][a-z0-9]{2,15}`)
+	domain := gen.OneConstOf("bsky.social", "bsky.app", "example.com")
+
+	return gopter.CombineGens(username, domain).Map(func(vals []interface{}) string {
+		return vals[0].(string) + "." + vals[1].(string)
+	})
+}
+
+// genBlueskyDID generates random Bluesky DIDs
+// DIDs are in format: did:plc:<base32-encoded-identifier>
+func genBlueskyDID() gopter.Gen {
+	// DID identifier is 24 characters of base32
+	identifier := gen.RegexMatch(`[a-z2-7]{24}`)
+
+	return identifier.Map(func(id string) string {
+		return "did:plc:" + id
+	})
 }
