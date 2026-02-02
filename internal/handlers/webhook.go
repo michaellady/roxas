@@ -78,6 +78,13 @@ func (h *WebhookHandler) validateSignature(payload []byte, signature string) boo
 	return hmac.Equal([]byte(signature), []byte(expectedMAC))
 }
 
+// ValidateSignatureForTest exposes signature validation for property testing.
+// This method allows tests to verify that webhook secrets can correctly validate
+// HMAC-SHA256 signatures as used by GitHub webhooks.
+func (h *WebhookHandler) ValidateSignatureForTest(payload []byte, signature string) bool {
+	return h.validateSignature(payload, signature)
+}
+
 // GitHubWebhookPayload represents the GitHub webhook JSON structure
 type GitHubWebhookPayload struct {
 	Repository struct {
