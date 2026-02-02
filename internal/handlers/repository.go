@@ -240,3 +240,13 @@ func (h *RepositoryHandler) writeJSON(w http.ResponseWriter, status int, data in
 func (h *RepositoryHandler) writeError(w http.ResponseWriter, status int, message string) {
 	h.writeJSON(w, status, ErrorResponse{Error: message})
 }
+
+// GetWebhookConfigForTest returns a webhook configuration for the given repository ID.
+// This method is exported for property testing to verify webhook URL and secret format.
+func (h *RepositoryHandler) GetWebhookConfigForTest(repoID string) WebhookConfig {
+	secret, _ := h.secretGen.Generate()
+	return WebhookConfig{
+		URL:    fmt.Sprintf("%s/webhook/%s", h.webhookURL, repoID),
+		Secret: secret,
+	}
+}
