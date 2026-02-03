@@ -476,6 +476,7 @@ type Router struct {
 	oauthCallbackURL     string // Base URL for OAuth callbacks (e.g., "https://app.example.com")
 	aiRegenerator        AIRegenerator
 	socialPoster         SocialPoster
+	authRateLimiter      *auth.RateLimiter // Rate limiter for auth endpoints (login, signup)
 }
 
 // NewRouter creates a new web router with all routes configured (no user store)
@@ -578,6 +579,13 @@ func (r *Router) WithConnectionLister(lister ConnectionLister) *Router {
 // WithConnectionService configures the router with a connection service for disconnect operations
 func (r *Router) WithConnectionService(service ConnectionService) *Router {
 	r.connectionService = service
+	return r
+}
+
+// WithAuthRateLimiter configures the router with a rate limiter for auth endpoints.
+// This helps prevent brute force attacks on login and signup endpoints.
+func (r *Router) WithAuthRateLimiter(limiter *auth.RateLimiter) *Router {
+	r.authRateLimiter = limiter
 	return r
 }
 
@@ -792,6 +800,11 @@ func (r *Router) handleLogin(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
+	// Check rate limit to prevent brute force attacks
+	if !auth.CheckRateLimit(r.authRateLimiter, w, req) {
+		return
+	}
+
 	// Parse form
 	if err := req.ParseForm(); err != nil {
 		r.renderPage(w, "login.html", PageData{
@@ -879,6 +892,11 @@ func (r *Router) handleSignup(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
+	// Check rate limit to prevent abuse
+	if !auth.CheckRateLimit(r.authRateLimiter, w, req) {
+		return
+	}
+
 	// Parse form
 	if err := req.ParseForm(); err != nil {
 		r.renderPage(w, "signup.html", PageData{
