@@ -48,16 +48,23 @@ jobs:
       - name: Generate coverage report
         if: github.event_name == 'pull_request'
         run: |
-          # Run tests and capture package-level coverage
+          # Run unit tests only (excluding property tests) and capture coverage
+          go test -short -skip 'Property' -coverprofile=unit-coverage.out ./internal/... ./cmd/... 2>&1 | tee unit-test-output.txt
+          UNIT_TOTAL=$(go tool cover -func=unit-coverage.out | grep total | awk '{print $3}')
+
+          # Run all tests and capture package-level coverage
           go test -short -cover ./internal/... ./cmd/... 2>&1 | tee test-output.txt
+          go test -short -coverprofile=coverage.out ./internal/... ./cmd/... > /dev/null 2>&1
+          TOTAL=$(go tool cover -func=coverage.out | grep total | awk '{print $3}')
 
           echo "## 📊 Test Coverage Report" >> coverage-report.md
           echo "" >> coverage-report.md
-
-          # Calculate total from coverage.out
-          go test -short -coverprofile=coverage.out ./internal/... ./cmd/... > /dev/null 2>&1
-          TOTAL=$(go tool cover -func=coverage.out | grep total | awk '{print $3}')
-          echo "**Total Coverage: ${TOTAL}**" >> coverage-report.md
+          echo "| Test Type | Coverage |" >> coverage-report.md
+          echo "|-----------|----------|" >> coverage-report.md
+          echo "| Unit Tests | ${UNIT_TOTAL} |" >> coverage-report.md
+          echo "| **Total (Unit + Property)** | **${TOTAL}** |" >> coverage-report.md
+          echo "" >> coverage-report.md
+          echo "### Package Breakdown" >> coverage-report.md
           echo "" >> coverage-report.md
           echo "| Package | Coverage |" >> coverage-report.md
           echo "|---------|----------|" >> coverage-report.md
