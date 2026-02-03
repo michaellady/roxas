@@ -57,14 +57,19 @@ jobs:
           go test -short -coverprofile=coverage.out ./internal/... ./cmd/... > /dev/null 2>&1
           TOTAL=$(go tool cover -func=coverage.out | grep total | awk '{print $3}')
 
+          # Run integration tests with coverage for internal packages
+          go test -coverprofile=integration-coverage.out -coverpkg=./internal/... ./tests/... 2>&1 | tee integration-test-output.txt || true
+          INTEGRATION_TOTAL=$(go tool cover -func=integration-coverage.out 2>/dev/null | grep total | awk '{print $3}' || echo "0.0%")
+
           echo "## 📊 Test Coverage Report" >> coverage-report.md
           echo "" >> coverage-report.md
           echo "| Test Type | Coverage |" >> coverage-report.md
           echo "|-----------|----------|" >> coverage-report.md
           echo "| Unit Tests | ${UNIT_TOTAL} |" >> coverage-report.md
           echo "| **Total (Unit + Property)** | **${TOTAL}** |" >> coverage-report.md
+          echo "| Integration Tests | ${INTEGRATION_TOTAL} |" >> coverage-report.md
           echo "" >> coverage-report.md
-          echo "### Package Breakdown" >> coverage-report.md
+          echo "### Package Breakdown (Unit + Property Tests)" >> coverage-report.md
           echo "" >> coverage-report.md
           echo "| Package | Coverage |" >> coverage-report.md
           echo "|---------|----------|" >> coverage-report.md
@@ -75,6 +80,30 @@ jobs:
             sed 's/\t/ /g' | \
             awk '{for(i=1;i<=NF;i++) {if($i ~ /github.com/) pkg=$i; if($i ~ /coverage:/) cov=$(i+1)}} {gsub("github.com/mikelady/roxas/", "", pkg); if(pkg && cov) print "| " pkg " | " cov " |"}' | \
             sort >> coverage-report.md
+
+          # Add integration test coverage breakdown
+          echo "" >> coverage-report.md
+          echo "### Integration Test Coverage (internal packages)" >> coverage-report.md
+          echo "" >> coverage-report.md
+          echo "Packages exercised by integration tests:" >> coverage-report.md
+          echo "" >> coverage-report.md
+
+          # List packages that have any coverage from integration tests
+          if [ -f integration-coverage.out ]; then
+            COVERED_PKGS=$(go tool cover -func=integration-coverage.out 2>/dev/null | \
+              grep -v "0.0%" | grep -v "total:" | \
+              awk -F: '{print $1}' | \
+              sed 's|github.com/mikelady/roxas/||' | \
+              awk -F/ '{print $1"/"$2}' | \
+              sort -u)
+            if [ -n "$COVERED_PKGS" ]; then
+              echo "$COVERED_PKGS" | while read pkg; do echo "- \`$pkg\`" >> coverage-report.md; done
+            else
+              echo "- (no packages covered)" >> coverage-report.md
+            fi
+          else
+            echo "- (no coverage data)" >> coverage-report.md
+          fi
 
       - name: Post coverage comment
         if: github.event_name == 'pull_request'
