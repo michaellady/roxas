@@ -593,3 +593,67 @@ main {
     cursor: not-allowed;
     pointer-events: none;
 }
+
+/* Loading States */
+.spinner {
+    display: inline-block;
+    width: 1rem;
+    height: 1rem;
+    border: 2px solid var(--border);
+    border-top-color: var(--primary);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+.spinner-sm {
+    width: 0.75rem;
+    height: 0.75rem;
+    border-width: 1.5px;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.btn.loading {
+    position: relative;
+    color: transparent;
+    pointer-events: none;
+}
+
+.btn.loading::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 1rem;
+    height: 1rem;
+    margin: -0.5rem 0 0 -0.5rem;
+    border: 2px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+.btn-primary.loading::after {
+    border-color: rgba(255, 255, 255, 0.3);
+    border-top-color: white;
+}
+
+/* Status indicators for async results */
+.status-success {
+    color: var(--success);
+    font-weight: 500;
+}
+
+.status-error {
+    color: var(--error);
+    font-weight: 500;
+}
+
+.status-pending {
+    color: var(--secondary);
+    font-style: italic;
+}
