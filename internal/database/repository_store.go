@@ -19,12 +19,18 @@ var (
 
 // RepositoryStore implements handlers.RepositoryStore using PostgreSQL
 type RepositoryStore struct {
-	pool *Pool
+	db DBTX
 }
 
 // NewRepositoryStore creates a new database-backed repository store
 func NewRepositoryStore(pool *Pool) *RepositoryStore {
-	return &RepositoryStore{pool: pool}
+	return &RepositoryStore{db: pool}
+}
+
+// NewRepositoryStoreWithDB creates a repository store with a custom DBTX implementation.
+// This is primarily used for testing with pgxmock.
+func NewRepositoryStoreWithDB(db DBTX) *RepositoryStore {
+	return &RepositoryStore{db: db}
 }
 
 // CreateRepository creates a new repository in the database
@@ -33,7 +39,7 @@ func (s *RepositoryStore) CreateRepository(ctx context.Context, userID, githubUR
 	var createdAt time.Time
 	var name *string
 
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRow(ctx,
 		`INSERT INTO repositories (user_id, github_url, webhook_secret)
 		 VALUES ($1, $2, $3)
 		 RETURNING id, user_id, github_url, webhook_secret, name, is_active, created_at, github_repo_id, webhook_id, is_private`,
@@ -62,7 +68,7 @@ func (s *RepositoryStore) GetRepositoryByUserAndURL(ctx context.Context, userID,
 	var createdAt time.Time
 	var name *string
 
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRow(ctx,
 		`SELECT id, user_id, github_url, webhook_secret, name, is_active, created_at, github_repo_id, webhook_id, is_private
 		 FROM repositories
 		 WHERE user_id = $1 AND github_url = $2`,
@@ -85,7 +91,7 @@ func (s *RepositoryStore) GetRepositoryByUserAndURL(ctx context.Context, userID,
 
 // ListRepositoriesByUser retrieves all repositories for a user
 func (s *RepositoryStore) ListRepositoriesByUser(ctx context.Context, userID string) ([]*handlers.Repository, error) {
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db.Query(ctx,
 		`SELECT id, user_id, github_url, webhook_secret, name, is_active, created_at, github_repo_id, webhook_id, is_private
 		 FROM repositories
 		 WHERE user_id = $1
@@ -125,7 +131,7 @@ func (s *RepositoryStore) GetRepositoryByID(ctx context.Context, repoID string) 
 	var createdAt time.Time
 	var name *string
 
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRow(ctx,
 		`SELECT id, user_id, github_url, webhook_secret, name, is_active, created_at, github_repo_id, webhook_id, is_private
 		 FROM repositories
 		 WHERE id = $1`,
@@ -152,7 +158,7 @@ func (s *RepositoryStore) UpdateRepository(ctx context.Context, repoID, name str
 	var createdAt time.Time
 	var namePtr *string
 
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRow(ctx,
 		`UPDATE repositories
 		 SET name = $2, is_active = $3
 		 WHERE id = $1
@@ -176,7 +182,7 @@ func (s *RepositoryStore) UpdateRepository(ctx context.Context, repoID, name str
 
 // UpdateWebhookSecret updates the webhook secret for a repository
 func (s *RepositoryStore) UpdateWebhookSecret(ctx context.Context, repoID, newSecret string) error {
-	result, err := s.pool.Exec(ctx,
+	result, err := s.db.Exec(ctx,
 		`UPDATE repositories SET webhook_secret = $1 WHERE id = $2`,
 		newSecret, repoID,
 	)
@@ -193,7 +199,7 @@ func (s *RepositoryStore) UpdateWebhookSecret(ctx context.Context, repoID, newSe
 
 // DeleteRepository removes a repository from the database
 func (s *RepositoryStore) DeleteRepository(ctx context.Context, repoID string) error {
-	result, err := s.pool.Exec(ctx,
+	result, err := s.db.Exec(ctx,
 		`DELETE FROM repositories WHERE id = $1`,
 		repoID,
 	)

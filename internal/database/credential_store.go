@@ -20,7 +20,7 @@ var _ services.CredentialStore = (*CredentialStore)(nil)
 
 // CredentialStore implements services.CredentialStore using PostgreSQL
 type CredentialStore struct {
-	pool          *Pool
+	db            DBTX
 	encryptionKey []byte // 32 bytes for AES-256
 }
 
@@ -31,7 +31,20 @@ func NewCredentialStore(pool *Pool, encryptionKey []byte) (*CredentialStore, err
 		return nil, fmt.Errorf("encryption key must be 32 bytes, got %d", len(encryptionKey))
 	}
 	return &CredentialStore{
-		pool:          pool,
+		db:            pool,
+		encryptionKey: encryptionKey,
+	}, nil
+}
+
+// NewCredentialStoreWithDB creates a credential store with a custom DBTX implementation.
+// This is primarily used for testing with pgxmock.
+// encryptionKey must be exactly 32 bytes for AES-256
+func NewCredentialStoreWithDB(db DBTX, encryptionKey []byte) (*CredentialStore, error) {
+	if len(encryptionKey) != 32 {
+		return nil, fmt.Errorf("encryption key must be 32 bytes, got %d", len(encryptionKey))
+	}
+	return &CredentialStore{
+		db:            db,
 		encryptionKey: encryptionKey,
 	}, nil
 }
@@ -107,7 +120,7 @@ func (s *CredentialStore) GetCredentials(ctx context.Context, userID, platform s
 	var refreshToken, platformUserID, scopes *string
 	var tokenExpiresAt *time.Time
 
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRow(ctx,
 		`SELECT id, user_id, platform, access_token, refresh_token,
 		        token_expires_at, platform_user_id, scopes, created_at, updated_at
 		 FROM platform_credentials
@@ -183,7 +196,7 @@ func (s *CredentialStore) SaveCredentials(ctx context.Context, creds *services.P
 		scopes = &creds.Scopes
 	}
 
-	_, err = s.pool.Exec(ctx,
+	_, err = s.db.Exec(ctx,
 		`INSERT INTO platform_credentials
 		 (user_id, platform, access_token, refresh_token, token_expires_at, platform_user_id, scopes)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -211,7 +224,7 @@ func (s *CredentialStore) DeleteCredentials(ctx context.Context, userID, platfor
 		return err
 	}
 
-	result, err := s.pool.Exec(ctx,
+	result, err := s.db.Exec(ctx,
 		`DELETE FROM platform_credentials WHERE user_id = $1 AND platform = $2`,
 		userID, platform,
 	)
@@ -229,7 +242,7 @@ func (s *CredentialStore) DeleteCredentials(ctx context.Context, userID, platfor
 
 // GetCredentialsForUser retrieves all credentials for a user
 func (s *CredentialStore) GetCredentialsForUser(ctx context.Context, userID string) ([]*services.PlatformCredentials, error) {
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db.Query(ctx,
 		`SELECT id, user_id, platform, access_token, refresh_token,
 		        token_expires_at, platform_user_id, scopes, created_at, updated_at
 		 FROM platform_credentials
@@ -296,7 +309,7 @@ func (s *CredentialStore) GetCredentialsForUser(ctx context.Context, userID stri
 func (s *CredentialStore) GetExpiringCredentials(ctx context.Context, within time.Duration) ([]*services.PlatformCredentials, error) {
 	expiryThreshold := time.Now().Add(within)
 
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db.Query(ctx,
 		`SELECT id, user_id, platform, access_token, refresh_token,
 		        token_expires_at, platform_user_id, scopes, created_at, updated_at
 		 FROM platform_credentials
@@ -380,7 +393,7 @@ func (s *CredentialStore) UpdateTokens(ctx context.Context, userID, platform, ac
 		encryptedRefreshToken = &rt
 	}
 
-	result, err := s.pool.Exec(ctx,
+	result, err := s.db.Exec(ctx,
 		`UPDATE platform_credentials
 		 SET access_token = $3, refresh_token = $4, token_expires_at = $5, updated_at = NOW()
 		 WHERE user_id = $1 AND platform = $2`,
@@ -404,7 +417,7 @@ func (s *CredentialStore) UpdateHealthStatus(ctx context.Context, userID, platfo
 		return err
 	}
 
-	result, err := s.pool.Exec(ctx,
+	result, err := s.db.Exec(ctx,
 		`UPDATE platform_credentials
 		 SET is_healthy = $3, health_error = $4, last_health_check = NOW(), updated_at = NOW()
 		 WHERE user_id = $1 AND platform = $2`,
@@ -427,7 +440,7 @@ func (s *CredentialStore) UpdateHealthStatus(ctx context.Context, userID, platfo
 func (s *CredentialStore) GetCredentialsNeedingCheck(ctx context.Context, notCheckedWithin time.Duration) ([]*services.PlatformCredentials, error) {
 	checkThreshold := time.Now().Add(-notCheckedWithin)
 
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db.Query(ctx,
 		`SELECT id, user_id, platform, access_token, refresh_token,
 		        token_expires_at, platform_user_id, scopes, created_at, updated_at,
 		        last_health_check, is_healthy, health_error, last_successful_post

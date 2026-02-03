@@ -33,12 +33,18 @@ var (
 
 // PostStore implements web.PostLister using PostgreSQL
 type PostStore struct {
-	pool *Pool
+	db DBTX
 }
 
 // NewPostStore creates a new database-backed post store
 func NewPostStore(pool *Pool) *PostStore {
-	return &PostStore{pool: pool}
+	return &PostStore{db: pool}
+}
+
+// NewPostStoreWithDB creates a post store with a custom DBTX implementation.
+// This is primarily used for testing with pgxmock.
+func NewPostStoreWithDB(db DBTX) *PostStore {
+	return &PostStore{db: db}
 }
 
 // CreatePost creates a new post in the database with status 'draft' (legacy method using commit_id)
@@ -46,7 +52,7 @@ func (s *PostStore) CreatePost(ctx context.Context, commitID, platform, content 
 	var post handlers.Post
 	var createdAt time.Time
 
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRow(ctx,
 		`INSERT INTO posts (commit_id, platform, content, status)
 		 VALUES ($1, $2, $3, 'draft')
 		 RETURNING id, commit_id, draft_id, platform, platform_post_id, platform_post_url, content, status, error_message, posted_at, created_at`,
@@ -71,7 +77,7 @@ func (s *PostStore) CreatePostFromDraft(ctx context.Context, draftID, platform, 
 	var post handlers.Post
 	var createdAt time.Time
 
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRow(ctx,
 		`INSERT INTO posts (draft_id, platform, content, status)
 		 VALUES ($1, $2, $3, 'draft')
 		 RETURNING id, commit_id, draft_id, platform, platform_post_id, platform_post_url, content, status, error_message, posted_at, created_at`,
@@ -95,7 +101,7 @@ func (s *PostStore) GetPostByID(ctx context.Context, postID string) (*handlers.P
 	var post handlers.Post
 	var createdAt time.Time
 
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRow(ctx,
 		`SELECT id, commit_id, draft_id, platform, platform_post_id, platform_post_url, content, status, error_message, posted_at, created_at
 		 FROM posts
 		 WHERE id = $1`,
@@ -116,7 +122,7 @@ func (s *PostStore) GetPostByID(ctx context.Context, postID string) (*handlers.P
 // GetPostsByUserID retrieves all posts for a user (via their commits or drafts)
 func (s *PostStore) GetPostsByUserID(ctx context.Context, userID string) ([]*handlers.Post, error) {
 	// Query posts via commits (legacy) or drafts (new)
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db.Query(ctx,
 		`SELECT p.id, p.commit_id, p.draft_id, p.platform, p.platform_post_id, p.platform_post_url, p.content, p.status, p.error_message, p.posted_at, p.created_at
 		 FROM posts p
 		 LEFT JOIN commits c ON p.commit_id = c.id
@@ -151,7 +157,7 @@ func (s *PostStore) GetPostsByUserID(ctx context.Context, userID string) ([]*han
 
 // ListPostsByUser retrieves all posts for a user's commits (for dashboard)
 func (s *PostStore) ListPostsByUser(ctx context.Context, userID string) ([]*web.DashboardPost, error) {
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db.Query(ctx,
 		`SELECT p.id, p.platform, p.content, p.status
 		 FROM posts p
 		 JOIN commits c ON p.commit_id = c.id
@@ -190,7 +196,7 @@ func (s *PostStore) UpdatePostStatus(ctx context.Context, postID, status string)
 		return ErrInvalidStatus
 	}
 
-	result, err := s.pool.Exec(ctx,
+	result, err := s.db.Exec(ctx,
 		`UPDATE posts SET status = $1 WHERE id = $2`,
 		status, postID,
 	)
@@ -208,7 +214,7 @@ func (s *PostStore) UpdatePostStatus(ctx context.Context, postID, status string)
 	if result.RowsAffected() == 0 {
 		// Verify post doesn't exist (vs. some other issue)
 		var exists bool
-		err = s.pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM posts WHERE id = $1)", postID).Scan(&exists)
+		err = s.db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM posts WHERE id = $1)", postID).Scan(&exists)
 		if err != nil {
 			return err
 		}
@@ -224,7 +230,7 @@ func (s *PostStore) UpdatePostStatus(ctx context.Context, postID, status string)
 // CountDraftsByUser returns the number of draft posts for a user
 func (s *PostStore) CountDraftsByUser(ctx context.Context, userID string) (int, error) {
 	var count int
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRow(ctx,
 		`SELECT COUNT(*)
 		 FROM posts p
 		 JOIN commits c ON p.commit_id = c.id
