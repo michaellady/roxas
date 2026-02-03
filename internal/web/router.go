@@ -108,7 +108,8 @@ type PageData struct {
 	Flash      *FlashMessage
 	Error      string
 	Data       interface{}
-	DraftCount int // Number of pending drafts (for navigation badge)
+	DraftCount int    // Number of pending drafts (for navigation badge)
+	CSRFToken  string // CSRF token for form submissions
 }
 
 // UserData represents authenticated user info for templates
@@ -794,7 +795,7 @@ func (r *Router) handleLogin(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	r.renderPage(w, "login.html", PageData{
+	r.renderPageWithCSRF(w, req, "login.html", PageData{
 		Title: "Login",
 	})
 }
@@ -805,9 +806,17 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Validate CSRF token
+	cookieToken := auth.GetCSRFTokenFromCookie(req)
+	formToken := auth.GetCSRFTokenFromRequest(req)
+	if !auth.ValidateCSRFToken(cookieToken, formToken) {
+		http.Error(w, "Forbidden - CSRF token validation failed", http.StatusForbidden)
+		return
+	}
+
 	// Parse form
 	if err := req.ParseForm(); err != nil {
-		r.renderPage(w, "login.html", PageData{
+		r.renderPageWithCSRF(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Invalid form data",
 		})
@@ -819,7 +828,7 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 
 	// Validate input
 	if email == "" || password == "" {
-		r.renderPage(w, "login.html", PageData{
+		r.renderPageWithCSRF(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Email and password are required",
 		})
@@ -828,7 +837,7 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 
 	// Check if we have a user store
 	if r.userStore == nil {
-		r.renderPage(w, "login.html", PageData{
+		r.renderPageWithCSRF(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Authentication not configured",
 		})
@@ -838,7 +847,7 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 	// Look up user
 	user, err := r.userStore.GetUserByEmail(req.Context(), email)
 	if err != nil {
-		r.renderPage(w, "login.html", PageData{
+		r.renderPageWithCSRF(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Invalid email or password",
 		})
@@ -847,7 +856,7 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 
 	if user == nil {
 		// User not found - use same error message for security
-		r.renderPage(w, "login.html", PageData{
+		r.renderPageWithCSRF(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Invalid email or password",
 		})
@@ -856,7 +865,7 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 
 	// Verify password
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
-		r.renderPage(w, "login.html", PageData{
+		r.renderPageWithCSRF(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Invalid email or password",
 		})
@@ -866,7 +875,7 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 	// Generate JWT token
 	token, err := auth.GenerateToken(user.ID, user.Email)
 	if err != nil {
-		r.renderPage(w, "login.html", PageData{
+		r.renderPageWithCSRF(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Failed to create session",
 		})
@@ -886,7 +895,7 @@ func (r *Router) handleSignup(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	r.renderPage(w, "signup.html", PageData{
+	r.renderPageWithCSRF(w, req, "signup.html", PageData{
 		Title: "Sign Up",
 	})
 }
@@ -897,9 +906,17 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Validate CSRF token
+	cookieToken := auth.GetCSRFTokenFromCookie(req)
+	formToken := auth.GetCSRFTokenFromRequest(req)
+	if !auth.ValidateCSRFToken(cookieToken, formToken) {
+		http.Error(w, "Forbidden - CSRF token validation failed", http.StatusForbidden)
+		return
+	}
+
 	// Parse form
 	if err := req.ParseForm(); err != nil {
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPageWithCSRF(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Invalid form data",
 		})
@@ -912,7 +929,7 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 
 	// Validate input
 	if email == "" || password == "" {
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPageWithCSRF(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Email and password are required",
 		})
@@ -921,7 +938,7 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 
 	// Validate password length (min 8 characters)
 	if len(password) < 8 {
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPageWithCSRF(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Password must be at least 8 characters",
 		})
@@ -930,7 +947,7 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 
 	// Validate passwords match
 	if password != confirmPassword {
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPageWithCSRF(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Passwords do not match",
 		})
@@ -939,7 +956,7 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 
 	// Check if we have a user store
 	if r.userStore == nil {
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPageWithCSRF(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Registration not configured",
 		})
@@ -949,7 +966,7 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 	// Hash password
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPageWithCSRF(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Failed to process registration",
 		})
@@ -960,13 +977,13 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 	_, err = r.userStore.CreateUser(req.Context(), email, string(hashedPassword))
 	if err != nil {
 		if err == handlers.ErrDuplicateEmail {
-			r.renderPage(w, "signup.html", PageData{
+			r.renderPageWithCSRF(w, req, "signup.html", PageData{
 				Title: "Sign Up",
 				Error: "An account with this email already exists",
 			})
 			return
 		}
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPageWithCSRF(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Failed to create account",
 		})
@@ -1411,7 +1428,7 @@ func (r *Router) handleRepositoriesNew(w http.ResponseWriter, req *http.Request)
 	}
 
 	// Fall back to manual URL form
-	r.renderPage(w, "repositories_new.html", PageData{
+	r.renderPageWithCSRF(w, req, "repositories_new.html", PageData{
 		Title: "Add Repository",
 		User: &UserData{
 			ID:    claims.UserID,
@@ -1485,9 +1502,17 @@ func (r *Router) handleRepoSelectionPage(w http.ResponseWriter, req *http.Reques
 }
 
 func (r *Router) handleRepositoriesNewPost(w http.ResponseWriter, req *http.Request, claims *auth.Claims) {
+	// Validate CSRF token
+	cookieToken := auth.GetCSRFTokenFromCookie(req)
+	formToken := auth.GetCSRFTokenFromRequest(req)
+	if !auth.ValidateCSRFToken(cookieToken, formToken) {
+		http.Error(w, "Forbidden - CSRF token validation failed", http.StatusForbidden)
+		return
+	}
+
 	// Parse form
 	if err := req.ParseForm(); err != nil {
-		r.renderPage(w, "repositories_new.html", PageData{
+		r.renderPageWithCSRF(w, req, "repositories_new.html", PageData{
 			Title: "Add Repository",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -2558,6 +2583,20 @@ func (r *Router) renderPage(w http.ResponseWriter, page string, data PageData) {
 		http.Error(w, "Template error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+}
+
+// renderPageWithCSRF renders a page with CSRF token support
+// This ensures a CSRF token exists (creates one if needed) and passes it to the template
+func (r *Router) renderPageWithCSRF(w http.ResponseWriter, req *http.Request, page string, data PageData) {
+	// Ensure CSRF token exists and get its value
+	token, err := auth.EnsureCSRFToken(w, req)
+	if err != nil {
+		http.Error(w, "Failed to generate CSRF token", http.StatusInternalServerError)
+		return
+	}
+	data.CSRFToken = token
+
+	r.renderPage(w, page, data)
 }
 
 // getDraftCount returns the draft count for a user, or 0 if not available
