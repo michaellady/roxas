@@ -27,7 +27,7 @@
     </nav>
     <main class="container">
         {{if .Flash}}
-        <div class="alert alert-{{.Flash.Type}}">{{.Flash.Message}}</div>
+        <div class="alert alert-{{.Flash.Type}}" data-flash>{{.Flash.Message}}</div>
         {{end}}
         {{template "content" .}}
     </main>
@@ -36,5 +36,7 @@
             <p>&copy; 2024 Roxas - Automated Social Media Posting for Developers</p>
         </div>
     </footer>
+    <div id="toast-container" class="toast-container"></div>
+    <script src="/static/js/toast.js"></script>
 </body>
 </html>
