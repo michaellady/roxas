@@ -45,24 +45,93 @@ jobs:
       - name: Run integration tests
         run: make test-int
 
+      - name: Fetch base branch for coverage comparison
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch origin ${{ github.base_ref }} --depth=1
+
+      - name: Generate base branch coverage
+        if: github.event_name == 'pull_request'
+        run: |
+          # Checkout base branch to get baseline coverage
+          git checkout FETCH_HEAD --quiet
+
+          # Run unit tests only on base branch
+          go test -short -skip 'Property' -coverprofile=base-unit-coverage.out ./internal/... ./cmd/... 2>&1 || true
+          BASE_UNIT_TOTAL=$(go tool cover -func=base-unit-coverage.out 2>/dev/null | grep total | awk '{print $3}' | tr -d '%')
+
+          # Run all tests on base branch
+          go test -short -coverprofile=base-coverage.out ./internal/... ./cmd/... 2>&1 || true
+          BASE_TOTAL=$(go tool cover -func=base-coverage.out 2>/dev/null | grep total | awk '{print $3}' | tr -d '%')
+
+          # Run integration tests on base branch for coverage (use -coverpkg to measure internal packages)
+          go test -coverprofile=base-int-coverage.out -coverpkg=./internal/...,./cmd/... ./tests/... 2>&1 || true
+          BASE_INT_TOTAL=$(go tool cover -func=base-int-coverage.out 2>/dev/null | grep total | awk '{print $3}' | tr -d '%')
+
+          # Save base coverage values
+          echo "BASE_UNIT_TOTAL=${BASE_UNIT_TOTAL:-0}" >> base-coverage.env
+          echo "BASE_TOTAL=${BASE_TOTAL:-0}" >> base-coverage.env
+          echo "BASE_INT_TOTAL=${BASE_INT_TOTAL:-0}" >> base-coverage.env
+
+          # Return to PR branch
+          git checkout - --quiet
+
       - name: Generate coverage report
         if: github.event_name == 'pull_request'
         run: |
+          # Load base coverage values
+          source base-coverage.env
+
           # Run unit tests only (excluding property tests) and capture coverage
           go test -short -skip 'Property' -coverprofile=unit-coverage.out ./internal/... ./cmd/... 2>&1 | tee unit-test-output.txt
-          UNIT_TOTAL=$(go tool cover -func=unit-coverage.out | grep total | awk '{print $3}')
+          UNIT_TOTAL_RAW=$(go tool cover -func=unit-coverage.out | grep total | awk '{print $3}')
+          UNIT_TOTAL=$(echo "$UNIT_TOTAL_RAW" | tr -d '%')
 
           # Run all tests and capture package-level coverage
           go test -short -cover ./internal/... ./cmd/... 2>&1 | tee test-output.txt
           go test -short -coverprofile=coverage.out ./internal/... ./cmd/... > /dev/null 2>&1
-          TOTAL=$(go tool cover -func=coverage.out | grep total | awk '{print $3}')
+          TOTAL_RAW=$(go tool cover -func=coverage.out | grep total | awk '{print $3}')
+          TOTAL=$(echo "$TOTAL_RAW" | tr -d '%')
+
+          # Run integration tests for coverage (use -coverpkg to measure internal packages)
+          go test -coverprofile=int-coverage.out -coverpkg=./internal/...,./cmd/... ./tests/... 2>&1 | tee int-test-output.txt || true
+          INT_TOTAL_RAW=$(go tool cover -func=int-coverage.out 2>/dev/null | grep total | awk '{print $3}')
+          INT_TOTAL=$(echo "$INT_TOTAL_RAW" | tr -d '%')
+
+          # Calculate property test contribution (difference between total and unit-only)
+          PROPERTY_CONTRIB=$(echo "$TOTAL - $UNIT_TOTAL" | bc)
+
+          # Calculate deltas from base branch
+          UNIT_DELTA=$(echo "$UNIT_TOTAL - $BASE_UNIT_TOTAL" | bc)
+          TOTAL_DELTA=$(echo "$TOTAL - $BASE_TOTAL" | bc)
+          INT_DELTA=$(echo "${INT_TOTAL:-0} - ${BASE_INT_TOTAL:-0}" | bc)
+
+          # Format delta with sign and indicator
+          format_delta() {
+            local delta=$1
+            if (( $(echo "$delta > 0" | bc -l) )); then
+              echo "📈 +${delta}%"
+            elif (( $(echo "$delta < 0" | bc -l) )); then
+              echo "📉 ${delta}%"
+            else
+              echo "➡️ ±0%"
+            fi
+          }
+
+          UNIT_DELTA_FMT=$(format_delta $UNIT_DELTA)
+          TOTAL_DELTA_FMT=$(format_delta $TOTAL_DELTA)
+          INT_DELTA_FMT=$(format_delta $INT_DELTA)
 
           echo "## 📊 Test Coverage Report" >> coverage-report.md
           echo "" >> coverage-report.md
-          echo "| Test Type | Coverage |" >> coverage-report.md
-          echo "|-----------|----------|" >> coverage-report.md
-          echo "| Unit Tests | ${UNIT_TOTAL} |" >> coverage-report.md
-          echo "| **Total (Unit + Property)** | **${TOTAL}** |" >> coverage-report.md
+          echo "| Test Type | Coverage | Delta from main |" >> coverage-report.md
+          echo "|-----------|----------|-----------------|" >> coverage-report.md
+          echo "| Unit Tests | ${UNIT_TOTAL}% | ${UNIT_DELTA_FMT} |" >> coverage-report.md
+          echo "| Property Tests | +${PROPERTY_CONTRIB}% | — |" >> coverage-report.md
+          if [ -n "$INT_TOTAL" ] && [ "$INT_TOTAL" != "0" ]; then
+            echo "| Integration Tests | ${INT_TOTAL}% | ${INT_DELTA_FMT} |" >> coverage-report.md
+          fi
+          echo "| **Combined Total** | **${TOTAL}%** | **${TOTAL_DELTA_FMT}** |" >> coverage-report.md
           echo "" >> coverage-report.md
           echo "### Package Breakdown" >> coverage-report.md
           echo "" >> coverage-report.md
