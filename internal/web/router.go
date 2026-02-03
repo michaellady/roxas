@@ -108,7 +108,8 @@ type PageData struct {
 	Flash      *FlashMessage
 	Error      string
 	Data       interface{}
-	DraftCount int // Number of pending drafts (for navigation badge)
+	DraftCount int    // Number of pending drafts (for navigation badge)
+	CSRFToken  string // CSRF token for form submissions
 }
 
 // UserData represents authenticated user info for templates
@@ -724,9 +725,16 @@ func NewRouterWithGitHubRepoLister(userStore UserStore, repoStore RepositoryStor
 	return r
 }
 
-// ServeHTTP implements http.Handler
+// ServeHTTP implements http.Handler with CSRF protection for form submissions
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	r.mux.ServeHTTP(w, req)
+	// Skip CSRF validation for static files
+	if strings.HasPrefix(req.URL.Path, "/static/") {
+		r.mux.ServeHTTP(w, req)
+		return
+	}
+
+	// Apply CSRF middleware for all other routes
+	auth.CSRFMiddleware(r.mux).ServeHTTP(w, req)
 }
 
 func (r *Router) setupRoutes() {
@@ -783,7 +791,7 @@ func (r *Router) handleHome(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	r.renderPage(w, "home.html", PageData{
+	r.renderPage(w, req, "home.html", PageData{
 		Title: "Home",
 	})
 }
@@ -794,7 +802,7 @@ func (r *Router) handleLogin(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	r.renderPage(w, "login.html", PageData{
+	r.renderPage(w, req, "login.html", PageData{
 		Title: "Login",
 	})
 }
@@ -807,7 +815,7 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 
 	// Parse form
 	if err := req.ParseForm(); err != nil {
-		r.renderPage(w, "login.html", PageData{
+		r.renderPage(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Invalid form data",
 		})
@@ -819,7 +827,7 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 
 	// Validate input
 	if email == "" || password == "" {
-		r.renderPage(w, "login.html", PageData{
+		r.renderPage(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Email and password are required",
 		})
@@ -828,7 +836,7 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 
 	// Check if we have a user store
 	if r.userStore == nil {
-		r.renderPage(w, "login.html", PageData{
+		r.renderPage(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Authentication not configured",
 		})
@@ -838,7 +846,7 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 	// Look up user
 	user, err := r.userStore.GetUserByEmail(req.Context(), email)
 	if err != nil {
-		r.renderPage(w, "login.html", PageData{
+		r.renderPage(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Invalid email or password",
 		})
@@ -847,7 +855,7 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 
 	if user == nil {
 		// User not found - use same error message for security
-		r.renderPage(w, "login.html", PageData{
+		r.renderPage(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Invalid email or password",
 		})
@@ -856,7 +864,7 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 
 	// Verify password
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
-		r.renderPage(w, "login.html", PageData{
+		r.renderPage(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Invalid email or password",
 		})
@@ -866,7 +874,7 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 	// Generate JWT token
 	token, err := auth.GenerateToken(user.ID, user.Email)
 	if err != nil {
-		r.renderPage(w, "login.html", PageData{
+		r.renderPage(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Failed to create session",
 		})
@@ -886,7 +894,7 @@ func (r *Router) handleSignup(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	r.renderPage(w, "signup.html", PageData{
+	r.renderPage(w, req, "signup.html", PageData{
 		Title: "Sign Up",
 	})
 }
@@ -899,7 +907,7 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 
 	// Parse form
 	if err := req.ParseForm(); err != nil {
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPage(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Invalid form data",
 		})
@@ -912,7 +920,7 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 
 	// Validate input
 	if email == "" || password == "" {
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPage(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Email and password are required",
 		})
@@ -921,7 +929,7 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 
 	// Validate password length (min 8 characters)
 	if len(password) < 8 {
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPage(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Password must be at least 8 characters",
 		})
@@ -930,7 +938,7 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 
 	// Validate passwords match
 	if password != confirmPassword {
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPage(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Passwords do not match",
 		})
@@ -939,7 +947,7 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 
 	// Check if we have a user store
 	if r.userStore == nil {
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPage(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Registration not configured",
 		})
@@ -949,7 +957,7 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 	// Hash password
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPage(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Failed to process registration",
 		})
@@ -960,13 +968,13 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 	_, err = r.userStore.CreateUser(req.Context(), email, string(hashedPassword))
 	if err != nil {
 		if err == handlers.ErrDuplicateEmail {
-			r.renderPage(w, "signup.html", PageData{
+			r.renderPage(w, req, "signup.html", PageData{
 				Title: "Sign Up",
 				Error: "An account with this email already exists",
 			})
 			return
 		}
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPage(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Failed to create account",
 		})
@@ -1068,7 +1076,7 @@ func (r *Router) handleDashboard(w http.ResponseWriter, req *http.Request) {
 	// Check if dashboard is empty (no repos)
 	dashData.IsEmpty = len(dashData.Repositories) == 0
 
-	r.renderPage(w, "dashboard.html", PageData{
+	r.renderPage(w, req, "dashboard.html", PageData{
 		Title: "Dashboard",
 		User: &UserData{
 			ID:    claims.UserID,
@@ -1133,7 +1141,7 @@ func (r *Router) handleConnections(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	r.renderPage(w, "connections.html", PageData{
+	r.renderPage(w, req, "connections.html", PageData{
 		Title:      "Connections",
 		User:       &UserData{ID: claims.UserID, Email: claims.Email},
 		Data:       ConnectionsPageData{Connections: connections},
@@ -1165,7 +1173,7 @@ func (r *Router) handleConnectionsNew(w http.ResponseWriter, req *http.Request) 
 		ThreadsEnabled: r.threadsOAuth != nil,
 	}
 
-	r.renderPage(w, "connections_new.html", PageData{
+	r.renderPage(w, req, "connections_new.html", PageData{
 		Title: "Connect Account",
 		User:  &UserData{ID: claims.UserID, Email: claims.Email},
 		Data:  data,
@@ -1186,7 +1194,7 @@ func (r *Router) handleBlueskyConnect(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 
-	r.renderPage(w, "bluesky_connect.html", PageData{
+	r.renderPage(w, req, "bluesky_connect.html", PageData{
 		Title: "Connect Bluesky",
 		User:  &UserData{ID: claims.UserID, Email: claims.Email},
 	})
@@ -1208,7 +1216,7 @@ func (r *Router) handleBlueskyConnectPost(w http.ResponseWriter, req *http.Reque
 
 	// Parse form
 	if err := req.ParseForm(); err != nil {
-		r.renderPage(w, "bluesky_connect.html", PageData{
+		r.renderPage(w, req, "bluesky_connect.html", PageData{
 			Title: "Connect Bluesky",
 			User:  &UserData{ID: claims.UserID, Email: claims.Email},
 			Error: "Invalid form data",
@@ -1221,7 +1229,7 @@ func (r *Router) handleBlueskyConnectPost(w http.ResponseWriter, req *http.Reque
 
 	// Validate input
 	if handle == "" || appPassword == "" {
-		r.renderPage(w, "bluesky_connect.html", PageData{
+		r.renderPage(w, req, "bluesky_connect.html", PageData{
 			Title: "Connect Bluesky",
 			User:  &UserData{ID: claims.UserID, Email: claims.Email},
 			Error: "Handle and App Password are required",
@@ -1231,7 +1239,7 @@ func (r *Router) handleBlueskyConnectPost(w http.ResponseWriter, req *http.Reque
 
 	// Check if connector is available
 	if r.blueskyConnector == nil {
-		r.renderPage(w, "bluesky_connect.html", PageData{
+		r.renderPage(w, req, "bluesky_connect.html", PageData{
 			Title: "Connect Bluesky",
 			User:  &UserData{ID: claims.UserID, Email: claims.Email},
 			Error: "Bluesky connection not configured",
@@ -1246,7 +1254,7 @@ func (r *Router) handleBlueskyConnectPost(w http.ResponseWriter, req *http.Reque
 		if err.Error() != "" {
 			errMsg = err.Error()
 		}
-		r.renderPage(w, "bluesky_connect.html", PageData{
+		r.renderPage(w, req, "bluesky_connect.html", PageData{
 			Title: "Connect Bluesky",
 			User:  &UserData{ID: claims.UserID, Email: claims.Email},
 			Error: errMsg,
@@ -1255,7 +1263,7 @@ func (r *Router) handleBlueskyConnectPost(w http.ResponseWriter, req *http.Reque
 	}
 
 	if !result.Success {
-		r.renderPage(w, "bluesky_connect.html", PageData{
+		r.renderPage(w, req, "bluesky_connect.html", PageData{
 			Title: "Connect Bluesky",
 			User:  &UserData{ID: claims.UserID, Email: claims.Email},
 			Error: result.Error,
@@ -1298,7 +1306,7 @@ func (r *Router) handleRepositories(w http.ResponseWriter, req *http.Request) {
 	if r.repoStore != nil {
 		repos, err := r.repoStore.ListRepositoriesByUser(req.Context(), claims.UserID)
 		if err != nil {
-			r.renderPage(w, "repositories_list.html", PageData{
+			r.renderPage(w, req, "repositories_list.html", PageData{
 				Title: "Repositories",
 				User: &UserData{
 					ID:    claims.UserID,
@@ -1311,7 +1319,7 @@ func (r *Router) handleRepositories(w http.ResponseWriter, req *http.Request) {
 		listData.Repositories = repos
 	}
 
-	r.renderPage(w, "repositories_list.html", PageData{
+	r.renderPage(w, req, "repositories_list.html", PageData{
 		Title: "Repositories",
 		User: &UserData{
 			ID:    claims.UserID,
@@ -1361,7 +1369,7 @@ func (r *Router) handleDrafts(w http.ResponseWriter, req *http.Request) {
 	if r.draftLister != nil {
 		drafts, err := r.draftLister.ListDraftsByUser(req.Context(), claims.UserID)
 		if err != nil {
-			r.renderPage(w, "drafts.html", PageData{
+			r.renderPage(w, req, "drafts.html", PageData{
 				Title: "Drafts",
 				User: &UserData{
 					ID:    claims.UserID,
@@ -1374,7 +1382,7 @@ func (r *Router) handleDrafts(w http.ResponseWriter, req *http.Request) {
 		listData.Drafts = drafts
 	}
 
-	r.renderPage(w, "drafts.html", PageData{
+	r.renderPage(w, req, "drafts.html", PageData{
 		Title: "Drafts",
 		User: &UserData{
 			ID:    claims.UserID,
@@ -1411,7 +1419,7 @@ func (r *Router) handleRepositoriesNew(w http.ResponseWriter, req *http.Request)
 	}
 
 	// Fall back to manual URL form
-	r.renderPage(w, "repositories_new.html", PageData{
+	r.renderPage(w, req, "repositories_new.html", PageData{
 		Title: "Add Repository",
 		User: &UserData{
 			ID:    claims.UserID,
@@ -1445,7 +1453,7 @@ func (r *Router) handleRepoSelectionPage(w http.ResponseWriter, req *http.Reques
 
 	githubRepos, err := r.githubRepoLister.ListUserRepos(req.Context(), accessToken)
 	if err != nil {
-		r.renderPage(w, "repositories_new.html", PageData{
+		r.renderPage(w, req, "repositories_new.html", PageData{
 			Title: "Add Repository",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -1470,7 +1478,7 @@ func (r *Router) handleRepoSelectionPage(w http.ResponseWriter, req *http.Reques
 		})
 	}
 
-	r.renderPage(w, "repositories_new.html", PageData{
+	r.renderPage(w, req, "repositories_new.html", PageData{
 		Title: "Add Repository",
 		User: &UserData{
 			ID:    claims.UserID,
@@ -1487,7 +1495,7 @@ func (r *Router) handleRepoSelectionPage(w http.ResponseWriter, req *http.Reques
 func (r *Router) handleRepositoriesNewPost(w http.ResponseWriter, req *http.Request, claims *auth.Claims) {
 	// Parse form
 	if err := req.ParseForm(); err != nil {
-		r.renderPage(w, "repositories_new.html", PageData{
+		r.renderPage(w, req, "repositories_new.html", PageData{
 			Title: "Add Repository",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -1510,7 +1518,7 @@ func (r *Router) handleRepositoriesNewPost(w http.ResponseWriter, req *http.Requ
 
 	// Validate GitHub URL
 	if err := r.validateGitHubURL(githubURL); err != nil {
-		r.renderPage(w, "repositories_new.html", PageData{
+		r.renderPage(w, req, "repositories_new.html", PageData{
 			Title: "Add Repository",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -1523,7 +1531,7 @@ func (r *Router) handleRepositoriesNewPost(w http.ResponseWriter, req *http.Requ
 
 	// Check if stores are configured
 	if r.repoStore == nil || r.secretGen == nil {
-		r.renderPage(w, "repositories_new.html", PageData{
+		r.renderPage(w, req, "repositories_new.html", PageData{
 			Title: "Add Repository",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -1537,7 +1545,7 @@ func (r *Router) handleRepositoriesNewPost(w http.ResponseWriter, req *http.Requ
 	// Generate webhook secret
 	secret, err := r.secretGen.Generate()
 	if err != nil {
-		r.renderPage(w, "repositories_new.html", PageData{
+		r.renderPage(w, req, "repositories_new.html", PageData{
 			Title: "Add Repository",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -1555,7 +1563,7 @@ func (r *Router) handleRepositoriesNewPost(w http.ResponseWriter, req *http.Requ
 		if err == handlers.ErrDuplicateRepository {
 			errMsg = "This repository has already been added"
 		}
-		r.renderPage(w, "repositories_new.html", PageData{
+		r.renderPage(w, req, "repositories_new.html", PageData{
 			Title: "Add Repository",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -1579,7 +1587,7 @@ func (r *Router) handleRepositoriesNewPost(w http.ResponseWriter, req *http.Requ
 func (r *Router) handleRepoSelectionPost(w http.ResponseWriter, req *http.Request, claims *auth.Claims, selectedRepos []string) {
 	// Check if stores are configured
 	if r.repoStore == nil || r.secretGen == nil {
-		r.renderPage(w, "repositories_new.html", PageData{
+		r.renderPage(w, req, "repositories_new.html", PageData{
 			Title: "Add Repository",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -1680,7 +1688,7 @@ func (r *Router) handleRepositoriesSuccess(w http.ResponseWriter, req *http.Requ
 
 	// Validate required params
 	if webhookURL == "" || webhookSecret == "" {
-		r.renderPage(w, "repository_success.html", PageData{
+		r.renderPage(w, req, "repository_success.html", PageData{
 			Title: "Repository Added",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -1691,7 +1699,7 @@ func (r *Router) handleRepositoriesSuccess(w http.ResponseWriter, req *http.Requ
 		return
 	}
 
-	r.renderPage(w, "repository_success.html", PageData{
+	r.renderPage(w, req, "repository_success.html", PageData{
 		Title: "Repository Added",
 		User: &UserData{
 			ID:    claims.UserID,
@@ -1739,7 +1747,7 @@ func (r *Router) handleRepositoryView(w http.ResponseWriter, req *http.Request) 
 
 	// Check if store is configured
 	if r.repoStore == nil {
-		r.renderPage(w, "repository_view.html", PageData{
+		r.renderPage(w, req, "repository_view.html", PageData{
 			Title: "Repository",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -1753,7 +1761,7 @@ func (r *Router) handleRepositoryView(w http.ResponseWriter, req *http.Request) 
 	// Get repository
 	repo, err := r.repoStore.GetRepositoryByID(req.Context(), repoID)
 	if err != nil {
-		r.renderPage(w, "repository_view.html", PageData{
+		r.renderPage(w, req, "repository_view.html", PageData{
 			Title: "Repository",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -1782,7 +1790,7 @@ func (r *Router) handleRepositoryView(w http.ResponseWriter, req *http.Request) 
 	// Build webhook URL
 	webhookURL := fmt.Sprintf("%s/webhooks/github/%s", r.webhookURL, repo.ID)
 
-	r.renderPage(w, "repository_view.html", PageData{
+	r.renderPage(w, req, "repository_view.html", PageData{
 		Title: repoName,
 		User: &UserData{
 			ID:    claims.UserID,
@@ -1851,7 +1859,7 @@ func (r *Router) handleRepositoryEdit(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 
-	r.renderPage(w, "repository_edit.html", PageData{
+	r.renderPage(w, req, "repository_edit.html", PageData{
 		Title: "Edit Repository",
 		User: &UserData{
 			ID:    claims.UserID,
@@ -1910,7 +1918,7 @@ func (r *Router) handleRepositoryEditPost(w http.ResponseWriter, req *http.Reque
 
 	// Parse form
 	if err := req.ParseForm(); err != nil {
-		r.renderPage(w, "repository_edit.html", PageData{
+		r.renderPage(w, req, "repository_edit.html", PageData{
 			Title: "Edit Repository",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -1927,7 +1935,7 @@ func (r *Router) handleRepositoryEditPost(w http.ResponseWriter, req *http.Reque
 
 	// Validate name
 	if name == "" {
-		r.renderPage(w, "repository_edit.html", PageData{
+		r.renderPage(w, req, "repository_edit.html", PageData{
 			Title: "Edit Repository",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -1942,7 +1950,7 @@ func (r *Router) handleRepositoryEditPost(w http.ResponseWriter, req *http.Reque
 	// Update repository
 	_, err = r.repoStore.UpdateRepository(req.Context(), repoID, name, isActive)
 	if err != nil {
-		r.renderPage(w, "repository_edit.html", PageData{
+		r.renderPage(w, req, "repository_edit.html", PageData{
 			Title: "Edit Repository",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -2006,7 +2014,7 @@ func (r *Router) handleRepositoryDelete(w http.ResponseWriter, req *http.Request
 	// Extract repository name from GitHub URL
 	repoName := extractRepoName(repo.GitHubURL)
 
-	r.renderPage(w, "repository_delete.html", PageData{
+	r.renderPage(w, req, "repository_delete.html", PageData{
 		Title: "Delete Repository",
 		User: &UserData{
 			ID:    claims.UserID,
@@ -2068,7 +2076,7 @@ func (r *Router) handleRepositoryDeletePost(w http.ResponseWriter, req *http.Req
 	err = r.repoStore.DeleteRepository(req.Context(), repoID)
 	if err != nil {
 		repoName := extractRepoName(repo.GitHubURL)
-		r.renderPage(w, "repository_delete.html", PageData{
+		r.renderPage(w, req, "repository_delete.html", PageData{
 			Title: "Delete Repository",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -2250,7 +2258,7 @@ func (r *Router) handleWebhookRegenerate(w http.ResponseWriter, req *http.Reques
 
 	// Check if stores are configured
 	if r.repoStore == nil || r.secretGen == nil {
-		r.renderPage(w, "webhook_regenerate.html", PageData{
+		r.renderPage(w, req, "webhook_regenerate.html", PageData{
 			Title: "Regenerate Webhook Secret",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -2264,7 +2272,7 @@ func (r *Router) handleWebhookRegenerate(w http.ResponseWriter, req *http.Reques
 	// Get repository
 	repo, err := r.repoStore.GetRepositoryByID(req.Context(), repoID)
 	if err != nil {
-		r.renderPage(w, "webhook_regenerate.html", PageData{
+		r.renderPage(w, req, "webhook_regenerate.html", PageData{
 			Title: "Regenerate Webhook Secret",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -2290,7 +2298,7 @@ func (r *Router) handleWebhookRegenerate(w http.ResponseWriter, req *http.Reques
 	// Generate new webhook secret
 	newSecret, err := r.secretGen.Generate()
 	if err != nil {
-		r.renderPage(w, "webhook_regenerate.html", PageData{
+		r.renderPage(w, req, "webhook_regenerate.html", PageData{
 			Title: "Regenerate Webhook Secret",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -2304,7 +2312,7 @@ func (r *Router) handleWebhookRegenerate(w http.ResponseWriter, req *http.Reques
 	// Update the repository with the new secret
 	err = r.repoStore.UpdateWebhookSecret(req.Context(), repoID, newSecret)
 	if err != nil {
-		r.renderPage(w, "webhook_regenerate.html", PageData{
+		r.renderPage(w, req, "webhook_regenerate.html", PageData{
 			Title: "Regenerate Webhook Secret",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -2322,7 +2330,7 @@ func (r *Router) handleWebhookRegenerate(w http.ResponseWriter, req *http.Reques
 	webhookURL := fmt.Sprintf("%s/webhooks/github/%s", r.webhookURL, repo.ID)
 
 	// Render success page showing the new secret (one-time display)
-	r.renderPage(w, "webhook_regenerate.html", PageData{
+	r.renderPage(w, req, "webhook_regenerate.html", PageData{
 		Title: "Webhook Secret Regenerated",
 		User: &UserData{
 			ID:    claims.UserID,
@@ -2542,8 +2550,14 @@ func (r *Router) handleThreadsTokenRefresh(w http.ResponseWriter, req *http.Requ
 	http.Redirect(w, req, "/connections?refreshed=threads", http.StatusSeeOther)
 }
 
-func (r *Router) renderPage(w http.ResponseWriter, page string, data PageData) {
+func (r *Router) renderPage(w http.ResponseWriter, req *http.Request, page string, data PageData) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	// Ensure CSRF token is set and add to page data
+	csrfToken, err := auth.EnsureCSRFToken(w, req)
+	if err == nil {
+		data.CSRFToken = csrfToken
+	}
 
 	// Get the page-specific template
 	t, ok := pageTemplates[page]
@@ -2553,7 +2567,7 @@ func (r *Router) renderPage(w http.ResponseWriter, page string, data PageData) {
 	}
 
 	// Execute the base template (which includes the page content)
-	err := t.ExecuteTemplate(w, "base.html", data)
+	err = t.ExecuteTemplate(w, "base.html", data)
 	if err != nil {
 		http.Error(w, "Template error: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -2603,7 +2617,7 @@ func (r *Router) handleWebhookDeliveries(w http.ResponseWriter, req *http.Reques
 
 	// Check if stores are configured
 	if r.repoStore == nil {
-		r.renderPage(w, "webhook_deliveries.html", PageData{
+		r.renderPage(w, req, "webhook_deliveries.html", PageData{
 			Title: "Webhook Deliveries",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -2617,7 +2631,7 @@ func (r *Router) handleWebhookDeliveries(w http.ResponseWriter, req *http.Reques
 	// Get repository
 	repo, err := r.repoStore.GetRepositoryByID(req.Context(), repoID)
 	if err != nil {
-		r.renderPage(w, "webhook_deliveries.html", PageData{
+		r.renderPage(w, req, "webhook_deliveries.html", PageData{
 			Title: "Webhook Deliveries",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -2648,7 +2662,7 @@ func (r *Router) handleWebhookDeliveries(w http.ResponseWriter, req *http.Reques
 	if r.webhookDeliveryStore != nil {
 		deliveries, err = r.webhookDeliveryStore.ListDeliveriesByRepository(req.Context(), repoID, 50)
 		if err != nil {
-			r.renderPage(w, "webhook_deliveries.html", PageData{
+			r.renderPage(w, req, "webhook_deliveries.html", PageData{
 				Title: repoName + " - Webhook Deliveries",
 				User: &UserData{
 					ID:    claims.UserID,
@@ -2660,7 +2674,7 @@ func (r *Router) handleWebhookDeliveries(w http.ResponseWriter, req *http.Reques
 		}
 	}
 
-	r.renderPage(w, "webhook_deliveries.html", PageData{
+	r.renderPage(w, req, "webhook_deliveries.html", PageData{
 		Title: repoName + " - Webhook Deliveries",
 		User: &UserData{
 			ID:    claims.UserID,
@@ -2705,7 +2719,7 @@ func (r *Router) handleConnectionDisconnect(w http.ResponseWriter, req *http.Req
 
 	// Check if connection service is available
 	if r.connectionService == nil {
-		r.renderPage(w, "connection_disconnect.html", PageData{
+		r.renderPage(w, req, "connection_disconnect.html", PageData{
 			Title: "Disconnect " + platform,
 			User: &UserData{
 				ID:    claims.UserID,
@@ -2723,7 +2737,7 @@ func (r *Router) handleConnectionDisconnect(w http.ResponseWriter, req *http.Req
 		return
 	}
 
-	r.renderPage(w, "connection_disconnect.html", PageData{
+	r.renderPage(w, req, "connection_disconnect.html", PageData{
 		Title: "Disconnect " + platform,
 		User: &UserData{
 			ID:    claims.UserID,
@@ -2761,7 +2775,7 @@ func (r *Router) handleConnectionDisconnectPost(w http.ResponseWriter, req *http
 
 	// Check if connection service is available
 	if r.connectionService == nil {
-		r.renderPage(w, "connection_disconnect.html", PageData{
+		r.renderPage(w, req, "connection_disconnect.html", PageData{
 			Title: "Disconnect " + platform,
 			User: &UserData{
 				ID:    claims.UserID,
@@ -2782,7 +2796,7 @@ func (r *Router) handleConnectionDisconnectPost(w http.ResponseWriter, req *http
 	// Disconnect the account
 	err = r.connectionService.Disconnect(req.Context(), claims.UserID, platform)
 	if err != nil {
-		r.renderPage(w, "connection_disconnect.html", PageData{
+		r.renderPage(w, req, "connection_disconnect.html", PageData{
 			Title: "Disconnect " + platform,
 			User: &UserData{
 				ID:    claims.UserID,
@@ -3001,7 +3015,7 @@ func (r *Router) handleDraftPreview(w http.ResponseWriter, req *http.Request) {
 		charLimit = 500 // Default limit
 	}
 
-	r.renderPage(w, "draft_preview.html", PageData{
+	r.renderPage(w, req, "draft_preview.html", PageData{
 		Title: "Edit Draft",
 		User: &UserData{
 			ID:    claims.UserID,

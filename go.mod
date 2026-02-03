@@ -39,6 +39,8 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.1 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dhui/dktest v0.4.6 // indirect
+	github.com/gorilla/csrf v1.7.3 // indirect
+	github.com/gorilla/securecookie v1.1.2 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/jackc/pgerrcode v0.0.0-20220416144525-469b46aa5efa // indirect

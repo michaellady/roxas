@@ -70,6 +70,43 @@ func hashPassword(password string) string {
 	return string(hash)
 }
 
+// csrfTestHelper generates a CSRF token and returns both the token and a cookie to include in requests
+func csrfTestHelper() (token string, cookie *http.Cookie) {
+	token, _ = auth.GenerateCSRFToken()
+	cookie = &http.Cookie{
+		Name:  auth.CSRFCookieName,
+		Value: token,
+	}
+	return token, cookie
+}
+
+// addCSRFToken adds CSRF token to form values and returns a cookie to add to the request
+func addCSRFToken(form url.Values) *http.Cookie {
+	token, cookie := csrfTestHelper()
+	form.Set("csrf_token", token)
+	return cookie
+}
+
+// getCSRFTokenFromCookieJar extracts the CSRF token from a cookie jar for the given URL
+func getCSRFTokenFromCookieJar(jar http.CookieJar, tsURL *url.URL) string {
+	for _, c := range jar.Cookies(tsURL) {
+		if c.Name == auth.CSRFCookieName {
+			return c.Value
+		}
+	}
+	return ""
+}
+
+// postFormWithCSRF posts form data with CSRF token from cookie jar
+func postFormWithCSRF(client *http.Client, postURL string, form url.Values, jar http.CookieJar, tsURL *url.URL) (*http.Response, error) {
+	// Get CSRF token from cookie jar
+	csrfToken := getCSRFTokenFromCookieJar(jar, tsURL)
+	if csrfToken != "" {
+		form.Set("csrf_token", csrfToken)
+	}
+	return client.PostForm(postURL, form)
+}
+
 // =============================================================================
 // TB-WEB-01: Static file serving + base HTML template (TDD - RED)
 // =============================================================================
@@ -201,13 +238,15 @@ func TestRouter_PostLogin_ValidCredentials_SetsCookieAndRedirects(t *testing.T) 
 	// First register a user
 	userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
-	// POST login form
+	// POST login form with CSRF token
 	form := url.Values{}
 	form.Set("email", "test@example.com")
 	form.Set("password", "password123")
+	csrfCookie := addCSRFToken(form)
 
 	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(csrfCookie)
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)
@@ -251,13 +290,15 @@ func TestRouter_PostLogin_InvalidCredentials_ShowsError(t *testing.T) {
 	// Register a user
 	userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 
-	// POST with wrong password
+	// POST with wrong password and CSRF token
 	form := url.Values{}
 	form.Set("email", "test@example.com")
 	form.Set("password", "wrongpassword")
+	csrfCookie := addCSRFToken(form)
 
 	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(csrfCookie)
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)
@@ -280,13 +321,15 @@ func TestRouter_PostLogin_NonexistentUser_ShowsError(t *testing.T) {
 	userStore := NewMockUserStore()
 	router := NewRouterWithStores(userStore)
 
-	// POST with non-existent user
+	// POST with non-existent user and CSRF token
 	form := url.Values{}
 	form.Set("email", "noone@example.com")
 	form.Set("password", "anypassword")
+	csrfCookie := addCSRFToken(form)
 
 	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(csrfCookie)
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)
@@ -313,14 +356,16 @@ func TestRouter_PostSignup_ValidData_CreatesUserAndRedirects(t *testing.T) {
 	userStore := NewMockUserStore()
 	router := NewRouterWithStores(userStore)
 
-	// POST signup form
+	// POST signup form with CSRF token
 	form := url.Values{}
 	form.Set("email", "newuser@example.com")
 	form.Set("password", "securepassword123")
 	form.Set("confirm_password", "securepassword123")
+	csrfCookie := addCSRFToken(form)
 
 	req := httptest.NewRequest(http.MethodPost, "/signup", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(csrfCookie)
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)
@@ -349,14 +394,16 @@ func TestRouter_PostSignup_DuplicateEmail_ShowsError(t *testing.T) {
 	// Create existing user
 	userStore.CreateUser(context.Background(), "existing@example.com", hashPassword("password"))
 
-	// Try to signup with same email
+	// Try to signup with same email and CSRF token
 	form := url.Values{}
 	form.Set("email", "existing@example.com")
 	form.Set("password", "newpassword123")
 	form.Set("confirm_password", "newpassword123")
+	csrfCookie := addCSRFToken(form)
 
 	req := httptest.NewRequest(http.MethodPost, "/signup", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(csrfCookie)
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)
@@ -383,9 +430,11 @@ func TestRouter_PostSignup_PasswordMismatch_ShowsError(t *testing.T) {
 	form.Set("email", "newuser@example.com")
 	form.Set("password", "password123")
 	form.Set("confirm_password", "different456")
+	csrfCookie := addCSRFToken(form)
 
 	req := httptest.NewRequest(http.MethodPost, "/signup", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(csrfCookie)
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)
@@ -410,9 +459,11 @@ func TestRouter_PostSignup_ShortPassword_ShowsError(t *testing.T) {
 	form.Set("email", "newuser@example.com")
 	form.Set("password", "short")
 	form.Set("confirm_password", "short")
+	csrfCookie := addCSRFToken(form)
 
 	req := httptest.NewRequest(http.MethodPost, "/signup", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(csrfCookie)
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)
@@ -604,9 +655,12 @@ func TestRouter_PostLogout_ClearsCookieAndRedirects(t *testing.T) {
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 	token, _ := generateToken(user.ID, user.Email)
 
-	// POST to logout with auth cookie
+	// POST to logout with auth cookie and CSRF token
+	csrfToken, csrfCookie := csrfTestHelper()
 	req := httptest.NewRequest(http.MethodPost, "/logout", nil)
 	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	req.AddCookie(csrfCookie)
+	req.Header.Set("X-CSRF-Token", csrfToken)
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)
@@ -659,9 +713,12 @@ func TestRouter_PostLogout_SubsequentDashboardRequiresLogin(t *testing.T) {
 		t.Fatalf("Expected dashboard to be accessible, got %d", rrDash.Code)
 	}
 
-	// POST to logout
+	// POST to logout with CSRF token
+	csrfToken, csrfCookie := csrfTestHelper()
 	reqLogout := httptest.NewRequest(http.MethodPost, "/logout", nil)
 	reqLogout.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	reqLogout.AddCookie(csrfCookie)
+	reqLogout.Header.Set("X-CSRF-Token", csrfToken)
 	rrLogout := httptest.NewRecorder()
 	router.ServeHTTP(rrLogout, reqLogout)
 
@@ -899,12 +956,13 @@ func TestWebUI_FullAuthenticationFlow(t *testing.T) {
 	// =========================================================================
 	t.Log("Step 2: POST /signup - user created, redirect to /login")
 
+	tsURL, _ := url.Parse(ts.URL)
 	signupForm := url.Values{}
 	signupForm.Set("email", testEmail)
 	signupForm.Set("password", testPassword)
 	signupForm.Set("confirm_password", testPassword)
 
-	resp, err = client.PostForm(ts.URL+"/signup", signupForm)
+	resp, err = postFormWithCSRF(client, ts.URL+"/signup", signupForm, jar, tsURL)
 	if err != nil {
 		t.Fatalf("Step 2 FAILED: Request error: %v", err)
 	}
@@ -955,7 +1013,7 @@ func TestWebUI_FullAuthenticationFlow(t *testing.T) {
 	loginForm.Set("email", testEmail)
 	loginForm.Set("password", testPassword)
 
-	resp, err = client.PostForm(ts.URL+"/login", loginForm)
+	resp, err = postFormWithCSRF(client, ts.URL+"/login", loginForm, jar, tsURL)
 	if err != nil {
 		t.Fatalf("Step 4 FAILED: Request error: %v", err)
 	}
@@ -969,7 +1027,6 @@ func TestWebUI_FullAuthenticationFlow(t *testing.T) {
 	}
 
 	// Verify cookie was set (cookie jar handles this automatically)
-	tsURL, _ := url.Parse(ts.URL)
 	cookies := jar.Cookies(tsURL)
 	var hasAuthCookie bool
 	for _, c := range cookies {
@@ -1051,7 +1108,8 @@ func TestWebUI_FullAuthenticationFlow(t *testing.T) {
 	// =========================================================================
 	t.Log("Step 8: POST /logout - cookie cleared, redirect to /login")
 
-	resp, err = client.PostForm(ts.URL+"/logout", nil)
+	logoutForm := url.Values{}
+	resp, err = postFormWithCSRF(client, ts.URL+"/logout", logoutForm, jar, tsURL)
 	if err != nil {
 		t.Fatalf("Step 8 FAILED: Request error: %v", err)
 	}
@@ -1434,9 +1492,11 @@ func TestRouter_PostRepositoriesNew_WithoutAuth_RedirectsToLogin(t *testing.T) {
 
 	form := url.Values{}
 	form.Set("github_url", "https://github.com/user/repo")
+	csrfCookie := addCSRFToken(form)
 
 	req := httptest.NewRequest(http.MethodPost, "/repositories/new", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(csrfCookie)
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)
@@ -1475,10 +1535,12 @@ func TestRouter_PostRepositoriesNew_InvalidURL_ShowsError(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			form := url.Values{}
 			form.Set("github_url", tc.url)
+			csrfCookie := addCSRFToken(form)
 
 			req := httptest.NewRequest(http.MethodPost, "/repositories/new", strings.NewReader(form.Encode()))
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+			req.AddCookie(csrfCookie)
 			rr := httptest.NewRecorder()
 
 			router.ServeHTTP(rr, req)
@@ -1506,10 +1568,12 @@ func TestRouter_PostRepositoriesNew_ValidURL_CreatesAndRedirects(t *testing.T) {
 
 	form := url.Values{}
 	form.Set("github_url", "https://github.com/testuser/testrepo")
+	csrfCookie := addCSRFToken(form)
 
 	req := httptest.NewRequest(http.MethodPost, "/repositories/new", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	req.AddCookie(csrfCookie)
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)
@@ -1955,9 +2019,11 @@ func TestRouter_PostRepositoryEdit_WithoutAuth_RedirectsToLogin(t *testing.T) {
 	form := url.Values{}
 	form.Set("name", "New Name")
 	form.Set("is_active", "true")
+	csrfCookie := addCSRFToken(form)
 
 	req := httptest.NewRequest(http.MethodPost, "/repositories/test-id/edit", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(csrfCookie)
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)
@@ -1986,10 +2052,12 @@ func TestRouter_PostRepositoryEdit_ValidData_UpdatesAndRedirects(t *testing.T) {
 	form := url.Values{}
 	form.Set("name", "Updated Name")
 	form.Set("is_active", "true")
+	csrfCookie := addCSRFToken(form)
 
 	req := httptest.NewRequest(http.MethodPost, "/repositories/"+repo.ID+"/edit", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	req.AddCookie(csrfCookie)
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)
