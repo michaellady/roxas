@@ -716,6 +716,14 @@ func NewMockRepositoryStoreForWeb() *MockRepositoryStoreForWeb {
 func (s *MockRepositoryStoreForWeb) CreateRepository(ctx context.Context, userID, githubURL, webhookSecret string) (*handlers.Repository, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Check for duplicate (same user + same URL)
+	for _, r := range s.repos {
+		if r.UserID == userID && r.GitHubURL == githubURL {
+			return nil, handlers.ErrDuplicateRepository
+		}
+	}
+
 	repo := &handlers.Repository{
 		ID:            uuid.New().String(),
 		UserID:        userID,
@@ -4369,3 +4377,372 @@ func TestRouter_GetDrafts_ShowsDraftStatus(t *testing.T) {
 }
 
 // TDD stub removed - real NewRouterWithDraftLister is in router.go
+
+// =============================================================================
+// Task 4.11: Unit Test for Partial Webhook Installation Failure
+// Validates Requirements 3.7
+//
+// Requirement 3.7: WHEN webhook installation fails for some repositories,
+// THE System SHALL continue with successful installations and display
+// partial success message
+// =============================================================================
+
+// FailableRepositoryStore is a mock store that can fail for specific URLs
+type FailableRepositoryStore struct {
+	*MockRepositoryStoreForWeb
+	failURLs map[string]error // URLs that should fail with specific errors
+}
+
+func NewFailableRepositoryStore() *FailableRepositoryStore {
+	return &FailableRepositoryStore{
+		MockRepositoryStoreForWeb: NewMockRepositoryStoreForWeb(),
+		failURLs:                  make(map[string]error),
+	}
+}
+
+func (s *FailableRepositoryStore) SetFailure(url string, err error) {
+	s.failURLs[url] = err
+}
+
+func (s *FailableRepositoryStore) CreateRepository(ctx context.Context, userID, githubURL, webhookSecret string) (*handlers.Repository, error) {
+	if err, shouldFail := s.failURLs[githubURL]; shouldFail {
+		return nil, err
+	}
+	return s.MockRepositoryStoreForWeb.CreateRepository(ctx, userID, githubURL, webhookSecret)
+}
+
+// FailableSecretGenerator is a mock that can be configured to fail
+type FailableSecretGenerator struct {
+	secrets    []string
+	errors     []error
+	callIndex  int
+	mu         sync.Mutex
+}
+
+func NewFailableSecretGenerator() *FailableSecretGenerator {
+	return &FailableSecretGenerator{
+		secrets: make([]string, 0),
+		errors:  make([]error, 0),
+	}
+}
+
+func (g *FailableSecretGenerator) AddResult(secret string, err error) {
+	g.secrets = append(g.secrets, secret)
+	g.errors = append(g.errors, err)
+}
+
+func (g *FailableSecretGenerator) Generate() (string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if g.callIndex >= len(g.secrets) {
+		return "default-secret", nil
+	}
+
+	secret := g.secrets[g.callIndex]
+	err := g.errors[g.callIndex]
+	g.callIndex++
+
+	return secret, err
+}
+
+// TestRouter_PostRepositoriesNewMulti_PartialFailure_SuccessfulReposStillCreated
+// tests that when some webhook installations fail, successful ones still proceed
+func TestRouter_PostRepositoriesNewMulti_PartialFailure_SuccessfulReposStillCreated(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewFailableRepositoryStore()
+	secretGen := &MockSecretGeneratorForWeb{Secret: "test-secret"}
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, secretGen, "https://api.test")
+
+	// Create user and authenticate
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	// Configure repo store to fail for one specific URL
+	failingURL := "https://github.com/testuser/failing-repo"
+	repoStore.SetFailure(failingURL, errors.New("database connection error"))
+
+	// Submit form with multiple repos - one will fail, others should succeed
+	form := url.Values{}
+	form.Add("repos", "https://github.com/testuser/repo1")
+	form.Add("repos", failingURL) // This one will fail
+	form.Add("repos", "https://github.com/testuser/repo2")
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/new", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should redirect (303) - the handler continues despite partial failure
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected status 303 SeeOther, got %d", rr.Code)
+	}
+
+	// Verify that the successful repos were created
+	repos, _ := repoStore.ListRepositoriesByUser(context.Background(), user.ID)
+	if len(repos) != 2 {
+		t.Errorf("Expected 2 successful repositories, got %d", len(repos))
+	}
+
+	// Verify the specific repos that succeeded
+	successfulURLs := make(map[string]bool)
+	for _, repo := range repos {
+		successfulURLs[repo.GitHubURL] = true
+	}
+
+	if !successfulURLs["https://github.com/testuser/repo1"] {
+		t.Error("Expected repo1 to be created successfully")
+	}
+	if !successfulURLs["https://github.com/testuser/repo2"] {
+		t.Error("Expected repo2 to be created successfully")
+	}
+	if successfulURLs[failingURL] {
+		t.Error("Expected failing repo NOT to be created")
+	}
+}
+
+// TestRouter_PostRepositoriesNewMulti_AllSuccess_AllReposCreated
+// tests that when all installations succeed, all repos are created
+func TestRouter_PostRepositoriesNewMulti_AllSuccess_AllReposCreated(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	secretGen := &MockSecretGeneratorForWeb{Secret: "test-secret"}
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, secretGen, "https://api.test")
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	// Submit form with multiple repos - all should succeed
+	form := url.Values{}
+	form.Add("repos", "https://github.com/testuser/repo1")
+	form.Add("repos", "https://github.com/testuser/repo2")
+	form.Add("repos", "https://github.com/testuser/repo3")
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/new", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected status 303 SeeOther, got %d", rr.Code)
+	}
+
+	// All repos should be created
+	repos, _ := repoStore.ListRepositoriesByUser(context.Background(), user.ID)
+	if len(repos) != 3 {
+		t.Errorf("Expected 3 repositories, got %d", len(repos))
+	}
+}
+
+// TestRouter_PostRepositoriesNewMulti_AllFail_NoReposCreated
+// tests that when all installations fail, no repos are created
+func TestRouter_PostRepositoriesNewMulti_AllFail_NoReposCreated(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewFailableRepositoryStore()
+	secretGen := &MockSecretGeneratorForWeb{Secret: "test-secret"}
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, secretGen, "https://api.test")
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	// Configure all repos to fail
+	repoStore.SetFailure("https://github.com/testuser/repo1", errors.New("database error"))
+	repoStore.SetFailure("https://github.com/testuser/repo2", errors.New("database error"))
+
+	form := url.Values{}
+	form.Add("repos", "https://github.com/testuser/repo1")
+	form.Add("repos", "https://github.com/testuser/repo2")
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/new", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should still redirect - handler doesn't fail on all errors
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected status 303 SeeOther, got %d", rr.Code)
+	}
+
+	// No repos should be created
+	repos, _ := repoStore.ListRepositoriesByUser(context.Background(), user.ID)
+	if len(repos) != 0 {
+		t.Errorf("Expected 0 repositories when all fail, got %d", len(repos))
+	}
+}
+
+// TestRouter_PostRepositoriesNewMulti_SecretGenerationFailure_SkipsRepo
+// tests that when secret generation fails for a repo, it's skipped but others proceed
+func TestRouter_PostRepositoriesNewMulti_SecretGenerationFailure_SkipsRepo(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	secretGen := NewFailableSecretGenerator()
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, secretGen, "https://api.test")
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	// Configure secret generator: first succeeds, second fails, third succeeds
+	secretGen.AddResult("secret1", nil)
+	secretGen.AddResult("", errors.New("secret generation failed"))
+	secretGen.AddResult("secret3", nil)
+
+	form := url.Values{}
+	form.Add("repos", "https://github.com/testuser/repo1")
+	form.Add("repos", "https://github.com/testuser/repo2") // Secret generation will fail
+	form.Add("repos", "https://github.com/testuser/repo3")
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/new", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected status 303 SeeOther, got %d", rr.Code)
+	}
+
+	// Only 2 repos should be created (repo2 skipped due to secret gen failure)
+	repos, _ := repoStore.ListRepositoriesByUser(context.Background(), user.ID)
+	if len(repos) != 2 {
+		t.Errorf("Expected 2 repositories (1 skipped), got %d", len(repos))
+	}
+}
+
+// TestRouter_PostRepositoriesNewMulti_InvalidURLs_SkippedButValidOnesProceeed
+// tests that invalid URLs are skipped but valid ones are still processed
+func TestRouter_PostRepositoriesNewMulti_InvalidURLs_SkippedButValidOnesProceeed(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	secretGen := &MockSecretGeneratorForWeb{Secret: "test-secret"}
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, secretGen, "https://api.test")
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	form := url.Values{}
+	form.Add("repos", "https://github.com/testuser/valid-repo")
+	form.Add("repos", "http://github.com/testuser/http-repo")  // Invalid: not HTTPS
+	form.Add("repos", "https://gitlab.com/testuser/gitlab-repo") // Invalid: not github.com
+	form.Add("repos", "https://github.com/testuser/another-valid")
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/new", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected status 303 SeeOther, got %d", rr.Code)
+	}
+
+	// Only 2 valid repos should be created
+	repos, _ := repoStore.ListRepositoriesByUser(context.Background(), user.ID)
+	if len(repos) != 2 {
+		t.Errorf("Expected 2 valid repositories, got %d", len(repos))
+	}
+}
+
+// TestRouter_PostRepositoriesNewMulti_DuplicatesIgnored_OthersProceed
+// tests that duplicate repositories are gracefully ignored while others proceed
+func TestRouter_PostRepositoriesNewMulti_DuplicatesIgnored_OthersProceed(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	secretGen := &MockSecretGeneratorForWeb{Secret: "test-secret"}
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, secretGen, "https://api.test")
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	// Pre-create one repo
+	repoStore.CreateRepository(context.Background(), user.ID, "https://github.com/testuser/existing-repo", "existing-secret")
+
+	form := url.Values{}
+	form.Add("repos", "https://github.com/testuser/existing-repo") // Duplicate - should be ignored
+	form.Add("repos", "https://github.com/testuser/new-repo")
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/new", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected status 303 SeeOther, got %d", rr.Code)
+	}
+
+	// Should now have 2 repos (1 existing + 1 new)
+	repos, _ := repoStore.ListRepositoriesByUser(context.Background(), user.ID)
+	if len(repos) != 2 {
+		t.Errorf("Expected 2 repositories, got %d", len(repos))
+	}
+}
+
+// TestRouter_PostRepositoriesNewMulti_EmptySelection_Redirects
+// tests that empty selection still works (no repos submitted)
+func TestRouter_PostRepositoriesNewMulti_EmptySelection_Redirects(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	secretGen := &MockSecretGeneratorForWeb{Secret: "test-secret"}
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, secretGen, "https://api.test")
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	// Submit form with no repos selected
+	form := url.Values{}
+	// No repos field
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/new", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	// Should handle gracefully - either show error for single URL form or redirect
+	// The current implementation falls through to single URL form validation
+	// which requires github_url field
+	if rr.Code != http.StatusOK && rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected status 200 (error page) or 303 (redirect), got %d", rr.Code)
+	}
+}
+
+// TestRouter_PostRepositoriesNewMulti_RedirectsToRepositoriesList
+// tests that after processing, user is redirected to repositories list
+func TestRouter_PostRepositoriesNewMulti_RedirectsToRepositoriesList(t *testing.T) {
+	userStore := NewMockUserStore()
+	repoStore := NewMockRepositoryStoreForWeb()
+	secretGen := &MockSecretGeneratorForWeb{Secret: "test-secret"}
+	router := NewRouterWithAllStores(userStore, repoStore, nil, nil, secretGen, "https://api.test")
+
+	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
+	token, _ := generateToken(user.ID, user.Email)
+
+	form := url.Values{}
+	form.Add("repos", "https://github.com/testuser/myrepo")
+
+	req := httptest.NewRequest(http.MethodPost, "/repositories/new", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected status 303 SeeOther, got %d", rr.Code)
+	}
+
+	location := rr.Header().Get("Location")
+	if location != "/repositories" {
+		t.Errorf("Expected redirect to /repositories, got %s", location)
+	}
+}
