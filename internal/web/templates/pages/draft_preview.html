@@ -16,6 +16,7 @@
         <section class="draft-content">
             <h2>Draft Content</h2>
             <form action="/drafts/{{.Draft.ID}}/edit" method="POST" class="draft-form">
+                {{csrfField $.CSRFToken}}
                 <div class="form-group">
                     <label for="content">Content</label>
                     <textarea id="content" name="content" rows="8"
@@ -36,12 +37,15 @@
             <h2>Actions</h2>
             <div class="action-buttons">
                 <form action="/drafts/{{.Draft.ID}}/regenerate" method="POST" style="display: inline;">
+                    {{csrfField $.CSRFToken}}
                     <button type="submit" class="btn btn-warning" onclick="return confirm('Regenerate this draft? Your current content will be replaced.')">Regenerate</button>
                 </form>
                 <form action="/drafts/{{.Draft.ID}}/post" method="POST" style="display: inline;">
+                    {{csrfField $.CSRFToken}}
                     <button type="submit" class="btn btn-primary">Post</button>
                 </form>
                 <form action="/drafts/{{.Draft.ID}}/delete" method="POST" style="display: inline;">
+                    {{csrfField $.CSRFToken}}
                     <button type="submit" class="btn btn-danger" onclick="return confirm('Are you sure you want to delete this draft?')">Delete</button>
                 </form>
             </div>

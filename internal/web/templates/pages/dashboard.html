@@ -95,6 +95,7 @@
                 {{if eq .Status "draft"}}
                 <div class="post-actions">
                     <form action="/posts/{{.ID}}/publish" method="POST" class="publish-form">
+                        {{csrfField $.CSRFToken}}
                         <button type="submit" class="btn btn-primary publish-btn">Publish to LinkedIn</button>
                     </form>
                 </div>

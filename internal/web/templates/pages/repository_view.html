@@ -63,6 +63,7 @@
             <h2>Webhook Secret</h2>
             <p>If your webhook secret has been compromised, you can regenerate it. This will invalidate the old secret.</p>
             <form action="/repositories/{{.Data.Repository.ID}}/webhook/regenerate" method="POST" onsubmit="return confirmRegenerate()">
+                {{csrfField $.CSRFToken}}
                 <button type="submit" class="btn btn-warning">Regenerate Secret</button>
             </form>
         </section>
@@ -95,10 +96,13 @@ async function testWebhook() {
     result.className = '';
 
     try {
+        // Get CSRF token from cookie
+        const csrfToken = document.cookie.split('; ').find(row => row.startsWith('csrf_token='))?.split('=')[1] || '';
         const response = await fetch('/repositories/{{.Data.Repository.ID}}/webhook/test', {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'X-CSRF-Token': csrfToken
             }
         });
 

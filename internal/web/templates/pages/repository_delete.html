@@ -35,6 +35,7 @@
             <div class="action-buttons">
                 <a href="/repositories/{{.Data.Repository.ID}}" class="btn btn-secondary">Cancel</a>
                 <form action="/repositories/{{.Data.Repository.ID}}/delete" method="POST" style="display: inline;">
+                    {{csrfField $.CSRFToken}}
                     <button type="submit" class="btn btn-danger">Delete Repository</button>
                 </form>
             </div>

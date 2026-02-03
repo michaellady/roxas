@@ -6,6 +6,7 @@
     {{end}}
     {{with .Data}}
     <form action="/repositories/{{.Repository.ID}}/edit" method="POST" class="auth-form">
+        {{csrfField $.CSRFToken}}
         <div class="form-group">
             <label for="name">Repository Name</label>
             <input type="text" id="name" name="name" value="{{.Repository.Name}}" required

@@ -41,6 +41,7 @@
             <div class="action-buttons">
                 <a href="/dashboard" class="btn btn-secondary">Cancel</a>
                 <form action="/connections/{{.Data.Platform}}/disconnect" method="POST" style="display: inline;">
+                    {{csrfField $.CSRFToken}}
                     <button type="submit" class="btn btn-danger">Disconnect Account</button>
                 </form>
             </div>

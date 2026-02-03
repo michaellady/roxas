@@ -5,6 +5,7 @@
     <div class="alert alert-error">{{.Error}}</div>
     {{end}}
     <form action="/signup" method="POST" class="auth-form">
+        {{csrfField .CSRFToken}}
         <div class="form-group">
             <label for="email">Email</label>
             <input type="email" id="email" name="email" required placeholder="you@example.com">

@@ -43,6 +43,7 @@
                     <td class="delivery-actions">
                         {{if not .IsSuccess}}
                         <form method="POST" action="/repositories/{{$.Data.Repository.ID}}/webhooks/{{.ID}}/retry" class="inline-form">
+                            {{csrfField $.CSRFToken}}
                             <button type="submit" class="btn btn-small btn-retry">Retry</button>
                         </form>
                         {{end}}
