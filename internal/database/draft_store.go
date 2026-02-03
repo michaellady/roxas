@@ -54,12 +54,18 @@ type Draft struct {
 
 // DraftStore handles draft persistence using PostgreSQL
 type DraftStore struct {
-	pool *Pool
+	db DBTX
 }
 
 // NewDraftStore creates a new draft store
 func NewDraftStore(pool *Pool) *DraftStore {
-	return &DraftStore{pool: pool}
+	return &DraftStore{db: pool}
+}
+
+// NewDraftStoreWithDB creates a draft store with a custom DBTX implementation.
+// This is primarily used for testing with pgxmock.
+func NewDraftStoreWithDB(db DBTX) *DraftStore {
+	return &DraftStore{db: db}
 }
 
 // CreateDraft creates a new draft in the database
@@ -93,7 +99,7 @@ func (s *DraftStore) CreateDraft(ctx context.Context, userID, repoID, ref, befor
 	var createdAt, updatedAt time.Time
 	var commitSHAsJSONResult []byte
 
-	err = s.pool.QueryRow(ctx,
+	err = s.db.QueryRow(ctx,
 		`INSERT INTO drafts (user_id, repository_id, ref, before_sha, after_sha, commit_shas, commit_count, generated_content)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		 RETURNING id, user_id, repository_id, ref, before_sha, after_sha, commit_shas, generated_content, edited_content, status, created_at, updated_at`,
@@ -131,7 +137,7 @@ func (s *DraftStore) GetDraft(ctx context.Context, draftID string) (*Draft, erro
 	var createdAt, updatedAt time.Time
 	var commitSHAsJSON []byte
 
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRow(ctx,
 		`SELECT id, user_id, repository_id, ref, before_sha, after_sha, commit_shas,
 		        generated_content, edited_content, status, created_at, updated_at
 		 FROM drafts
@@ -159,7 +165,7 @@ func (s *DraftStore) GetDraft(ctx context.Context, draftID string) (*Draft, erro
 
 // ListDraftsByUser retrieves all drafts for a user, ordered by creation time descending
 func (s *DraftStore) ListDraftsByUser(ctx context.Context, userID string) ([]*Draft, error) {
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db.Query(ctx,
 		`SELECT id, user_id, repository_id, ref, before_sha, after_sha, commit_shas,
 		        generated_content, edited_content, status, created_at, updated_at
 		 FROM drafts
@@ -202,7 +208,7 @@ func (s *DraftStore) ListDraftsByUser(ctx context.Context, userID string) ([]*Dr
 
 // UpdateDraftContent updates the edited content of a draft
 func (s *DraftStore) UpdateDraftContent(ctx context.Context, draftID, content string) error {
-	result, err := s.pool.Exec(ctx,
+	result, err := s.db.Exec(ctx,
 		`UPDATE drafts SET edited_content = $1, updated_at = NOW() WHERE id = $2`,
 		content, draftID,
 	)
@@ -224,7 +230,7 @@ func (s *DraftStore) UpdateDraftStatus(ctx context.Context, draftID, status stri
 		return ErrInvalidDraftStatus
 	}
 
-	result, err := s.pool.Exec(ctx,
+	result, err := s.db.Exec(ctx,
 		`UPDATE drafts SET status = $1, updated_at = NOW() WHERE id = $2`,
 		status, draftID,
 	)
@@ -245,7 +251,7 @@ func (s *DraftStore) UpdateDraftStatus(ctx context.Context, draftID, status stri
 
 // DeleteDraft deletes a draft by ID
 func (s *DraftStore) DeleteDraft(ctx context.Context, draftID string) error {
-	result, err := s.pool.Exec(ctx,
+	result, err := s.db.Exec(ctx,
 		`DELETE FROM drafts WHERE id = $1`,
 		draftID,
 	)
@@ -280,7 +286,7 @@ func (s *DraftStore) GetDraftByPushSignature(ctx context.Context, repoID, before
 	var createdAt, updatedAt time.Time
 	var commitSHAsJSON []byte
 
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRow(ctx,
 		`SELECT id, user_id, repository_id, ref, before_sha, after_sha, commit_shas,
 		        generated_content, edited_content, status, created_at, updated_at
 		 FROM drafts

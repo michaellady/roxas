@@ -19,18 +19,24 @@ var (
 
 // UserStore implements handlers.UserStore using PostgreSQL
 type UserStore struct {
-	pool *Pool
+	db DBTX
 }
 
 // NewUserStore creates a new database-backed user store
 func NewUserStore(pool *Pool) *UserStore {
-	return &UserStore{pool: pool}
+	return &UserStore{db: pool}
+}
+
+// NewUserStoreWithDB creates a user store with a custom DBTX implementation.
+// This is primarily used for testing with pgxmock.
+func NewUserStoreWithDB(db DBTX) *UserStore {
+	return &UserStore{db: db}
 }
 
 // CreateUser creates a new user in the database
 func (s *UserStore) CreateUser(ctx context.Context, email, passwordHash string) (*handlers.User, error) {
 	var user handlers.User
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRow(ctx,
 		`INSERT INTO users (email, password_hash)
 		 VALUES ($1, $2)
 		 RETURNING id, email, password_hash, created_at, updated_at`,
@@ -54,7 +60,7 @@ func (s *UserStore) GetUserByEmail(ctx context.Context, email string) (*handlers
 	var user handlers.User
 	var createdAt, updatedAt time.Time
 
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRow(ctx,
 		`SELECT id, email, password_hash, created_at, updated_at
 		 FROM users
 		 WHERE email = $1`,
