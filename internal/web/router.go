@@ -108,7 +108,8 @@ type PageData struct {
 	Flash      *FlashMessage
 	Error      string
 	Data       interface{}
-	DraftCount int // Number of pending drafts (for navigation badge)
+	DraftCount int    // Number of pending drafts (for navigation badge)
+	CSRFToken  string // CSRF token for form protection
 }
 
 // UserData represents authenticated user info for templates
@@ -726,7 +727,8 @@ func NewRouterWithGitHubRepoLister(userStore UserStore, repoStore RepositoryStor
 
 // ServeHTTP implements http.Handler
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	r.mux.ServeHTTP(w, req)
+	// Apply CSRF middleware to validate tokens on state-changing requests
+	auth.CSRFMiddleware(r.mux).ServeHTTP(w, req)
 }
 
 func (r *Router) setupRoutes() {
@@ -794,7 +796,7 @@ func (r *Router) handleLogin(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	r.renderPage(w, "login.html", PageData{
+	r.renderPageWithCSRF(w, req, "login.html", PageData{
 		Title: "Login",
 	})
 }
@@ -807,7 +809,7 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 
 	// Parse form
 	if err := req.ParseForm(); err != nil {
-		r.renderPage(w, "login.html", PageData{
+		r.renderPageWithCSRF(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Invalid form data",
 		})
@@ -819,7 +821,7 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 
 	// Validate input
 	if email == "" || password == "" {
-		r.renderPage(w, "login.html", PageData{
+		r.renderPageWithCSRF(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Email and password are required",
 		})
@@ -828,7 +830,7 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 
 	// Check if we have a user store
 	if r.userStore == nil {
-		r.renderPage(w, "login.html", PageData{
+		r.renderPageWithCSRF(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Authentication not configured",
 		})
@@ -838,7 +840,7 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 	// Look up user
 	user, err := r.userStore.GetUserByEmail(req.Context(), email)
 	if err != nil {
-		r.renderPage(w, "login.html", PageData{
+		r.renderPageWithCSRF(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Invalid email or password",
 		})
@@ -847,7 +849,7 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 
 	if user == nil {
 		// User not found - use same error message for security
-		r.renderPage(w, "login.html", PageData{
+		r.renderPageWithCSRF(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Invalid email or password",
 		})
@@ -856,7 +858,7 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 
 	// Verify password
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
-		r.renderPage(w, "login.html", PageData{
+		r.renderPageWithCSRF(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Invalid email or password",
 		})
@@ -866,7 +868,7 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 	// Generate JWT token
 	token, err := auth.GenerateToken(user.ID, user.Email)
 	if err != nil {
-		r.renderPage(w, "login.html", PageData{
+		r.renderPageWithCSRF(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Failed to create session",
 		})
@@ -886,7 +888,7 @@ func (r *Router) handleSignup(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	r.renderPage(w, "signup.html", PageData{
+	r.renderPageWithCSRF(w, req, "signup.html", PageData{
 		Title: "Sign Up",
 	})
 }
@@ -899,7 +901,7 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 
 	// Parse form
 	if err := req.ParseForm(); err != nil {
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPageWithCSRF(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Invalid form data",
 		})
@@ -912,7 +914,7 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 
 	// Validate input
 	if email == "" || password == "" {
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPageWithCSRF(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Email and password are required",
 		})
@@ -921,7 +923,7 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 
 	// Validate password length (min 8 characters)
 	if len(password) < 8 {
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPageWithCSRF(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Password must be at least 8 characters",
 		})
@@ -930,7 +932,7 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 
 	// Validate passwords match
 	if password != confirmPassword {
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPageWithCSRF(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Passwords do not match",
 		})
@@ -939,7 +941,7 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 
 	// Check if we have a user store
 	if r.userStore == nil {
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPageWithCSRF(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Registration not configured",
 		})
@@ -949,7 +951,7 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 	// Hash password
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPageWithCSRF(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Failed to process registration",
 		})
@@ -960,13 +962,13 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 	_, err = r.userStore.CreateUser(req.Context(), email, string(hashedPassword))
 	if err != nil {
 		if err == handlers.ErrDuplicateEmail {
-			r.renderPage(w, "signup.html", PageData{
+			r.renderPageWithCSRF(w, req, "signup.html", PageData{
 				Title: "Sign Up",
 				Error: "An account with this email already exists",
 			})
 			return
 		}
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPageWithCSRF(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Failed to create account",
 		})
@@ -1186,7 +1188,7 @@ func (r *Router) handleBlueskyConnect(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 
-	r.renderPage(w, "bluesky_connect.html", PageData{
+	r.renderPageWithCSRF(w, req, "bluesky_connect.html", PageData{
 		Title: "Connect Bluesky",
 		User:  &UserData{ID: claims.UserID, Email: claims.Email},
 	})
@@ -1208,7 +1210,7 @@ func (r *Router) handleBlueskyConnectPost(w http.ResponseWriter, req *http.Reque
 
 	// Parse form
 	if err := req.ParseForm(); err != nil {
-		r.renderPage(w, "bluesky_connect.html", PageData{
+		r.renderPageWithCSRF(w, req, "bluesky_connect.html", PageData{
 			Title: "Connect Bluesky",
 			User:  &UserData{ID: claims.UserID, Email: claims.Email},
 			Error: "Invalid form data",
@@ -1221,7 +1223,7 @@ func (r *Router) handleBlueskyConnectPost(w http.ResponseWriter, req *http.Reque
 
 	// Validate input
 	if handle == "" || appPassword == "" {
-		r.renderPage(w, "bluesky_connect.html", PageData{
+		r.renderPageWithCSRF(w, req, "bluesky_connect.html", PageData{
 			Title: "Connect Bluesky",
 			User:  &UserData{ID: claims.UserID, Email: claims.Email},
 			Error: "Handle and App Password are required",
@@ -1231,7 +1233,7 @@ func (r *Router) handleBlueskyConnectPost(w http.ResponseWriter, req *http.Reque
 
 	// Check if connector is available
 	if r.blueskyConnector == nil {
-		r.renderPage(w, "bluesky_connect.html", PageData{
+		r.renderPageWithCSRF(w, req, "bluesky_connect.html", PageData{
 			Title: "Connect Bluesky",
 			User:  &UserData{ID: claims.UserID, Email: claims.Email},
 			Error: "Bluesky connection not configured",
@@ -1246,7 +1248,7 @@ func (r *Router) handleBlueskyConnectPost(w http.ResponseWriter, req *http.Reque
 		if err.Error() != "" {
 			errMsg = err.Error()
 		}
-		r.renderPage(w, "bluesky_connect.html", PageData{
+		r.renderPageWithCSRF(w, req, "bluesky_connect.html", PageData{
 			Title: "Connect Bluesky",
 			User:  &UserData{ID: claims.UserID, Email: claims.Email},
 			Error: errMsg,
@@ -1255,7 +1257,7 @@ func (r *Router) handleBlueskyConnectPost(w http.ResponseWriter, req *http.Reque
 	}
 
 	if !result.Success {
-		r.renderPage(w, "bluesky_connect.html", PageData{
+		r.renderPageWithCSRF(w, req, "bluesky_connect.html", PageData{
 			Title: "Connect Bluesky",
 			User:  &UserData{ID: claims.UserID, Email: claims.Email},
 			Error: result.Error,
@@ -1411,7 +1413,7 @@ func (r *Router) handleRepositoriesNew(w http.ResponseWriter, req *http.Request)
 	}
 
 	// Fall back to manual URL form
-	r.renderPage(w, "repositories_new.html", PageData{
+	r.renderPageWithCSRF(w, req, "repositories_new.html", PageData{
 		Title: "Add Repository",
 		User: &UserData{
 			ID:    claims.UserID,
@@ -1445,7 +1447,7 @@ func (r *Router) handleRepoSelectionPage(w http.ResponseWriter, req *http.Reques
 
 	githubRepos, err := r.githubRepoLister.ListUserRepos(req.Context(), accessToken)
 	if err != nil {
-		r.renderPage(w, "repositories_new.html", PageData{
+		r.renderPageWithCSRF(w, req, "repositories_new.html", PageData{
 			Title: "Add Repository",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -1470,7 +1472,7 @@ func (r *Router) handleRepoSelectionPage(w http.ResponseWriter, req *http.Reques
 		})
 	}
 
-	r.renderPage(w, "repositories_new.html", PageData{
+	r.renderPageWithCSRF(w, req, "repositories_new.html", PageData{
 		Title: "Add Repository",
 		User: &UserData{
 			ID:    claims.UserID,
@@ -1487,7 +1489,7 @@ func (r *Router) handleRepoSelectionPage(w http.ResponseWriter, req *http.Reques
 func (r *Router) handleRepositoriesNewPost(w http.ResponseWriter, req *http.Request, claims *auth.Claims) {
 	// Parse form
 	if err := req.ParseForm(); err != nil {
-		r.renderPage(w, "repositories_new.html", PageData{
+		r.renderPageWithCSRF(w, req, "repositories_new.html", PageData{
 			Title: "Add Repository",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -1510,7 +1512,7 @@ func (r *Router) handleRepositoriesNewPost(w http.ResponseWriter, req *http.Requ
 
 	// Validate GitHub URL
 	if err := r.validateGitHubURL(githubURL); err != nil {
-		r.renderPage(w, "repositories_new.html", PageData{
+		r.renderPageWithCSRF(w, req, "repositories_new.html", PageData{
 			Title: "Add Repository",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -1523,7 +1525,7 @@ func (r *Router) handleRepositoriesNewPost(w http.ResponseWriter, req *http.Requ
 
 	// Check if stores are configured
 	if r.repoStore == nil || r.secretGen == nil {
-		r.renderPage(w, "repositories_new.html", PageData{
+		r.renderPageWithCSRF(w, req, "repositories_new.html", PageData{
 			Title: "Add Repository",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -1537,7 +1539,7 @@ func (r *Router) handleRepositoriesNewPost(w http.ResponseWriter, req *http.Requ
 	// Generate webhook secret
 	secret, err := r.secretGen.Generate()
 	if err != nil {
-		r.renderPage(w, "repositories_new.html", PageData{
+		r.renderPageWithCSRF(w, req, "repositories_new.html", PageData{
 			Title: "Add Repository",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -1555,7 +1557,7 @@ func (r *Router) handleRepositoriesNewPost(w http.ResponseWriter, req *http.Requ
 		if err == handlers.ErrDuplicateRepository {
 			errMsg = "This repository has already been added"
 		}
-		r.renderPage(w, "repositories_new.html", PageData{
+		r.renderPageWithCSRF(w, req, "repositories_new.html", PageData{
 			Title: "Add Repository",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -1579,7 +1581,7 @@ func (r *Router) handleRepositoriesNewPost(w http.ResponseWriter, req *http.Requ
 func (r *Router) handleRepoSelectionPost(w http.ResponseWriter, req *http.Request, claims *auth.Claims, selectedRepos []string) {
 	// Check if stores are configured
 	if r.repoStore == nil || r.secretGen == nil {
-		r.renderPage(w, "repositories_new.html", PageData{
+		r.renderPageWithCSRF(w, req, "repositories_new.html", PageData{
 			Title: "Add Repository",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -1851,7 +1853,7 @@ func (r *Router) handleRepositoryEdit(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 
-	r.renderPage(w, "repository_edit.html", PageData{
+	r.renderPageWithCSRF(w, req, "repository_edit.html", PageData{
 		Title: "Edit Repository",
 		User: &UserData{
 			ID:    claims.UserID,
@@ -1910,7 +1912,7 @@ func (r *Router) handleRepositoryEditPost(w http.ResponseWriter, req *http.Reque
 
 	// Parse form
 	if err := req.ParseForm(); err != nil {
-		r.renderPage(w, "repository_edit.html", PageData{
+		r.renderPageWithCSRF(w, req, "repository_edit.html", PageData{
 			Title: "Edit Repository",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -1927,7 +1929,7 @@ func (r *Router) handleRepositoryEditPost(w http.ResponseWriter, req *http.Reque
 
 	// Validate name
 	if name == "" {
-		r.renderPage(w, "repository_edit.html", PageData{
+		r.renderPageWithCSRF(w, req, "repository_edit.html", PageData{
 			Title: "Edit Repository",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -1942,7 +1944,7 @@ func (r *Router) handleRepositoryEditPost(w http.ResponseWriter, req *http.Reque
 	// Update repository
 	_, err = r.repoStore.UpdateRepository(req.Context(), repoID, name, isActive)
 	if err != nil {
-		r.renderPage(w, "repository_edit.html", PageData{
+		r.renderPageWithCSRF(w, req, "repository_edit.html", PageData{
 			Title: "Edit Repository",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -2006,7 +2008,7 @@ func (r *Router) handleRepositoryDelete(w http.ResponseWriter, req *http.Request
 	// Extract repository name from GitHub URL
 	repoName := extractRepoName(repo.GitHubURL)
 
-	r.renderPage(w, "repository_delete.html", PageData{
+	r.renderPageWithCSRF(w, req, "repository_delete.html", PageData{
 		Title: "Delete Repository",
 		User: &UserData{
 			ID:    claims.UserID,
@@ -2068,7 +2070,7 @@ func (r *Router) handleRepositoryDeletePost(w http.ResponseWriter, req *http.Req
 	err = r.repoStore.DeleteRepository(req.Context(), repoID)
 	if err != nil {
 		repoName := extractRepoName(repo.GitHubURL)
-		r.renderPage(w, "repository_delete.html", PageData{
+		r.renderPageWithCSRF(w, req, "repository_delete.html", PageData{
 			Title: "Delete Repository",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -2560,6 +2562,21 @@ func (r *Router) renderPage(w http.ResponseWriter, page string, data PageData) {
 	}
 }
 
+// renderPageWithCSRF renders a page template with CSRF token support
+// It ensures a CSRF token exists in the cookie and populates PageData.CSRFToken
+// Use this for any page that contains forms
+func (r *Router) renderPageWithCSRF(w http.ResponseWriter, req *http.Request, page string, data PageData) {
+	// Ensure CSRF token exists and get its value
+	token, err := auth.EnsureCSRFToken(w, req)
+	if err != nil {
+		http.Error(w, "Failed to generate CSRF token", http.StatusInternalServerError)
+		return
+	}
+	data.CSRFToken = token
+
+	r.renderPage(w, page, data)
+}
+
 // getDraftCount returns the draft count for a user, or 0 if not available
 func (r *Router) getDraftCount(ctx context.Context, userID string) int {
 	if r.draftCounter == nil {
@@ -2705,7 +2722,7 @@ func (r *Router) handleConnectionDisconnect(w http.ResponseWriter, req *http.Req
 
 	// Check if connection service is available
 	if r.connectionService == nil {
-		r.renderPage(w, "connection_disconnect.html", PageData{
+		r.renderPageWithCSRF(w, req, "connection_disconnect.html", PageData{
 			Title: "Disconnect " + platform,
 			User: &UserData{
 				ID:    claims.UserID,
@@ -2723,7 +2740,7 @@ func (r *Router) handleConnectionDisconnect(w http.ResponseWriter, req *http.Req
 		return
 	}
 
-	r.renderPage(w, "connection_disconnect.html", PageData{
+	r.renderPageWithCSRF(w, req, "connection_disconnect.html", PageData{
 		Title: "Disconnect " + platform,
 		User: &UserData{
 			ID:    claims.UserID,
@@ -2761,7 +2778,7 @@ func (r *Router) handleConnectionDisconnectPost(w http.ResponseWriter, req *http
 
 	// Check if connection service is available
 	if r.connectionService == nil {
-		r.renderPage(w, "connection_disconnect.html", PageData{
+		r.renderPageWithCSRF(w, req, "connection_disconnect.html", PageData{
 			Title: "Disconnect " + platform,
 			User: &UserData{
 				ID:    claims.UserID,
@@ -2782,7 +2799,7 @@ func (r *Router) handleConnectionDisconnectPost(w http.ResponseWriter, req *http
 	// Disconnect the account
 	err = r.connectionService.Disconnect(req.Context(), claims.UserID, platform)
 	if err != nil {
-		r.renderPage(w, "connection_disconnect.html", PageData{
+		r.renderPageWithCSRF(w, req, "connection_disconnect.html", PageData{
 			Title: "Disconnect " + platform,
 			User: &UserData{
 				ID:    claims.UserID,
@@ -3001,7 +3018,7 @@ func (r *Router) handleDraftPreview(w http.ResponseWriter, req *http.Request) {
 		charLimit = 500 // Default limit
 	}
 
-	r.renderPage(w, "draft_preview.html", PageData{
+	r.renderPageWithCSRF(w, req, "draft_preview.html", PageData{
 		Title: "Edit Draft",
 		User: &UserData{
 			ID:    claims.UserID,

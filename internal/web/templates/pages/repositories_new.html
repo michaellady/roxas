@@ -9,6 +9,7 @@
     {{/* GitHub repo selection mode */}}
     {{if .Data.HasGitHubRepos}}
     <form action="/repositories/new" method="POST" class="auth-form">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
         <p class="form-help">Select the repositories you want to connect:</p>
         <div class="repo-list">
             {{range .Data.GitHubRepos}}
@@ -38,6 +39,7 @@
     {{else}}
     {{/* Manual URL form - fallback mode */}}
     <form action="/repositories/new" method="POST" class="auth-form">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         <div class="form-group">
             <label for="github_url">GitHub Repository URL</label>
             <input type="url" id="github_url" name="github_url" required

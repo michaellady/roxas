@@ -577,11 +577,11 @@ func TestRouter_ThreadsTokenRefresh_RefreshesExpiredToken(t *testing.T) {
 		PlatformUserID: "threads-user-123",
 	})
 
-	token, _ := auth.GenerateToken(user.ID, user.Email)
+	authToken, _ := auth.GenerateToken(user.ID, user.Email)
 
 	// Make request that triggers token refresh
-	req := httptest.NewRequest(http.MethodPost, "/oauth/threads/refresh", nil)
-	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	req := createPostRequestWithCSRF(t, "/oauth/threads/refresh")
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: authToken})
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)
@@ -616,10 +616,10 @@ func TestRouter_ThreadsTokenRefresh_UpdatesStoredCredentials(t *testing.T) {
 		PlatformUserID: "threads-user-123",
 	})
 
-	token, _ := auth.GenerateToken(user.ID, user.Email)
+	authToken, _ := auth.GenerateToken(user.ID, user.Email)
 
-	req := httptest.NewRequest(http.MethodPost, "/oauth/threads/refresh", nil)
-	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	req := createPostRequestWithCSRF(t, "/oauth/threads/refresh")
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: authToken})
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)
@@ -660,10 +660,10 @@ func TestRouter_ThreadsTokenRefresh_HandlesRefreshError(t *testing.T) {
 		PlatformUserID: "threads-user-123",
 	})
 
-	token, _ := auth.GenerateToken(user.ID, user.Email)
+	authToken, _ := auth.GenerateToken(user.ID, user.Email)
 
-	req := httptest.NewRequest(http.MethodPost, "/oauth/threads/refresh", nil)
-	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	req := createPostRequestWithCSRF(t, "/oauth/threads/refresh")
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: authToken})
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)
@@ -677,7 +677,7 @@ func TestRouter_ThreadsTokenRefresh_HandlesRefreshError(t *testing.T) {
 func TestRouter_ThreadsTokenRefresh_RequiresAuth(t *testing.T) {
 	router := NewRouterWithThreadsOAuth(NewMockUserStore(), NewMockThreadsOAuthProvider(), "https://test.example.com")
 
-	req := httptest.NewRequest(http.MethodPost, "/oauth/threads/refresh", nil)
+	req := createPostRequestWithCSRF(t, "/oauth/threads/refresh")
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)
@@ -694,10 +694,10 @@ func TestRouter_ThreadsTokenRefresh_RequiresExistingCredentials(t *testing.T) {
 	router := NewRouterWithThreadsOAuth(userStore, oauthProvider, "https://test.example.com")
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
-	token, _ := auth.GenerateToken(user.ID, user.Email)
+	authToken, _ := auth.GenerateToken(user.ID, user.Email)
 
-	req := httptest.NewRequest(http.MethodPost, "/oauth/threads/refresh", nil)
-	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	req := createPostRequestWithCSRF(t, "/oauth/threads/refresh")
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: authToken})
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)

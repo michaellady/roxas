@@ -268,8 +268,9 @@ func TestCombinedRouterServesWebhook(t *testing.T) {
 	}
 }
 
-// TestCombinedRouterWebhookTrailingSlash tests that /webhook/ (with trailing slash) returns 404
+// TestCombinedRouterWebhookTrailingSlash tests that /webhook/ (with trailing slash) is rejected
 // This documents the expected behavior: GitHub sends to /webhook exactly, not /webhook/
+// The trailing slash path falls through to the web router, which rejects it via CSRF protection
 func TestCombinedRouterWebhookTrailingSlash(t *testing.T) {
 	os.Setenv("WEBHOOK_SECRET", "test-secret")
 	defer os.Unsetenv("WEBHOOK_SECRET")
@@ -283,9 +284,9 @@ func TestCombinedRouterWebhookTrailingSlash(t *testing.T) {
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
-	// /webhook/ falls through to web router which returns 404 for unknown paths
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("Expected status 404 for /webhook/, got %d", rec.Code)
+	// /webhook/ falls through to web router which rejects POST without CSRF token
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("Expected status 403 for /webhook/, got %d", rec.Code)
 	}
 }
 

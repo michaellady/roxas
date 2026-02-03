@@ -20,6 +20,7 @@
         {{end}}
 
         <form method="POST" action="/connections/bluesky/connect" class="connect-form">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
             <div class="form-group">
                 <label for="handle">Bluesky Handle</label>
                 <input type="text" id="handle" name="handle" placeholder="yourname.bsky.social or @yourname" required>
