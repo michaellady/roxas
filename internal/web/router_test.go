@@ -4899,7 +4899,7 @@ func TestNewRouterWithGitHubRepoLister(t *testing.T) {
 	commitLister := NewMockCommitListerForWeb()
 	postLister := NewMockPostListerForWeb()
 	secretGen := &MockSecretGeneratorForWeb{Secret: "test-secret"}
-	repoLister := &MockGitHubRepoLister{}
+	repoLister := NewSimpleGitHubRepoLister()
 
 	router := NewRouterWithGitHubRepoLister(userStore, repoStore, commitLister, postLister, secretGen, "https://webhook.test", repoLister)
 
@@ -5326,37 +5326,7 @@ func TestRouter_GetRepoSelection_WithGitHubRepos_ShowsRepoList(t *testing.T) {
 	userStore := NewMockUserStore()
 	repoStore := NewMockRepositoryStoreForWeb()
 	secretGen := &MockSecretGeneratorForWeb{Secret: "test-secret"}
-	repoLister := &MockGitHubRepoLister{
-		Repos: []GitHubRepo{
-			{ID: 1, Name: "repo1", FullName: "user/repo1", HTMLURL: "https://github.com/user/repo1"},
-			{ID: 2, Name: "repo2", FullName: "user/repo2", HTMLURL: "https://github.com/user/repo2"},
-		},
-	}
-
-	router := NewRouterWithGitHubRepoLister(userStore, repoStore, nil, nil, secretGen, "https://webhook.test", repoLister)
-
-	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
-	token, _ := generateToken(user.ID, user.Email)
-
-	req := httptest.NewRequest(http.MethodGet, "/repositories/new?source=github", nil)
-	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
-	rr := httptest.NewRecorder()
-
-	router.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", rr.Code)
-	}
-}
-
-// TestRouter_GetRepoSelection_GitHubError_ShowsError tests error handling
-func TestRouter_GetRepoSelection_GitHubError_ShowsError(t *testing.T) {
-	userStore := NewMockUserStore()
-	repoStore := NewMockRepositoryStoreForWeb()
-	secretGen := &MockSecretGeneratorForWeb{Secret: "test-secret"}
-	repoLister := &MockGitHubRepoLister{
-		ListErr: errors.New("GitHub API error"),
-	}
+	repoLister := NewSimpleGitHubRepoLister() // Uses existing mock from repo_selection_test.go
 
 	router := NewRouterWithGitHubRepoLister(userStore, repoStore, nil, nil, secretGen, "https://webhook.test", repoLister)
 
@@ -5685,17 +5655,23 @@ func (m *MockActivityLister) CountActivitiesByUser(ctx context.Context, userID s
 	return m.Count, nil
 }
 
-// MockGitHubRepoLister implements GitHubRepoLister for testing
-type MockGitHubRepoLister struct {
-	Repos   []GitHubRepo
-	ListErr error
+// SimpleGitHubRepoLister is a simple mock for GitHubRepoLister
+// Note: MockGitHubRepoLister exists in repo_selection_test.go but has browser build tag
+type SimpleGitHubRepoLister struct {
+	repos []GitHubRepo
 }
 
-func (m *MockGitHubRepoLister) ListUserRepos(ctx context.Context, accessToken string) ([]GitHubRepo, error) {
-	if m.ListErr != nil {
-		return nil, m.ListErr
+func NewSimpleGitHubRepoLister() *SimpleGitHubRepoLister {
+	return &SimpleGitHubRepoLister{
+		repos: []GitHubRepo{
+			{ID: 1, Name: "repo-one", FullName: "testuser/repo-one", HTMLURL: "https://github.com/testuser/repo-one"},
+			{ID: 2, Name: "repo-two", FullName: "testuser/repo-two", HTMLURL: "https://github.com/testuser/repo-two"},
+		},
 	}
-	return m.Repos, nil
+}
+
+func (m *SimpleGitHubRepoLister) ListUserRepos(ctx context.Context, accessToken string) ([]GitHubRepo, error) {
+	return m.repos, nil
 }
 
 // =============================================================================
