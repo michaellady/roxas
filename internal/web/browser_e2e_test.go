@@ -1173,13 +1173,13 @@ func TestBrowser_ConnectionDisconnect(t *testing.T) {
 	page.MustWaitLoad()
 	page.MustWaitStable()
 
-	// Should redirect to dashboard with success param
+	// Should redirect to dashboard
+	// Note: The query param ?disconnected=twitter is sent by the server but
+	// toast.js cleans it up via history.replaceState after showing the toast.
+	// We verify the redirect happened and the connection was removed (Step 7).
 	currentURL = page.MustInfo().URL
 	if !strings.Contains(currentURL, "/dashboard") {
 		t.Fatalf("Step 6 FAILED: Expected redirect to /dashboard, got: %s", currentURL)
-	}
-	if !strings.Contains(currentURL, "disconnected=twitter") {
-		t.Fatalf("Step 6 FAILED: Expected 'disconnected=twitter' in URL, got: %s", currentURL)
 	}
 	t.Log("Step 6 PASSED: Disconnect successful, redirected to dashboard")
 
