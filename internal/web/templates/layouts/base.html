@@ -16,6 +16,7 @@
                 <a href="/drafts" class="nav-drafts">Drafts{{if .DraftCount}} <span class="badge">{{.DraftCount}}</span>{{end}}</a>
                 <a href="/connections">Connections</a>
                 <form action="/logout" method="POST" style="display:inline">
+                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                     <button type="submit" class="btn-link">Logout</button>
                 </form>
                 {{else}}

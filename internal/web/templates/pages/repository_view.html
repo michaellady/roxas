@@ -63,6 +63,7 @@
             <h2>Webhook Secret</h2>
             <p>If your webhook secret has been compromised, you can regenerate it. This will invalidate the old secret.</p>
             <form action="/repositories/{{.Data.Repository.ID}}/webhook/regenerate" method="POST" onsubmit="return confirmRegenerate()">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                 <button type="submit" class="btn btn-warning">Regenerate Secret</button>
             </form>
         </section>
