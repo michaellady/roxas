@@ -176,6 +176,7 @@ jobs:
       - name: Run deployed browser E2E tests
         env:
           DEPLOY_URL: https://dev.roxasapp.com
+          EXPECTED_GH_APP_URL: ${{ vars.GH_APP_URL }}
         run: go test -tags=browser -v ./internal/web -run TestDeployed -timeout 180s
 
   deploy-prod:
