@@ -1487,7 +1487,7 @@ func (r *Router) handleRepoSelectionPage(w http.ResponseWriter, req *http.Reques
 		})
 	}
 
-	r.renderPage(w, "repositories_new.html", PageData{
+	r.renderPageWithCSRF(w, req, "repositories_new.html", PageData{
 		Title: "Add Repository",
 		User: &UserData{
 			ID:    claims.UserID,

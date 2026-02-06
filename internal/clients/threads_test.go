@@ -317,6 +317,289 @@ func TestThreadsClient_FetchRateLimits(t *testing.T) {
 	}
 }
 
+func TestNewThreadsClient_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/me" {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":       "123456789",
+				"username": "testuser",
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := NewThreadsClient("test-token", server.URL)
+
+	if client.userID != "123456789" {
+		t.Errorf("NewThreadsClient userID = %q, want %q", client.userID, "123456789")
+	}
+	if client.Platform() != services.PlatformThreads {
+		t.Errorf("Platform() = %q, want %q", client.Platform(), services.PlatformThreads)
+	}
+}
+
+func TestNewThreadsClient_FailedUserID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error": "unauthorized"}`))
+	}))
+	defer server.Close()
+
+	client := NewThreadsClient("bad-token", server.URL)
+
+	// Should still create client, but userID should be empty
+	if client.userID != "" {
+		t.Errorf("NewThreadsClient userID = %q, want empty string", client.userID)
+	}
+}
+
+func TestNewThreadsClient_DefaultBaseURL(t *testing.T) {
+	// Using a server that will fail for /me, but we just want to ensure defaults are set
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	// Test with empty baseURL (uses default)
+	client := NewThreadsClient("token", server.URL)
+	if client == nil {
+		t.Error("Expected non-nil client")
+	}
+}
+
+func TestThreadsClient_Post_PublishRateLimited(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if r.URL.Path == "/me/threads" && r.Method == "POST" {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"id": "container-123"})
+			return
+		}
+		if r.URL.Path == "/me/threads_publish" && r.Method == "POST" {
+			w.WriteHeader(http.StatusTooManyRequests)
+			json.NewEncoder(w).Encode(map[string]string{"error": "rate limited"})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := &ThreadsClient{
+		accessToken: "test-token",
+		baseURL:     server.URL,
+		client:      http.DefaultClient,
+		userID:      "testuser",
+	}
+
+	content := services.PostContent{Text: "Hello!"}
+	_, err := client.Post(context.Background(), content)
+
+	if !errors.Is(err, ErrThreadsRateLimited) {
+		t.Errorf("Post() error = %v, want ErrThreadsRateLimited", err)
+	}
+}
+
+func TestThreadsClient_Post_PublishUnauthorized(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/me/threads" && r.Method == "POST" {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"id": "container-123"})
+			return
+		}
+		if r.URL.Path == "/me/threads_publish" && r.Method == "POST" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := &ThreadsClient{
+		accessToken: "test-token",
+		baseURL:     server.URL,
+		client:      http.DefaultClient,
+		userID:      "testuser",
+	}
+
+	content := services.PostContent{Text: "Hello!"}
+	_, err := client.Post(context.Background(), content)
+
+	if !errors.Is(err, ErrThreadsAuthentication) {
+		t.Errorf("Post() error = %v, want ErrThreadsAuthentication", err)
+	}
+}
+
+func TestThreadsClient_Post_PublishServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/me/threads" && r.Method == "POST" {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"id": "container-123"})
+			return
+		}
+		if r.URL.Path == "/me/threads_publish" && r.Method == "POST" {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"error": "server error"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := &ThreadsClient{
+		accessToken: "test-token",
+		baseURL:     server.URL,
+		client:      http.DefaultClient,
+		userID:      "testuser",
+	}
+
+	content := services.PostContent{Text: "Hello!"}
+	_, err := client.Post(context.Background(), content)
+
+	if err == nil {
+		t.Error("Post() expected error for server error during publish")
+	}
+	if !errors.Is(err, ErrThreadsPostFailed) {
+		t.Errorf("Post() error = %v, want wrapping of ErrThreadsPostFailed", err)
+	}
+}
+
+func TestThreadsClient_Post_ContainerServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/me/threads" && r.Method == "POST" {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"error": "server error"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := &ThreadsClient{
+		accessToken: "test-token",
+		baseURL:     server.URL,
+		client:      http.DefaultClient,
+		userID:      "testuser",
+	}
+
+	content := services.PostContent{Text: "Hello!"}
+	_, err := client.Post(context.Background(), content)
+
+	if err == nil {
+		t.Error("Post() expected error for server error during container creation")
+	}
+}
+
+func TestThreadsClient_Post_WithReply(t *testing.T) {
+	var receivedReplyToID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/me/threads" && r.Method == "POST" {
+			var req map[string]interface{}
+			json.NewDecoder(r.Body).Decode(&req)
+			if rid, ok := req["reply_to_id"].(string); ok {
+				receivedReplyToID = rid
+			}
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"id": "container-123"})
+			return
+		}
+		if r.URL.Path == "/me/threads_publish" && r.Method == "POST" {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"id": "post-456"})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := &ThreadsClient{
+		accessToken: "test-token",
+		baseURL:     server.URL,
+		client:      http.DefaultClient,
+		userID:      "testuser",
+	}
+
+	threadID := "parent-thread-id"
+	content := services.PostContent{
+		Text:     "Reply to thread",
+		ThreadID: &threadID,
+	}
+	_, err := client.Post(context.Background(), content)
+
+	if err != nil {
+		t.Fatalf("Post() error = %v", err)
+	}
+	if receivedReplyToID != "parent-thread-id" {
+		t.Errorf("reply_to_id = %q, want %q", receivedReplyToID, "parent-thread-id")
+	}
+}
+
+func TestThreadsClient_FetchRateLimits_Error(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error": "server error"}`))
+	}))
+	defer server.Close()
+
+	client := &ThreadsClient{
+		accessToken: "test-token",
+		baseURL:     server.URL,
+		client:      http.DefaultClient,
+	}
+
+	_, err := client.FetchRateLimits(context.Background())
+	if err == nil {
+		t.Error("FetchRateLimits() expected error for server error")
+	}
+}
+
+func TestThreadsClient_FetchRateLimits_EmptyData(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []map[string]interface{}{},
+		})
+	}))
+	defer server.Close()
+
+	client := &ThreadsClient{
+		accessToken: "test-token",
+		baseURL:     server.URL,
+		client:      http.DefaultClient,
+	}
+
+	limits, err := client.FetchRateLimits(context.Background())
+	if err != nil {
+		t.Fatalf("FetchRateLimits() error = %v", err)
+	}
+
+	if limits.Limit != 0 {
+		t.Errorf("FetchRateLimits().Limit = %d, want 0 for empty data", limits.Limit)
+	}
+}
+
+func TestThreadsClient_getUserID_Unauthorized(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error": "unauthorized"}`))
+	}))
+	defer server.Close()
+
+	client := &ThreadsClient{
+		accessToken: "bad-token",
+		baseURL:     server.URL,
+		client:      http.DefaultClient,
+	}
+
+	_, err := client.getUserID(context.Background())
+	if err == nil {
+		t.Error("getUserID() expected error for unauthorized")
+	}
+}
+
 func TestThreadsClient_getUserID(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/me" {

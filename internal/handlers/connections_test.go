@@ -1125,6 +1125,77 @@ func TestConnectionHandler_GetConnection_ExpiredShowsReconnect(t *testing.T) {
 	}
 }
 
+// TestConnectionHandler_OAuthCallback_ErrorFromProvider tests handling of OAuth errors from the provider
+func TestConnectionHandler_OAuthCallback_ErrorFromProvider(t *testing.T) {
+	svc := NewMockConnectionService()
+	handler := NewConnectionHandler(svc, "https://app.example.com")
+
+	token := generateTestToken("user-123", "test@example.com")
+	req := httptest.NewRequest(http.MethodGet, "/oauth/linkedin/callback?error=access_denied", nil)
+	addAuthCookie(req, token)
+	rr := httptest.NewRecorder()
+
+	handler.OAuthCallback(rr, req, "linkedin")
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected redirect status 303, got %d", rr.Code)
+	}
+	if loc := rr.Header().Get("Location"); loc != "/connections?error=access_denied" {
+		t.Errorf("Expected redirect with access_denied error, got '%s'", loc)
+	}
+}
+
+// TestConnectionHandler_Disconnect_InvalidPlatform tests disconnect with invalid platform
+func TestConnectionHandler_Disconnect_InvalidPlatform(t *testing.T) {
+	svc := NewMockConnectionService()
+	handler := NewConnectionHandler(svc, "https://app.example.com")
+
+	token := generateTestToken("user-123", "test@example.com")
+	req := httptest.NewRequest(http.MethodDelete, "/api/connections/fakebook", nil)
+	addAuthCookie(req, token)
+	rr := httptest.NewRecorder()
+
+	handler.Disconnect(rr, req, "fakebook")
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("Expected status 400 for invalid platform, got %d", rr.Code)
+	}
+}
+
+// TestConnectionHandler_GetRateLimits_InvalidPlatform tests rate limits with invalid platform
+func TestConnectionHandler_GetRateLimits_InvalidPlatform(t *testing.T) {
+	svc := NewMockConnectionService()
+	handler := NewConnectionHandler(svc, "https://app.example.com")
+
+	token := generateTestToken("user-123", "test@example.com")
+	req := httptest.NewRequest(http.MethodGet, "/api/connections/fakebook/rate-limits", nil)
+	addAuthCookie(req, token)
+	rr := httptest.NewRecorder()
+
+	handler.GetRateLimits(rr, req, "fakebook")
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("Expected status 400 for invalid platform, got %d", rr.Code)
+	}
+}
+
+// TestConnectionHandler_TestConnection_InvalidPlatform tests test connection with invalid platform
+func TestConnectionHandler_TestConnection_InvalidPlatform(t *testing.T) {
+	svc := NewMockConnectionService()
+	handler := NewConnectionHandler(svc, "https://app.example.com")
+
+	token := generateTestToken("user-123", "test@example.com")
+	req := httptest.NewRequest(http.MethodPost, "/api/connections/fakebook/test", nil)
+	addAuthCookie(req, token)
+	rr := httptest.NewRecorder()
+
+	handler.TestConnection(rr, req, "fakebook")
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("Expected status 400 for invalid platform, got %d", rr.Code)
+	}
+}
+
 // TestConnectionHandler_ListConnections_ExpiredHasReconnectData tests that
 // listing connections returns all data needed to show Reconnect for expired tokens.
 func TestConnectionHandler_ListConnections_ExpiredHasReconnectData(t *testing.T) {

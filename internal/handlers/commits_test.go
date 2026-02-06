@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -40,6 +41,15 @@ func (m *MockCommitLister) ListCommitsByUser(ctx context.Context, userID string)
 		return commits, nil
 	}
 	return []*services.Commit{}, nil
+}
+
+// ErrorCommitLister always returns an error for testing error paths
+type ErrorCommitLister struct {
+	err error
+}
+
+func (e *ErrorCommitLister) ListCommitsByUser(ctx context.Context, userID string) ([]*services.Commit, error) {
+	return nil, e.err
 }
 
 // AddCommitForUser adds a commit for testing
@@ -255,6 +265,34 @@ func TestListCommitsIncludesAllFields(t *testing.T) {
 	}
 	if commit.GitHubURL != "https://github.com/user/repo/commit/abc123def456" {
 		t.Errorf("Expected GitHubURL, got %s", commit.GitHubURL)
+	}
+}
+
+// TestListCommitsServiceError tests that commit listing errors return 500
+func TestListCommitsServiceError(t *testing.T) {
+	commitLister := &ErrorCommitLister{err: errors.New("database unavailable")}
+	handler := NewCommitsHandler(commitLister)
+
+	userID := "user-123"
+	email := "test@example.com"
+
+	req := createAuthenticatedRequest(t, http.MethodGet, "/api/v1/commits", nil, userID, email)
+	rr := httptest.NewRecorder()
+
+	protectedHandler := auth.JWTMiddleware(http.HandlerFunc(handler.ListCommits))
+	protectedHandler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("Expected status 500, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp ErrorResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if resp.Error != "failed to retrieve commits" {
+		t.Errorf("Expected error 'failed to retrieve commits', got %q", resp.Error)
 	}
 }
 

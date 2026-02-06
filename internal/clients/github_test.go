@@ -232,3 +232,159 @@ func TestGitHubClient_GetRepo_NotFound(t *testing.T) {
 		t.Error("GetRepo() expected error for non-existent repo")
 	}
 }
+
+func TestGitHubClient_GetRepo_RateLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"message": "API rate limit exceeded"}`))
+	}))
+	defer server.Close()
+
+	client := NewGitHubClient("test-token", server.URL)
+	_, err := client.GetRepo(context.Background(), "owner", "repo")
+
+	if err != ErrGitHubRateLimited {
+		t.Errorf("GetRepo() error = %v, want %v", err, ErrGitHubRateLimited)
+	}
+}
+
+func TestGitHubClient_GetRepo_TooManyRequests(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"message": "Too many requests"}`))
+	}))
+	defer server.Close()
+
+	client := NewGitHubClient("test-token", server.URL)
+	_, err := client.GetRepo(context.Background(), "owner", "repo")
+
+	if err != ErrGitHubRateLimited {
+		t.Errorf("GetRepo() error = %v, want %v", err, ErrGitHubRateLimited)
+	}
+}
+
+func TestGitHubClient_GetRepo_Unauthorized(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"message": "Bad credentials"}`))
+	}))
+	defer server.Close()
+
+	client := NewGitHubClient("bad-token", server.URL)
+	_, err := client.GetRepo(context.Background(), "owner", "repo")
+
+	if err != ErrGitHubAuthentication {
+		t.Errorf("GetRepo() error = %v, want %v", err, ErrGitHubAuthentication)
+	}
+}
+
+func TestGitHubClient_GetRepo_ServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"message": "Internal Server Error"}`))
+	}))
+	defer server.Close()
+
+	client := NewGitHubClient("test-token", server.URL)
+	_, err := client.GetRepo(context.Background(), "owner", "repo")
+
+	if err == nil {
+		t.Error("GetRepo() expected error for server error")
+	}
+}
+
+func TestGitHubClient_GetRepo_InvalidJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`not json`))
+	}))
+	defer server.Close()
+
+	client := NewGitHubClient("test-token", server.URL)
+	_, err := client.GetRepo(context.Background(), "owner", "repo")
+
+	if err == nil {
+		t.Error("GetRepo() expected error for invalid JSON")
+	}
+}
+
+func TestGitHubClient_ListUserRepos_TooManyRequests(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"message": "Too many requests"}`))
+	}))
+	defer server.Close()
+
+	client := NewGitHubClient("test-token", server.URL)
+	_, err := client.ListUserRepos(context.Background(), false)
+
+	if err != ErrGitHubRateLimited {
+		t.Errorf("ListUserRepos() error = %v, want %v", err, ErrGitHubRateLimited)
+	}
+}
+
+func TestGitHubClient_ListUserRepos_ServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"message": "Server Error"}`))
+	}))
+	defer server.Close()
+
+	client := NewGitHubClient("test-token", server.URL)
+	_, err := client.ListUserRepos(context.Background(), false)
+
+	if err == nil {
+		t.Error("ListUserRepos() expected error for server error")
+	}
+}
+
+func TestGitHubClient_ListUserRepos_InvalidJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`not json`))
+	}))
+	defer server.Close()
+
+	client := NewGitHubClient("test-token", server.URL)
+	_, err := client.ListUserRepos(context.Background(), false)
+
+	if err == nil {
+		t.Error("ListUserRepos() expected error for invalid JSON")
+	}
+}
+
+func TestGitHubClient_ListUserRepos_NilPermissions(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		repos := []GitHubRepo{
+			{
+				ID:          1,
+				Name:        "repo1",
+				FullName:    "user/repo1",
+				Permissions: nil, // No permissions set
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(repos)
+	}))
+	defer server.Close()
+
+	client := NewGitHubClient("test-token", server.URL)
+
+	// Admin filter should exclude repos with nil permissions
+	repos, err := client.ListUserRepos(context.Background(), true)
+	if err != nil {
+		t.Fatalf("ListUserRepos() error = %v", err)
+	}
+	if len(repos) != 0 {
+		t.Errorf("ListUserRepos(adminOnly=true) returned %d repos, want 0 for nil permissions", len(repos))
+	}
+}
+
+func TestGitHubClient_NewGitHubClient_DefaultBaseURL(t *testing.T) {
+	client := NewGitHubClient("token", "")
+	if client.Platform() != services.PlatformGitHub {
+		t.Errorf("Platform() = %q, want %q", client.Platform(), services.PlatformGitHub)
+	}
+}
