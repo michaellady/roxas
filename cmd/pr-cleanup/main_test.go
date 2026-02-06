@@ -831,3 +831,431 @@ func TestHandler_CleanupOrphanedENIs_SkipsInUse(t *testing.T) {
 		t.Errorf("expected eni-orphan to be deleted, got %s", deletedENIs[0])
 	}
 }
+
+// =============================================================================
+// Additional Coverage Tests
+// =============================================================================
+
+func TestHandler_CleanupENIs_DescribeError(t *testing.T) {
+	ctx := context.Background()
+
+	ec2Client = &MockEC2Client{
+		DescribeNetworkInterfacesFunc: func(ctx context.Context, params *ec2.DescribeNetworkInterfacesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error) {
+			return nil, errors.New("ec2 describe error")
+		},
+	}
+	defer func() { ec2Client = nil }()
+
+	resp, err := handler(ctx, Request{PRNumber: 45, Action: "cleanup_enis"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.StatusCode != 500 {
+		t.Errorf("expected status 500, got %d", resp.StatusCode)
+	}
+	if resp.Body.Action != "error" {
+		t.Errorf("expected action 'error', got %q", resp.Body.Action)
+	}
+}
+
+func TestHandler_CleanupENIs_DeleteError(t *testing.T) {
+	ctx := context.Background()
+
+	ec2Client = &MockEC2Client{
+		DescribeNetworkInterfacesFunc: func(ctx context.Context, params *ec2.DescribeNetworkInterfacesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error) {
+			return &ec2.DescribeNetworkInterfacesOutput{
+				NetworkInterfaces: []types.NetworkInterface{
+					{
+						NetworkInterfaceId: aws.String("eni-fail"),
+						Status:             types.NetworkInterfaceStatusAvailable,
+						Description:        aws.String("AWS Lambda VPC ENI-roxas-webhook-handler-pr-45-dev"),
+					},
+				},
+			}, nil
+		},
+		DeleteNetworkInterfaceFunc: func(ctx context.Context, params *ec2.DeleteNetworkInterfaceInput, optFns ...func(*ec2.Options)) (*ec2.DeleteNetworkInterfaceOutput, error) {
+			return nil, errors.New("delete failed")
+		},
+	}
+	defer func() { ec2Client = nil }()
+
+	resp, err := handler(ctx, Request{PRNumber: 45, Action: "cleanup_enis"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.StatusCode != 500 {
+		t.Errorf("expected status 500, got %d", resp.StatusCode)
+	}
+	if resp.Body.Action != "error" {
+		t.Errorf("expected action 'error', got %q", resp.Body.Action)
+	}
+}
+
+func TestHandler_CleanupSGs_DescribeError(t *testing.T) {
+	ctx := context.Background()
+
+	ec2Client = &MockEC2Client{
+		DescribeSecurityGroupsFunc: func(ctx context.Context, params *ec2.DescribeSecurityGroupsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupsOutput, error) {
+			return nil, errors.New("sg describe error")
+		},
+	}
+	defer func() { ec2Client = nil }()
+
+	resp, err := handler(ctx, Request{PRNumber: 45, Action: "cleanup_sgs"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.StatusCode != 500 {
+		t.Errorf("expected status 500, got %d", resp.StatusCode)
+	}
+	if resp.Body.Action != "error" {
+		t.Errorf("expected action 'error', got %q", resp.Body.Action)
+	}
+}
+
+func TestHandler_CleanupSGs_ENICheckError(t *testing.T) {
+	ctx := context.Background()
+
+	ec2Client = &MockEC2Client{
+		DescribeSecurityGroupsFunc: func(ctx context.Context, params *ec2.DescribeSecurityGroupsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupsOutput, error) {
+			return &ec2.DescribeSecurityGroupsOutput{
+				SecurityGroups: []types.SecurityGroup{
+					{
+						GroupId:   aws.String("sg-test"),
+						GroupName: aws.String("roxas-webhook-handler-pr-45-dev-lambda"),
+						VpcId:     aws.String("vpc-123"),
+					},
+				},
+			}, nil
+		},
+		DescribeNetworkInterfacesFunc: func(ctx context.Context, params *ec2.DescribeNetworkInterfacesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error) {
+			return nil, errors.New("eni check error")
+		},
+	}
+	defer func() { ec2Client = nil }()
+
+	resp, err := handler(ctx, Request{PRNumber: 45, Action: "cleanup_sgs"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.StatusCode != 500 {
+		t.Errorf("expected status 500, got %d", resp.StatusCode)
+	}
+	if resp.Body.Action != "error" {
+		t.Errorf("expected action 'error', got %q", resp.Body.Action)
+	}
+}
+
+func TestHandler_CleanupSGs_DeleteError(t *testing.T) {
+	ctx := context.Background()
+
+	ec2Client = &MockEC2Client{
+		DescribeSecurityGroupsFunc: func(ctx context.Context, params *ec2.DescribeSecurityGroupsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupsOutput, error) {
+			return &ec2.DescribeSecurityGroupsOutput{
+				SecurityGroups: []types.SecurityGroup{
+					{
+						GroupId:   aws.String("sg-del-err"),
+						GroupName: aws.String("roxas-webhook-handler-pr-45-dev-lambda"),
+						VpcId:     aws.String("vpc-123"),
+					},
+				},
+			}, nil
+		},
+		DescribeNetworkInterfacesFunc: func(ctx context.Context, params *ec2.DescribeNetworkInterfacesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error) {
+			// No ENIs using this SG
+			return &ec2.DescribeNetworkInterfacesOutput{
+				NetworkInterfaces: []types.NetworkInterface{},
+			}, nil
+		},
+		DeleteSecurityGroupFunc: func(ctx context.Context, params *ec2.DeleteSecurityGroupInput, optFns ...func(*ec2.Options)) (*ec2.DeleteSecurityGroupOutput, error) {
+			return nil, errors.New("delete sg failed")
+		},
+	}
+	defer func() { ec2Client = nil }()
+
+	resp, err := handler(ctx, Request{PRNumber: 45, Action: "cleanup_sgs"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.StatusCode != 500 {
+		t.Errorf("expected status 500, got %d", resp.StatusCode)
+	}
+	if resp.Body.Action != "error" {
+		t.Errorf("expected action 'error', got %q", resp.Body.Action)
+	}
+}
+
+func TestHandler_CleanupAll_ENIFailure(t *testing.T) {
+	ctx := context.Background()
+
+	ec2Client = &MockEC2Client{
+		DescribeNetworkInterfacesFunc: func(ctx context.Context, params *ec2.DescribeNetworkInterfacesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error) {
+			return nil, errors.New("eni describe error")
+		},
+	}
+	defer func() { ec2Client = nil }()
+
+	resp, err := handler(ctx, Request{PRNumber: 45, Action: "cleanup_all"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// cleanup_all should fail if ENI cleanup fails
+	if resp.StatusCode != 500 {
+		t.Errorf("expected status 500, got %d", resp.StatusCode)
+	}
+	if resp.Body.Action != "error" {
+		t.Errorf("expected action 'error', got %q", resp.Body.Action)
+	}
+}
+
+func TestHandler_CleanupAll_SGFailure(t *testing.T) {
+	ctx := context.Background()
+
+	describeENIsCalls := 0
+	ec2Client = &MockEC2Client{
+		DescribeNetworkInterfacesFunc: func(ctx context.Context, params *ec2.DescribeNetworkInterfacesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error) {
+			describeENIsCalls++
+			// First call for ENI cleanup succeeds with no ENIs
+			return &ec2.DescribeNetworkInterfacesOutput{
+				NetworkInterfaces: []types.NetworkInterface{},
+			}, nil
+		},
+		DescribeSecurityGroupsFunc: func(ctx context.Context, params *ec2.DescribeSecurityGroupsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupsOutput, error) {
+			return nil, errors.New("sg describe error")
+		},
+	}
+	defer func() { ec2Client = nil }()
+
+	resp, err := handler(ctx, Request{PRNumber: 45, Action: "cleanup_all"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// cleanup_all should fail if SG cleanup fails
+	if resp.StatusCode != 500 {
+		t.Errorf("expected status 500, got %d", resp.StatusCode)
+	}
+}
+
+func TestHandler_CleanupOrphanedENIs_DescribeError(t *testing.T) {
+	ctx := context.Background()
+
+	ec2Client = &MockEC2Client{
+		DescribeNetworkInterfacesFunc: func(ctx context.Context, params *ec2.DescribeNetworkInterfacesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error) {
+			return nil, errors.New("describe error")
+		},
+	}
+	defer func() { ec2Client = nil }()
+
+	resp, err := handler(ctx, Request{PRNumber: 0, Action: "cleanup_orphaned_enis"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.StatusCode != 500 {
+		t.Errorf("expected status 500, got %d", resp.StatusCode)
+	}
+	if resp.Body.Action != "error" {
+		t.Errorf("expected action 'error', got %q", resp.Body.Action)
+	}
+}
+
+func TestHandler_CleanupOrphanedENIs_DeleteError(t *testing.T) {
+	ctx := context.Background()
+
+	ec2Client = &MockEC2Client{
+		DescribeNetworkInterfacesFunc: func(ctx context.Context, params *ec2.DescribeNetworkInterfacesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error) {
+			return &ec2.DescribeNetworkInterfacesOutput{
+				NetworkInterfaces: []types.NetworkInterface{
+					{
+						NetworkInterfaceId: aws.String("eni-orphan-fail"),
+						Status:             types.NetworkInterfaceStatusAvailable,
+						Description:        aws.String("AWS Lambda VPC ENI-roxas-webhook-pr-50"),
+					},
+				},
+			}, nil
+		},
+		DeleteNetworkInterfaceFunc: func(ctx context.Context, params *ec2.DeleteNetworkInterfaceInput, optFns ...func(*ec2.Options)) (*ec2.DeleteNetworkInterfaceOutput, error) {
+			return nil, errors.New("delete error")
+		},
+	}
+	defer func() { ec2Client = nil }()
+
+	resp, err := handler(ctx, Request{PRNumber: 0, Action: "cleanup_orphaned_enis"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.StatusCode != 500 {
+		t.Errorf("expected status 500, got %d", resp.StatusCode)
+	}
+	if resp.Body.Action != "error" {
+		t.Errorf("expected action 'error', got %q", resp.Body.Action)
+	}
+}
+
+func TestHandler_CleanupOrphanedENIs_WithPagination(t *testing.T) {
+	ctx := context.Background()
+
+	deletedENIs := []string{}
+	callCount := 0
+	ec2Client = &MockEC2Client{
+		DescribeNetworkInterfacesFunc: func(ctx context.Context, params *ec2.DescribeNetworkInterfacesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error) {
+			callCount++
+			if callCount == 1 {
+				nextToken := "page2"
+				return &ec2.DescribeNetworkInterfacesOutput{
+					NetworkInterfaces: []types.NetworkInterface{
+						{
+							NetworkInterfaceId: aws.String("eni-page1"),
+							Status:             types.NetworkInterfaceStatusAvailable,
+							Description:        aws.String("AWS Lambda VPC ENI-roxas-pr-1"),
+						},
+					},
+					NextToken: &nextToken,
+				}, nil
+			}
+			// Second page - no more pages
+			return &ec2.DescribeNetworkInterfacesOutput{
+				NetworkInterfaces: []types.NetworkInterface{
+					{
+						NetworkInterfaceId: aws.String("eni-page2"),
+						Status:             types.NetworkInterfaceStatusAvailable,
+						Description:        aws.String("AWS Lambda VPC ENI-roxas-pr-2"),
+					},
+				},
+			}, nil
+		},
+		DeleteNetworkInterfaceFunc: func(ctx context.Context, params *ec2.DeleteNetworkInterfaceInput, optFns ...func(*ec2.Options)) (*ec2.DeleteNetworkInterfaceOutput, error) {
+			deletedENIs = append(deletedENIs, *params.NetworkInterfaceId)
+			return &ec2.DeleteNetworkInterfaceOutput{}, nil
+		},
+	}
+	defer func() { ec2Client = nil }()
+
+	resp, err := handler(ctx, Request{PRNumber: 0, Action: "cleanup_orphaned_enis"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.StatusCode != 200 {
+		t.Errorf("expected status 200, got %d: %s", resp.StatusCode, resp.Body.Message)
+	}
+	if len(deletedENIs) != 2 {
+		t.Errorf("expected 2 ENIs deleted across pages, got %d", len(deletedENIs))
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 describe calls (pagination), got %d", callCount)
+	}
+}
+
+func TestHandler_CleanupOrphanedENIs_NilDescription(t *testing.T) {
+	ctx := context.Background()
+
+	deletedENIs := []string{}
+	ec2Client = &MockEC2Client{
+		DescribeNetworkInterfacesFunc: func(ctx context.Context, params *ec2.DescribeNetworkInterfacesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error) {
+			return &ec2.DescribeNetworkInterfacesOutput{
+				NetworkInterfaces: []types.NetworkInterface{
+					{
+						NetworkInterfaceId: aws.String("eni-nil-desc"),
+						Status:             types.NetworkInterfaceStatusAvailable,
+						Description:        nil,
+					},
+				},
+			}, nil
+		},
+		DeleteNetworkInterfaceFunc: func(ctx context.Context, params *ec2.DeleteNetworkInterfaceInput, optFns ...func(*ec2.Options)) (*ec2.DeleteNetworkInterfaceOutput, error) {
+			deletedENIs = append(deletedENIs, *params.NetworkInterfaceId)
+			return &ec2.DeleteNetworkInterfaceOutput{}, nil
+		},
+	}
+	defer func() { ec2Client = nil }()
+
+	resp, err := handler(ctx, Request{PRNumber: 0, Action: "cleanup_orphaned_enis"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.StatusCode != 200 {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+	if len(deletedENIs) != 1 {
+		t.Errorf("expected 1 ENI deleted, got %d", len(deletedENIs))
+	}
+}
+
+func TestHandler_QueryError(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("DB_SECRET_NAME", "test-secret")
+
+	creds := DBCredentials{Host: "localhost", Port: 5432, Username: "user", Password: "pass"}
+	credsJSON, _ := json.Marshal(creds)
+	secretStr := string(credsJSON)
+
+	smClient = &MockSecretsManagerClient{
+		GetSecretValueFunc: func(ctx context.Context, params *secretsmanager.GetSecretValueInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+			return &secretsmanager.GetSecretValueOutput{SecretString: &secretStr}, nil
+		},
+	}
+	defer func() { smClient = nil }()
+
+	mockConn := &MockDBConn{
+		QueryFunc: func(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+			return nil, errors.New("query error")
+		},
+		ExecFunc: func(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+			return pgconn.CommandTag{}, nil
+		},
+	}
+
+	dbConnector = &MockDBConnector{
+		ConnectFunc: func(ctx context.Context, connString string) (DBConn, error) {
+			return mockConn, nil
+		},
+	}
+	defer func() { dbConnector = &PgxConnector{} }()
+
+	resp, err := handler(ctx, Request{PRNumber: 123, Action: "drop"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.StatusCode != 500 {
+		t.Errorf("expected status 500, got %d", resp.StatusCode)
+	}
+	if resp.Body.Action != "error" {
+		t.Errorf("expected action 'error', got %q", resp.Body.Action)
+	}
+}
+
+func TestHandler_InvalidCredentialsJSON(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("DB_SECRET_NAME", "test-secret")
+
+	invalidJSON := "not-valid-json"
+	smClient = &MockSecretsManagerClient{
+		GetSecretValueFunc: func(ctx context.Context, params *secretsmanager.GetSecretValueInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+			return &secretsmanager.GetSecretValueOutput{SecretString: &invalidJSON}, nil
+		},
+	}
+	defer func() { smClient = nil }()
+
+	resp, err := handler(ctx, Request{PRNumber: 123, Action: "drop"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.StatusCode != 500 {
+		t.Errorf("expected status 500, got %d", resp.StatusCode)
+	}
+	if resp.Body.Action != "error" {
+		t.Errorf("expected action 'error', got %q", resp.Body.Action)
+	}
+}

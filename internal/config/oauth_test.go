@@ -269,6 +269,179 @@ func TestOAuthConfig_GetPlatformConfig(t *testing.T) {
 	}
 }
 
+func TestOAuthConfig_Validate_AllValid(t *testing.T) {
+	cfg := &OAuthConfig{
+		Threads: PlatformOAuthConfig{
+			ClientID:     "id",
+			ClientSecret: "secret",
+			Enabled:      true,
+		},
+		Twitter: PlatformOAuthConfig{
+			ClientID:     "id",
+			ClientSecret: "secret",
+			Enabled:      true,
+		},
+		LinkedIn: PlatformOAuthConfig{
+			ClientID:     "id",
+			ClientSecret: "secret",
+			Enabled:      true,
+		},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() unexpected error: %v", err)
+	}
+}
+
+func TestOAuthConfig_Validate_ThreadsInvalid(t *testing.T) {
+	cfg := &OAuthConfig{
+		Threads: PlatformOAuthConfig{
+			ClientID: "",
+			Enabled:  true,
+		},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Error("Validate() expected error for invalid Threads config")
+	}
+}
+
+func TestOAuthConfig_Validate_TwitterInvalid(t *testing.T) {
+	cfg := &OAuthConfig{
+		Threads: PlatformOAuthConfig{
+			ClientID:     "id",
+			ClientSecret: "secret",
+			Enabled:      true,
+		},
+		Twitter: PlatformOAuthConfig{
+			ClientID: "",
+			Enabled:  true,
+		},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Error("Validate() expected error for invalid Twitter config")
+	}
+}
+
+func TestOAuthConfig_Validate_LinkedInInvalid(t *testing.T) {
+	cfg := &OAuthConfig{
+		Threads: PlatformOAuthConfig{
+			ClientID:     "id",
+			ClientSecret: "secret",
+			Enabled:      true,
+		},
+		Twitter: PlatformOAuthConfig{
+			ClientID:     "id",
+			ClientSecret: "secret",
+			Enabled:      true,
+		},
+		LinkedIn: PlatformOAuthConfig{
+			ClientID: "",
+			Enabled:  true,
+		},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Error("Validate() expected error for invalid LinkedIn config")
+	}
+}
+
+func TestOAuthConfig_Validate_AllDisabled(t *testing.T) {
+	cfg := &OAuthConfig{
+		Threads:  PlatformOAuthConfig{Enabled: false},
+		Twitter:  PlatformOAuthConfig{Enabled: false},
+		LinkedIn: PlatformOAuthConfig{Enabled: false},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() unexpected error for disabled platforms: %v", err)
+	}
+}
+
+func TestOAuthConfig_GetPlatformConfig_AllPlatforms(t *testing.T) {
+	cfg := &OAuthConfig{
+		Threads: PlatformOAuthConfig{
+			ClientID: "threads-id",
+			Enabled:  true,
+		},
+		Twitter: PlatformOAuthConfig{
+			ClientID: "twitter-id",
+			Enabled:  true,
+		},
+		LinkedIn: PlatformOAuthConfig{
+			ClientID: "linkedin-id",
+			Enabled:  true,
+		},
+	}
+
+	tests := []struct {
+		platform   string
+		wantOK     bool
+		wantID     string
+	}{
+		{"threads", true, "threads-id"},
+		{"twitter", true, "twitter-id"},
+		{"linkedin", true, "linkedin-id"},
+		{"unknown", false, ""},
+		{"", false, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.platform, func(t *testing.T) {
+			pc, ok := cfg.GetPlatformConfig(tt.platform)
+			if ok != tt.wantOK {
+				t.Errorf("GetPlatformConfig(%q) ok = %v, want %v", tt.platform, ok, tt.wantOK)
+			}
+			if ok && pc.ClientID != tt.wantID {
+				t.Errorf("GetPlatformConfig(%q) ClientID = %q, want %q", tt.platform, pc.ClientID, tt.wantID)
+			}
+		})
+	}
+}
+
+func TestOAuthConfig_EnabledPlatforms_AllEnabled(t *testing.T) {
+	cfg := &OAuthConfig{
+		Threads:  PlatformOAuthConfig{Enabled: true},
+		Twitter:  PlatformOAuthConfig{Enabled: true},
+		LinkedIn: PlatformOAuthConfig{Enabled: true},
+	}
+
+	platforms := cfg.EnabledPlatforms()
+	if len(platforms) != 3 {
+		t.Errorf("expected 3 enabled platforms, got %d: %v", len(platforms), platforms)
+	}
+
+	has := map[string]bool{}
+	for _, p := range platforms {
+		has[p] = true
+	}
+	for _, want := range []string{"threads", "twitter", "linkedin"} {
+		if !has[want] {
+			t.Errorf("expected %q in enabled platforms", want)
+		}
+	}
+}
+
+func TestOAuthConfig_EnabledPlatforms_OnlyTwitter(t *testing.T) {
+	cfg := &OAuthConfig{
+		Threads:  PlatformOAuthConfig{Enabled: false},
+		Twitter:  PlatformOAuthConfig{Enabled: true},
+		LinkedIn: PlatformOAuthConfig{Enabled: false},
+	}
+
+	platforms := cfg.EnabledPlatforms()
+	if len(platforms) != 1 {
+		t.Errorf("expected 1 enabled platform, got %d: %v", len(platforms), platforms)
+	}
+	if len(platforms) > 0 && platforms[0] != "twitter" {
+		t.Errorf("expected twitter, got %q", platforms[0])
+	}
+}
+
 func TestOAuthConfig_ThreadsScopes(t *testing.T) {
 	os.Setenv("THREADS_CLIENT_ID", "id")
 	os.Setenv("THREADS_CLIENT_SECRET", "secret")

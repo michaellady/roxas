@@ -361,6 +361,314 @@ func TestLinkedInValidatesAccessToken(t *testing.T) {
 	}
 }
 
+// TestLinkedInUploadBinary tests the uploadBinary helper method
+func TestLinkedInUploadBinary(t *testing.T) {
+	var receivedContentType string
+	var receivedMethod string
+
+	server := mockLinkedInServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/upload") {
+			receivedMethod = r.Method
+			receivedContentType = r.Header.Get("Content-Type")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	defer server.Close()
+
+	client := NewLinkedInClient("test-token", server.URL)
+
+	err := client.uploadBinary(server.URL+"/upload", []byte("fake image data"), "test-image.png")
+	if err != nil {
+		t.Fatalf("uploadBinary() error = %v", err)
+	}
+	if receivedMethod != "PUT" {
+		t.Errorf("uploadBinary() method = %q, want %q", receivedMethod, "PUT")
+	}
+	if !strings.Contains(receivedContentType, "multipart/form-data") {
+		t.Errorf("uploadBinary() Content-Type = %q, want multipart/form-data", receivedContentType)
+	}
+}
+
+// TestLinkedInUploadBinary_ServerError tests uploadBinary error handling
+func TestLinkedInUploadBinary_ServerError(t *testing.T) {
+	server := mockLinkedInServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/upload") {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"error": "upload failed"}`))
+			return
+		}
+	})
+	defer server.Close()
+
+	client := NewLinkedInClient("test-token", server.URL)
+	err := client.uploadBinary(server.URL+"/upload", []byte("data"), "file.png")
+	if err == nil {
+		t.Error("uploadBinary() expected error for server error")
+	}
+}
+
+// TestLinkedInGetPersonURN_NonURNSub tests getPersonURN when sub is a plain ID (longer than 7 chars)
+func TestLinkedInGetPersonURN_NonURNSub(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2/userinfo" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{
+				"sub": "ABCDEFG123456", // Not a URN format, but >= 7 chars
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := &LinkedInClient{
+		accessToken: "test-token",
+		baseURL:     server.URL,
+		client:      &http.Client{},
+	}
+
+	urn, err := client.getPersonURN()
+	if err != nil {
+		t.Fatalf("getPersonURN() error = %v", err)
+	}
+	if urn != "urn:li:person:ABCDEFG123456" {
+		t.Errorf("getPersonURN() = %q, want %q", urn, "urn:li:person:ABCDEFG123456")
+	}
+}
+
+// TestLinkedInGetPersonURN_URNSub tests getPersonURN when sub is already a URN
+func TestLinkedInGetPersonURN_URNSub(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2/userinfo" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{
+				"sub": "urn:li:person:EXISTING_URN",
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := &LinkedInClient{
+		accessToken: "test-token",
+		baseURL:     server.URL,
+		client:      &http.Client{},
+	}
+
+	urn, err := client.getPersonURN()
+	if err != nil {
+		t.Fatalf("getPersonURN() error = %v", err)
+	}
+	if urn != "urn:li:person:EXISTING_URN" {
+		t.Errorf("getPersonURN() = %q, want %q", urn, "urn:li:person:EXISTING_URN")
+	}
+}
+
+// TestLinkedInGetPersonURN_EmptySub tests getPersonURN when sub is empty
+func TestLinkedInGetPersonURN_EmptySub(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2/userinfo" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{
+				"sub": "",
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := &LinkedInClient{
+		accessToken: "test-token",
+		baseURL:     server.URL,
+		client:      &http.Client{},
+	}
+
+	_, err := client.getPersonURN()
+	if err == nil {
+		t.Error("getPersonURN() expected error for empty sub")
+	}
+}
+
+// TestLinkedInGetPersonURN_ServerError tests getPersonURN error handling
+func TestLinkedInGetPersonURN_ServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`server error`))
+	}))
+	defer server.Close()
+
+	client := &LinkedInClient{
+		accessToken: "test-token",
+		baseURL:     server.URL,
+		client:      &http.Client{},
+	}
+
+	_, err := client.getPersonURN()
+	if err == nil {
+		t.Error("getPersonURN() expected error for server error")
+	}
+}
+
+// TestLinkedInCreatePost_NoPostIDInResponse tests CreatePost when no ID in response
+func TestLinkedInCreatePost_NoPostIDInResponse(t *testing.T) {
+	server := mockLinkedInServer(t, func(w http.ResponseWriter, r *http.Request) {
+		// Return 201 Created but no x-restli-id header and empty body
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{}`))
+	})
+	defer server.Close()
+
+	client := NewLinkedInClient("test-token", server.URL)
+	_, err := client.CreatePost("test", "")
+
+	if err == nil {
+		t.Error("CreatePost() expected error when no post ID in response")
+	}
+}
+
+// TestLinkedInCreatePost_PostIDFromHeader tests getting post ID from header
+func TestLinkedInCreatePost_PostIDFromHeader(t *testing.T) {
+	server := mockLinkedInServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-restli-id", "header-post-id-123")
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{}`))
+	})
+	defer server.Close()
+
+	client := NewLinkedInClient("test-token", server.URL)
+	postID, err := client.CreatePost("test", "")
+
+	if err != nil {
+		t.Fatalf("CreatePost() error = %v", err)
+	}
+	if postID != "header-post-id-123" {
+		t.Errorf("CreatePost() postID = %q, want %q", postID, "header-post-id-123")
+	}
+}
+
+// TestLinkedInUploadImage_InitError tests UploadImage when initialization fails
+func TestLinkedInUploadImage_InitError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2/userinfo" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"sub": "urn:li:person:test"})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/images") {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"error": "init failed"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	// Create test image file
+	tmpFile, err := os.CreateTemp("", "test-image-*.png")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.Write([]byte("fake image data"))
+	tmpFile.Close()
+
+	client := NewLinkedInClient("test-token", server.URL)
+	_, err = client.UploadImage(tmpFile.Name())
+
+	if err == nil {
+		t.Error("UploadImage() expected error when initialization fails")
+	}
+}
+
+// TestLinkedInUploadImage_MissingUploadURL tests when init response lacks upload URL
+func TestLinkedInUploadImage_MissingUploadURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2/userinfo" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"sub": "urn:li:person:test"})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/images") {
+			response := map[string]interface{}{
+				"value": map[string]interface{}{
+					"uploadUrl": "",
+					"image":     "",
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(response)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	tmpFile, err := os.CreateTemp("", "test-image-*.png")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.Write([]byte("fake image data"))
+	tmpFile.Close()
+
+	client := NewLinkedInClient("test-token", server.URL)
+	_, err = client.UploadImage(tmpFile.Name())
+
+	if err == nil {
+		t.Error("UploadImage() expected error when upload URL is empty")
+	}
+}
+
+// TestLinkedInUploadImage_UploadFailed tests when binary upload step fails
+func TestLinkedInUploadImage_UploadFailed(t *testing.T) {
+	var serverURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2/userinfo" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"sub": "urn:li:person:test"})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/images") {
+			response := map[string]interface{}{
+				"value": map[string]interface{}{
+					"uploadUrl": serverURL + "/upload-endpoint",
+					"image":     "urn:li:image:test-123",
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(response)
+			return
+		}
+		if strings.Contains(r.URL.Path, "/upload-endpoint") {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`upload failed`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	serverURL = server.URL
+	defer server.Close()
+
+	tmpFile, err := os.CreateTemp("", "test-image-*.png")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.Write([]byte("fake image data"))
+	tmpFile.Close()
+
+	client := NewLinkedInClient("test-token", server.URL)
+	_, err = client.UploadImage(tmpFile.Name())
+
+	if err == nil {
+		t.Error("UploadImage() expected error when upload step fails")
+	}
+}
+
 // TestLinkedInPostWithoutImage tests text-only post creation
 func TestLinkedInPostWithoutImage(t *testing.T) {
 	server := mockLinkedInServer(t, func(w http.ResponseWriter, r *http.Request) {
