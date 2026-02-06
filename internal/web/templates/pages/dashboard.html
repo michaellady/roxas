@@ -6,7 +6,12 @@
     <div class="empty-state">
         <h2>Get Started</h2>
         <p>Welcome to Roxas! Add your first repository to start automatically generating social media posts from your commits.</p>
+        {{if .Data.GitHubAppURL}}
+        <a href="{{.Data.GitHubAppURL}}" class="btn btn-primary">Install Roxas GitHub App</a>
+        <p class="form-help" style="margin-top: 0.5rem;">Or <a href="/repositories/new">add repositories manually</a>.</p>
+        {{else}}
         <a href="/repositories/new" class="btn btn-primary">Add Repository</a>
+        {{end}}
     </div>
     {{else}}
 

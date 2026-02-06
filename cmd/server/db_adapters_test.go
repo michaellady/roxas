@@ -545,8 +545,8 @@ func TestDraftListerAdapter_ListDraftsByUser(t *testing.T) {
 	// Use (?s) flag to enable dotall mode so .+ matches across newlines in multiline SQL
 	mock.ExpectQuery(`(?s)SELECT .+ FROM repositories.+WHERE id`).
 		WithArgs("repo-1").
-		WillReturnRows(pgxmock.NewRows([]string{"id", "user_id", "github_url", "webhook_secret", "name", "is_active", "created_at", "github_repo_id", "webhook_id", "is_private"}).
-			AddRow("repo-1", "user-1", "https://github.com/owner/repo", "secret", &repoName, true, now, nil, nil, false))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "user_id", "github_url", "webhook_secret", "name", "is_active", "created_at", "github_repo_id", "webhook_id", "is_private", "github_app_repo_id", "webhook_source"}).
+			AddRow("repo-1", "user-1", "https://github.com/owner/repo", "secret", &repoName, true, now, nil, nil, false, nil, "legacy"))
 
 	items, err := adapter.ListDraftsByUser(context.Background(), "user-1")
 	if err != nil {
@@ -628,8 +628,8 @@ func TestDraftListerAdapter_ListDraftsByUser_LongContent(t *testing.T) {
 
 	mock.ExpectQuery(`(?s)SELECT .+ FROM repositories.+WHERE id`).
 		WithArgs("repo-1").
-		WillReturnRows(pgxmock.NewRows([]string{"id", "user_id", "github_url", "webhook_secret", "name", "is_active", "created_at", "github_repo_id", "webhook_id", "is_private"}).
-			AddRow("repo-1", "user-1", "https://github.com/owner/repo", "secret", &repoName, true, now, nil, nil, false))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "user_id", "github_url", "webhook_secret", "name", "is_active", "created_at", "github_repo_id", "webhook_id", "is_private", "github_app_repo_id", "webhook_source"}).
+			AddRow("repo-1", "user-1", "https://github.com/owner/repo", "secret", &repoName, true, now, nil, nil, false, nil, "legacy"))
 
 	items, err := adapter.ListDraftsByUser(context.Background(), "user-1")
 	if err != nil {
@@ -886,8 +886,8 @@ func TestAIGeneratorAdapter_TriggerGeneration(t *testing.T) {
 	// GetRepositoryByID query (multiline SQL)
 	mock.ExpectQuery(`(?s)SELECT .+ FROM repositories.+WHERE id`).
 		WithArgs("repo-1").
-		WillReturnRows(pgxmock.NewRows([]string{"id", "user_id", "github_url", "webhook_secret", "name", "is_active", "created_at", "github_repo_id", "webhook_id", "is_private"}).
-			AddRow("repo-1", "user-1", "https://github.com/owner/repo", "secret", &repoName, true, now, nil, nil, false))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "user_id", "github_url", "webhook_secret", "name", "is_active", "created_at", "github_repo_id", "webhook_id", "is_private", "github_app_repo_id", "webhook_source"}).
+			AddRow("repo-1", "user-1", "https://github.com/owner/repo", "secret", &repoName, true, now, nil, nil, false, nil, "legacy"))
 
 	// CreateDraft call (trying to store generated content) - will get duplicate, so falls through to UpdateDraftContent
 	mock.ExpectQuery(`INSERT INTO drafts`).
@@ -1004,8 +1004,8 @@ func TestAIGeneratorAdapter_TriggerGeneration_AIError(t *testing.T) {
 
 	mock.ExpectQuery(`(?s)SELECT .+ FROM repositories.+WHERE id`).
 		WithArgs("repo-1").
-		WillReturnRows(pgxmock.NewRows([]string{"id", "user_id", "github_url", "webhook_secret", "name", "is_active", "created_at", "github_repo_id", "webhook_id", "is_private"}).
-			AddRow("repo-1", "user-1", "https://github.com/owner/repo", "secret", &repoName, true, now, nil, nil, false))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "user_id", "github_url", "webhook_secret", "name", "is_active", "created_at", "github_repo_id", "webhook_id", "is_private", "github_app_repo_id", "webhook_source"}).
+			AddRow("repo-1", "user-1", "https://github.com/owner/repo", "secret", &repoName, true, now, nil, nil, false, nil, "legacy"))
 
 	// UpdateDraftStatus called when AI generation fails (best effort)
 	mock.ExpectExec(`UPDATE drafts SET status`).
@@ -1053,8 +1053,8 @@ func TestAIGeneratorAdapter_TriggerGeneration_MultipleCommits(t *testing.T) {
 
 	mock.ExpectQuery(`(?s)SELECT .+ FROM repositories.+WHERE id`).
 		WithArgs("repo-1").
-		WillReturnRows(pgxmock.NewRows([]string{"id", "user_id", "github_url", "webhook_secret", "name", "is_active", "created_at", "github_repo_id", "webhook_id", "is_private"}).
-			AddRow("repo-1", "user-1", "https://github.com/owner/repo", "secret", &repoName, true, now, nil, nil, false))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "user_id", "github_url", "webhook_secret", "name", "is_active", "created_at", "github_repo_id", "webhook_id", "is_private", "github_app_repo_id", "webhook_source"}).
+			AddRow("repo-1", "user-1", "https://github.com/owner/repo", "secret", &repoName, true, now, nil, nil, false, nil, "legacy"))
 
 	mock.ExpectQuery(`INSERT INTO drafts`).
 		WithArgs("user-1", "repo-1", "refs/heads/main", "aaa", afterSHA, pgxmock.AnyArg(), 3, pgxmock.AnyArg()).
@@ -1103,8 +1103,8 @@ func TestAIRegeneratorAdapter_RegenerateDraft(t *testing.T) {
 
 	mock.ExpectQuery(`(?s)SELECT .+ FROM repositories.+WHERE id`).
 		WithArgs("repo-1").
-		WillReturnRows(pgxmock.NewRows([]string{"id", "user_id", "github_url", "webhook_secret", "name", "is_active", "created_at", "github_repo_id", "webhook_id", "is_private"}).
-			AddRow("repo-1", "user-1", "https://github.com/owner/repo", "secret", &repoName, true, now, nil, nil, false))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "user_id", "github_url", "webhook_secret", "name", "is_active", "created_at", "github_repo_id", "webhook_id", "is_private", "github_app_repo_id", "webhook_source"}).
+			AddRow("repo-1", "user-1", "https://github.com/owner/repo", "secret", &repoName, true, now, nil, nil, false, nil, "legacy"))
 
 	mock.ExpectQuery(`INSERT INTO drafts`).
 		WithArgs("user-1", "repo-1", "refs/heads/main", "aaa", afterSHA, pgxmock.AnyArg(), 1, pgxmock.AnyArg()).
@@ -1152,8 +1152,8 @@ func TestAIGeneratorAdapter_TriggerGeneration_CreateDraftFails_UpdatesContent(t 
 
 	mock.ExpectQuery(`(?s)SELECT .+ FROM repositories.+WHERE id`).
 		WithArgs("repo-1").
-		WillReturnRows(pgxmock.NewRows([]string{"id", "user_id", "github_url", "webhook_secret", "name", "is_active", "created_at", "github_repo_id", "webhook_id", "is_private"}).
-			AddRow("repo-1", "user-1", "https://github.com/owner/repo", "secret", &repoName, true, now, nil, nil, false))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "user_id", "github_url", "webhook_secret", "name", "is_active", "created_at", "github_repo_id", "webhook_id", "is_private", "github_app_repo_id", "webhook_source"}).
+			AddRow("repo-1", "user-1", "https://github.com/owner/repo", "secret", &repoName, true, now, nil, nil, false, nil, "legacy"))
 
 	// CreateDraft fails (duplicate)
 	mock.ExpectQuery(`INSERT INTO drafts`).
@@ -1202,8 +1202,8 @@ func TestAIGeneratorAdapter_TriggerGeneration_BothFail(t *testing.T) {
 
 	mock.ExpectQuery(`(?s)SELECT .+ FROM repositories.+WHERE id`).
 		WithArgs("repo-1").
-		WillReturnRows(pgxmock.NewRows([]string{"id", "user_id", "github_url", "webhook_secret", "name", "is_active", "created_at", "github_repo_id", "webhook_id", "is_private"}).
-			AddRow("repo-1", "user-1", "https://github.com/owner/repo", "secret", &repoName, true, now, nil, nil, false))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "user_id", "github_url", "webhook_secret", "name", "is_active", "created_at", "github_repo_id", "webhook_id", "is_private", "github_app_repo_id", "webhook_source"}).
+			AddRow("repo-1", "user-1", "https://github.com/owner/repo", "secret", &repoName, true, now, nil, nil, false, nil, "legacy"))
 
 	mock.ExpectQuery(`INSERT INTO drafts`).
 		WillReturnError(fmt.Errorf("duplicate"))

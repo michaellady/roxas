@@ -17,16 +17,18 @@ import (
 
 // Repository represents a tracked GitHub repository
 type Repository struct {
-	ID            string    `json:"id"`
-	UserID        string    `json:"user_id"`
-	GitHubURL     string    `json:"github_url"`
-	WebhookSecret string    `json:"webhook_secret,omitempty"`
-	Name          string    `json:"name"`
-	IsActive      bool      `json:"is_active"`
-	CreatedAt     time.Time `json:"created_at"`
-	GitHubRepoID  *int64    `json:"github_repo_id,omitempty"`
-	WebhookID     *int64    `json:"webhook_id,omitempty"`
-	IsPrivate     bool      `json:"is_private"`
+	ID              string    `json:"id"`
+	UserID          string    `json:"user_id"`
+	GitHubURL       string    `json:"github_url"`
+	WebhookSecret   string    `json:"webhook_secret,omitempty"`
+	Name            string    `json:"name"`
+	IsActive        bool      `json:"is_active"`
+	CreatedAt       time.Time `json:"created_at"`
+	GitHubRepoID    *int64    `json:"github_repo_id,omitempty"`
+	WebhookID       *int64    `json:"webhook_id,omitempty"`
+	IsPrivate       bool      `json:"is_private"`
+	GitHubAppRepoID *string   `json:"github_app_repo_id,omitempty"`
+	WebhookSource   string    `json:"webhook_source"`
 }
 
 // RepositoryStore defines the interface for repository persistence

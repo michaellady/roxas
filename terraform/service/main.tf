@@ -111,7 +111,11 @@ resource "aws_lambda_function" "roxas" {
       LOG_LEVEL                 = var.log_level
       DB_SECRET_NAME            = aws_secretsmanager_secret.database.name
       WEBHOOK_BASE_URL          = local.create_custom_domain ? "https://${local.full_domain_name}" : aws_apigatewayv2_api.webhook.api_endpoint
-      CREDENTIAL_ENCRYPTION_KEY = var.credential_encryption_key
+      CREDENTIAL_ENCRYPTION_KEY   = var.credential_encryption_key
+      GH_APP_ID              = var.github_app_id
+      GH_APP_WEBHOOK_SECRET  = var.github_app_webhook_secret
+      GH_APP_PRIVATE_KEY     = var.github_app_private_key
+      GH_APP_URL             = var.github_app_url
     }
   }
 

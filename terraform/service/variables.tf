@@ -75,6 +75,32 @@ variable "credential_encryption_key" {
   default     = ""
 }
 
+variable "github_app_id" {
+  description = "GitHub App ID"
+  type        = string
+  default     = ""
+}
+
+variable "github_app_webhook_secret" {
+  description = "GitHub App webhook secret for HMAC validation"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "github_app_private_key" {
+  description = "GitHub App private key (base64-encoded PEM)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "github_app_url" {
+  description = "URL for installing the GitHub App (e.g. https://github.com/apps/roxas/installations/new)"
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   description = "Common tags for all resources"
   type        = map(string)

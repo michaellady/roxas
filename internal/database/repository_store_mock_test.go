@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var repoColumns = []string{"id", "user_id", "github_url", "webhook_secret", "name", "is_active", "created_at", "github_repo_id", "webhook_id", "is_private"}
+var testRepoColumns = []string{"id", "user_id", "github_url", "webhook_secret", "name", "is_active", "created_at", "github_repo_id", "webhook_id", "is_private", "github_app_repo_id", "webhook_source"}
 
 func TestRepositoryStore_NewRepositoryStoreWithDB(t *testing.T) {
 	mock := NewMockPool(t)
@@ -28,8 +28,8 @@ func TestRepositoryStore_CreateRepository_Success(t *testing.T) {
 
 	now := time.Now().Truncate(time.Microsecond)
 	repoName := "test-repo"
-	rows := pgxmock.NewRows(repoColumns).
-		AddRow("repo-1", "user-1", "https://github.com/test/repo", "secret123", &repoName, true, now, nil, nil, false)
+	rows := pgxmock.NewRows(testRepoColumns).
+		AddRow("repo-1", "user-1", "https://github.com/test/repo", "secret123", &repoName, true, now, nil, nil, false, nil, "legacy")
 
 	mock.ExpectQuery(`INSERT INTO repositories`).
 		WithArgs("user-1", "https://github.com/test/repo", "secret123").
@@ -52,8 +52,8 @@ func TestRepositoryStore_CreateRepository_NilName(t *testing.T) {
 	store := NewRepositoryStoreWithDB(mock)
 
 	now := time.Now().Truncate(time.Microsecond)
-	rows := pgxmock.NewRows(repoColumns).
-		AddRow("repo-1", "user-1", "https://github.com/test/repo", "secret123", nil, true, now, nil, nil, false)
+	rows := pgxmock.NewRows(testRepoColumns).
+		AddRow("repo-1", "user-1", "https://github.com/test/repo", "secret123", nil, true, now, nil, nil, false, nil, "legacy")
 
 	mock.ExpectQuery(`INSERT INTO repositories`).
 		WithArgs("user-1", "https://github.com/test/repo", "secret123").
@@ -101,8 +101,8 @@ func TestRepositoryStore_GetRepositoryByUserAndURL_Success(t *testing.T) {
 
 	now := time.Now().Truncate(time.Microsecond)
 	name := "my-repo"
-	rows := pgxmock.NewRows(repoColumns).
-		AddRow("repo-1", "user-1", "https://github.com/test/repo", "secret", &name, true, now, nil, nil, false)
+	rows := pgxmock.NewRows(testRepoColumns).
+		AddRow("repo-1", "user-1", "https://github.com/test/repo", "secret", &name, true, now, nil, nil, false, nil, "legacy")
 
 	mock.ExpectQuery(`SELECT id, user_id, github_url`).
 		WithArgs("user-1", "https://github.com/test/repo").
@@ -151,9 +151,9 @@ func TestRepositoryStore_ListRepositoriesByUser_Success(t *testing.T) {
 	now := time.Now().Truncate(time.Microsecond)
 	name1 := "repo-one"
 	name2 := "repo-two"
-	rows := pgxmock.NewRows(repoColumns).
-		AddRow("repo-1", "user-1", "https://github.com/test/one", "s1", &name1, true, now, nil, nil, false).
-		AddRow("repo-2", "user-1", "https://github.com/test/two", "s2", &name2, false, now, nil, nil, true)
+	rows := pgxmock.NewRows(testRepoColumns).
+		AddRow("repo-1", "user-1", "https://github.com/test/one", "s1", &name1, true, now, nil, nil, false, nil, "legacy").
+		AddRow("repo-2", "user-1", "https://github.com/test/two", "s2", &name2, false, now, nil, nil, true, nil, "legacy")
 
 	mock.ExpectQuery(`SELECT id, user_id, github_url`).
 		WithArgs("user-1").
@@ -175,7 +175,7 @@ func TestRepositoryStore_ListRepositoriesByUser_Empty(t *testing.T) {
 	mock := NewMockPool(t)
 	store := NewRepositoryStoreWithDB(mock)
 
-	rows := pgxmock.NewRows(repoColumns)
+	rows := pgxmock.NewRows(testRepoColumns)
 
 	mock.ExpectQuery(`SELECT id, user_id, github_url`).
 		WithArgs("user-none").
@@ -205,8 +205,8 @@ func TestRepositoryStore_ListRepositoriesByUser_ScanError(t *testing.T) {
 	mock := NewMockPool(t)
 	store := NewRepositoryStoreWithDB(mock)
 
-	rows := pgxmock.NewRows(repoColumns).
-		AddRow("repo-1", "user-1", "url", "s", nil, true, time.Now(), nil, nil, false).
+	rows := pgxmock.NewRows(testRepoColumns).
+		AddRow("repo-1", "user-1", "url", "s", nil, true, time.Now(), nil, nil, false, nil, "legacy").
 		RowError(0, errors.New("scan error"))
 
 	mock.ExpectQuery(`SELECT id, user_id, github_url`).
@@ -225,8 +225,8 @@ func TestRepositoryStore_GetRepositoryByID_Success(t *testing.T) {
 
 	now := time.Now().Truncate(time.Microsecond)
 	name := "test-repo"
-	rows := pgxmock.NewRows(repoColumns).
-		AddRow("repo-1", "user-1", "https://github.com/test/repo", "secret", &name, true, now, nil, nil, false)
+	rows := pgxmock.NewRows(testRepoColumns).
+		AddRow("repo-1", "user-1", "https://github.com/test/repo", "secret", &name, true, now, nil, nil, false, nil, "legacy")
 
 	mock.ExpectQuery(`SELECT id, user_id, github_url`).
 		WithArgs("repo-1").
@@ -273,8 +273,8 @@ func TestRepositoryStore_UpdateRepository_Success(t *testing.T) {
 
 	now := time.Now().Truncate(time.Microsecond)
 	name := "updated-name"
-	rows := pgxmock.NewRows(repoColumns).
-		AddRow("repo-1", "user-1", "https://github.com/test/repo", "secret", &name, true, now, nil, nil, false)
+	rows := pgxmock.NewRows(testRepoColumns).
+		AddRow("repo-1", "user-1", "https://github.com/test/repo", "secret", &name, true, now, nil, nil, false, nil, "legacy")
 
 	mock.ExpectQuery(`UPDATE repositories`).
 		WithArgs("repo-1", "updated-name", true).
@@ -392,4 +392,76 @@ func TestRepositoryStore_DeleteRepository_Error(t *testing.T) {
 	err := store.DeleteRepository(context.Background(), "repo-1")
 
 	assert.Error(t, err)
+}
+
+func TestRepositoryStore_GetRepositoryByAppRepoID_Success(t *testing.T) {
+	mock := NewMockPool(t)
+	store := NewRepositoryStoreWithDB(mock)
+
+	now := time.Now().Truncate(time.Microsecond)
+	name := "test-repo"
+	appRepoID := "app-repo-1"
+	rows := pgxmock.NewRows(testRepoColumns).
+		AddRow("repo-1", "user-1", "https://github.com/test/repo", "secret", &name, true, now, nil, nil, false, &appRepoID, "github_app")
+
+	mock.ExpectQuery(`SELECT .+ FROM repositories WHERE github_app_repo_id`).
+		WithArgs("app-repo-1").
+		WillReturnRows(rows)
+
+	repo, err := store.GetRepositoryByAppRepoID(context.Background(), "app-repo-1")
+
+	require.NoError(t, err)
+	require.NotNil(t, repo)
+	assert.Equal(t, "repo-1", repo.ID)
+	assert.Equal(t, "github_app", repo.WebhookSource)
+}
+
+func TestRepositoryStore_GetRepositoryByAppRepoID_NotFound(t *testing.T) {
+	mock := NewMockPool(t)
+	store := NewRepositoryStoreWithDB(mock)
+
+	mock.ExpectQuery(`SELECT .+ FROM repositories WHERE github_app_repo_id`).
+		WithArgs("nonexistent").
+		WillReturnError(pgx.ErrNoRows)
+
+	repo, err := store.GetRepositoryByAppRepoID(context.Background(), "nonexistent")
+
+	assert.NoError(t, err)
+	assert.Nil(t, repo)
+}
+
+func TestRepositoryStore_CreateRepositoryFromApp_Success(t *testing.T) {
+	mock := NewMockPool(t)
+	store := NewRepositoryStoreWithDB(mock)
+
+	now := time.Now().Truncate(time.Microsecond)
+	appRepoID := "app-repo-1"
+	rows := pgxmock.NewRows(testRepoColumns).
+		AddRow("repo-1", "user-1", "https://github.com/test/repo", "secret", nil, true, now, nil, nil, false, &appRepoID, "github_app")
+
+	mock.ExpectQuery(`INSERT INTO repositories`).
+		WithArgs("user-1", "https://github.com/test/repo", "secret", "app-repo-1").
+		WillReturnRows(rows)
+
+	repo, err := store.CreateRepositoryFromApp(context.Background(), "user-1", "https://github.com/test/repo", "secret", "app-repo-1")
+
+	require.NoError(t, err)
+	require.NotNil(t, repo)
+	assert.Equal(t, "repo-1", repo.ID)
+	assert.Equal(t, "github_app", repo.WebhookSource)
+}
+
+func TestRepositoryStore_CreateRepositoryFromApp_Duplicate(t *testing.T) {
+	mock := NewMockPool(t)
+	store := NewRepositoryStoreWithDB(mock)
+
+	pgErr := &pgconn.PgError{Code: "23505"}
+	mock.ExpectQuery(`INSERT INTO repositories`).
+		WithArgs("user-1", "https://github.com/test/repo", "secret", "app-repo-1").
+		WillReturnError(pgErr)
+
+	repo, err := store.CreateRepositoryFromApp(context.Background(), "user-1", "https://github.com/test/repo", "secret", "app-repo-1")
+
+	assert.ErrorIs(t, err, handlers.ErrDuplicateRepository)
+	assert.Nil(t, repo)
 }

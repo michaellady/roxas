@@ -5,6 +5,15 @@
     <div class="alert alert-error">{{.Error}}</div>
     {{end}}
 
+    {{if and .Data .Data.GitHubAppURL}}
+    <div class="github-app-install">
+        <a href="{{.Data.GitHubAppURL}}" class="btn btn-primary btn-block">Install Roxas GitHub App</a>
+        <p class="form-help">Automatically sync repositories by installing the Roxas GitHub App. This is the recommended way to connect your repos.</p>
+    </div>
+    <hr style="margin: 1.5rem 0;">
+    <p class="form-help" style="text-align: center; margin-bottom: 1rem;">Or connect repositories manually below.</p>
+    {{end}}
+
     {{if .Data}}
     {{/* GitHub repo selection mode */}}
     {{if .Data.HasGitHubRepos}}

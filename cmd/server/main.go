@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,9 +43,13 @@ type Config struct {
 	DBSecretName        string
 	WebhookBaseURL      string
 	EncryptionKey       string // 32 bytes (base64 encoded or hex) for credential encryption
-	ThreadsClientID     string
-	ThreadsClientSecret string
-	OAuthCallbackURL    string // Base URL for OAuth callbacks
+	ThreadsClientID        string
+	ThreadsClientSecret    string
+	OAuthCallbackURL       string // Base URL for OAuth callbacks
+	GitHubAppID            string // GH_APP_ID
+	GitHubAppWebhookSecret string // GH_APP_WEBHOOK_SECRET (app-level secret)
+	GitHubAppPrivateKey    string // GH_APP_PRIVATE_KEY (PEM-encoded private key, base64)
+	GitHubAppURL           string // GH_APP_URL (install URL, e.g. https://github.com/apps/roxas/installations/new)
 }
 
 // loadConfig loads configuration from environment variables
@@ -57,9 +63,13 @@ func loadConfig() Config {
 		DBSecretName:        os.Getenv("DB_SECRET_NAME"),
 		WebhookBaseURL:      os.Getenv("WEBHOOK_BASE_URL"),
 		EncryptionKey:       os.Getenv("CREDENTIAL_ENCRYPTION_KEY"), // 32-byte key for AES-256
-		ThreadsClientID:     os.Getenv("THREADS_CLIENT_ID"),
-		ThreadsClientSecret: os.Getenv("THREADS_CLIENT_SECRET"),
-		OAuthCallbackURL:    os.Getenv("OAUTH_CALLBACK_URL"), // e.g., https://app.example.com
+		ThreadsClientID:        os.Getenv("THREADS_CLIENT_ID"),
+		ThreadsClientSecret:    os.Getenv("THREADS_CLIENT_SECRET"),
+		OAuthCallbackURL:       os.Getenv("OAUTH_CALLBACK_URL"), // e.g., https://app.example.com
+		GitHubAppID:            os.Getenv("GH_APP_ID"),
+		GitHubAppWebhookSecret: os.Getenv("GH_APP_WEBHOOK_SECRET"),
+		GitHubAppPrivateKey:    os.Getenv("GH_APP_PRIVATE_KEY"),
+		GitHubAppURL:           os.Getenv("GH_APP_URL"),
 	}
 }
 
@@ -667,6 +677,155 @@ func (a *connectionListerAdapter) ListConnectionsWithRateLimits(ctx context.Cont
 	return connections, nil
 }
 
+// --- GitHub App adapters ---
+
+// installationStoreAdapter adapts database.InstallationStore to handlers.InstallationStoreInterface
+type installationStoreAdapter struct {
+	store *database.InstallationStore
+}
+
+func (a *installationStoreAdapter) UpsertInstallation(ctx context.Context, inst *handlers.InstallationRecord) (*handlers.InstallationRecord, error) {
+	dbInst := &database.Installation{
+		InstallationID: inst.InstallationID,
+		UserID:         inst.UserID,
+		AccountLogin:   inst.AccountLogin,
+		AccountID:      inst.AccountID,
+		AccountType:    inst.AccountType,
+	}
+	result, err := a.store.UpsertInstallation(ctx, dbInst)
+	if err != nil {
+		return nil, err
+	}
+	return &handlers.InstallationRecord{
+		ID:             result.ID,
+		InstallationID: result.InstallationID,
+		UserID:         result.UserID,
+		AccountLogin:   result.AccountLogin,
+		AccountID:      result.AccountID,
+		AccountType:    result.AccountType,
+	}, nil
+}
+
+func (a *installationStoreAdapter) DeleteInstallation(ctx context.Context, installationID int64) error {
+	return a.store.DeleteInstallation(ctx, installationID)
+}
+
+func (a *installationStoreAdapter) SuspendInstallation(ctx context.Context, installationID int64) error {
+	return a.store.SuspendInstallation(ctx, installationID)
+}
+
+func (a *installationStoreAdapter) UnsuspendInstallation(ctx context.Context, installationID int64) error {
+	return a.store.UnsuspendInstallation(ctx, installationID)
+}
+
+func (a *installationStoreAdapter) GetInstallationByID(ctx context.Context, installationID int64) (*handlers.InstallationRecord, error) {
+	result, err := a.store.GetInstallationByID(ctx, installationID)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, nil
+	}
+	return &handlers.InstallationRecord{
+		ID:             result.ID,
+		InstallationID: result.InstallationID,
+		UserID:         result.UserID,
+		AccountLogin:   result.AccountLogin,
+		AccountID:      result.AccountID,
+		AccountType:    result.AccountType,
+	}, nil
+}
+
+// appRepoStoreAdapter adapts database.AppRepositoryStore to handlers.AppRepositoryStoreInterface
+type appRepoStoreAdapter struct {
+	store *database.AppRepositoryStore
+}
+
+func (a *appRepoStoreAdapter) UpsertAppRepository(ctx context.Context, repo *handlers.AppRepositoryRecord) (*handlers.AppRepositoryRecord, error) {
+	dbRepo := &database.AppRepository{
+		InstallationID: repo.InstallationID,
+		GitHubRepoID:   repo.GitHubRepoID,
+		FullName:       repo.FullName,
+		HTMLURL:        repo.HTMLURL,
+		Private:        repo.Private,
+		DefaultBranch:  repo.DefaultBranch,
+		IsActive:       repo.IsActive,
+	}
+	result, err := a.store.UpsertAppRepository(ctx, dbRepo)
+	if err != nil {
+		return nil, err
+	}
+	return &handlers.AppRepositoryRecord{
+		ID:             result.ID,
+		InstallationID: result.InstallationID,
+		GitHubRepoID:   result.GitHubRepoID,
+		FullName:       result.FullName,
+		HTMLURL:        result.HTMLURL,
+		Private:        result.Private,
+		DefaultBranch:  result.DefaultBranch,
+		IsActive:       result.IsActive,
+	}, nil
+}
+
+func (a *appRepoStoreAdapter) RemoveAppRepository(ctx context.Context, installationID, githubRepoID int64) error {
+	return a.store.RemoveAppRepository(ctx, installationID, githubRepoID)
+}
+
+func (a *appRepoStoreAdapter) GetByGitHubRepoID(ctx context.Context, githubRepoID int64) (*handlers.AppRepositoryRecord, error) {
+	result, err := a.store.GetByGitHubRepoID(ctx, githubRepoID)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, nil
+	}
+	return &handlers.AppRepositoryRecord{
+		ID:             result.ID,
+		InstallationID: result.InstallationID,
+		GitHubRepoID:   result.GitHubRepoID,
+		FullName:       result.FullName,
+		HTMLURL:        result.HTMLURL,
+		Private:        result.Private,
+		DefaultBranch:  result.DefaultBranch,
+		IsActive:       result.IsActive,
+	}, nil
+}
+
+// githubAppClientAdapter adapts clients.GitHubAppClient to handlers.GitHubAppClientInterface
+type githubAppClientAdapter struct {
+	client *clients.GitHubAppClient
+}
+
+func (a *githubAppClientAdapter) GetInstallation(ctx context.Context, installationID int64) (*handlers.GitHubAppInstallationInfo, error) {
+	info, err := a.client.GetInstallation(ctx, installationID)
+	if err != nil {
+		return nil, err
+	}
+	result := &handlers.GitHubAppInstallationInfo{ID: info.ID}
+	result.Account.Login = info.Account.Login
+	result.Account.ID = info.Account.ID
+	result.Account.Type = info.Account.Type
+	return result, nil
+}
+
+func (a *githubAppClientAdapter) ListInstallationRepos(ctx context.Context, installationID int64) ([]handlers.GitHubAppRepo, error) {
+	repos, err := a.client.ListInstallationRepos(ctx, installationID)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]handlers.GitHubAppRepo, len(repos))
+	for i, r := range repos {
+		result[i] = handlers.GitHubAppRepo{
+			ID:            r.ID,
+			FullName:      r.FullName,
+			HTMLURL:       r.HTMLURL,
+			Private:       r.Private,
+			DefaultBranch: r.DefaultBranch,
+		}
+	}
+	return result, nil
+}
+
 // createRouter builds the combined HTTP router for both web UI and webhook
 func createRouter(config Config, dbPool *database.Pool) http.Handler {
 	mux := http.NewServeMux()
@@ -713,6 +872,31 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 		}
 
 		mux.Handle("/webhooks/github/", draftHandler)
+
+		// GitHub App webhook endpoint (single app-level secret)
+		if config.GitHubAppWebhookSecret != "" {
+			installStore := database.NewInstallationStore(dbPool)
+			appRepoStoreDB := database.NewAppRepositoryStore(dbPool)
+
+			installAdapter := &installationStoreAdapter{store: installStore}
+			appRepoAdapter := &appRepoStoreAdapter{store: appRepoStoreDB}
+
+			appWebhookHandler := handlers.NewGitHubAppWebhookHandler(
+				config.GitHubAppWebhookSecret,
+				installAdapter,
+				appRepoAdapter,
+				repoStore,
+				draftWebhookStore,
+				idempotencyStore,
+			).WithActivityStore(activityStoreForWebhook)
+
+			if aiGenerator != nil {
+				appWebhookHandler = appWebhookHandler.WithAIGenerator(aiGenerator)
+			}
+
+			mux.Handle("/webhooks/github-app", appWebhookHandler)
+			log.Println("GitHub App webhook handler enabled")
+		}
 	}
 
 	// Web UI routes (handles everything else including /, /login, /signup, /dashboard, /logout)
@@ -807,6 +991,47 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 				postGenerator: postGenerator,
 			}
 			router = router.WithAIRegenerator(&aiRegeneratorAdapter{generator: aiGen})
+		}
+
+		// Add GitHub App setup handler if configured
+		if config.GitHubAppID != "" && config.GitHubAppPrivateKey != "" {
+			appID, err := strconv.ParseInt(config.GitHubAppID, 10, 64)
+			if err != nil {
+				log.Printf("Warning: Invalid GH_APP_ID: %v", err)
+			} else {
+				privateKeyPEM, err := base64.StdEncoding.DecodeString(config.GitHubAppPrivateKey)
+				if err != nil {
+					log.Printf("Warning: Invalid GH_APP_PRIVATE_KEY (expected base64): %v", err)
+				} else {
+					appClient, err := clients.NewGitHubAppClient(appID, privateKeyPEM, "")
+					if err != nil {
+						log.Printf("Warning: Failed to create GitHub App client: %v", err)
+					} else {
+						installStore := database.NewInstallationStore(dbPool)
+						appRepoStoreDB := database.NewAppRepositoryStore(dbPool)
+
+						clientAdapter := &githubAppClientAdapter{client: appClient}
+						installAdapter := &installationStoreAdapter{store: installStore}
+						appRepoAdapter := &appRepoStoreAdapter{store: appRepoStoreDB}
+
+						setupHandler := handlers.NewGitHubAppSetupHandler(
+							clientAdapter,
+							userStore,
+							installAdapter,
+							appRepoAdapter,
+							repoStore,
+							secretGen,
+						)
+
+						appURL := config.GitHubAppURL
+						if appURL == "" {
+							appURL = fmt.Sprintf("https://github.com/apps/roxas/installations/new")
+						}
+						router = router.WithGitHubAppSetup(setupHandler, appURL)
+						log.Println("GitHub App setup handler enabled")
+					}
+				}
+			}
 		}
 
 		webRouter = router
