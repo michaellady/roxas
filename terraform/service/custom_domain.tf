@@ -1,7 +1,7 @@
 # Custom Domain Configuration for Stable Webhook URLs
 #
 # Production: roxas.ai/webhook
-# Staging: staging.roxasapp.com/webhook
+# Dev: dev.roxasapp.com/webhook
 # PR environments: pr-{NUMBER}.roxasapp.com/webhook
 #
 # ACM certificate is managed by terraform/shared/ and referenced via SSM
@@ -11,9 +11,9 @@ locals {
   # Determine the full domain name based on environment
   # PR environments get subdomain (pr-123.roxasapp.com)
   # Prod gets root domain (roxas.ai)
-  # Dev (non-PR) gets staging subdomain (staging.roxasapp.com)
+  # Dev (non-PR) gets dev subdomain (dev.roxasapp.com)
   full_domain_name = var.environment == "prod" ? "roxas.ai" : (
-    local.pr_number != "" ? "pr-${local.pr_number}.roxasapp.com" : "staging.roxasapp.com"
+    local.pr_number != "" ? "pr-${local.pr_number}.roxasapp.com" : "dev.roxasapp.com"
   )
 
   # Determine if custom domain should be created
