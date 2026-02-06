@@ -46,10 +46,10 @@ type Config struct {
 	ThreadsClientID        string
 	ThreadsClientSecret    string
 	OAuthCallbackURL       string // Base URL for OAuth callbacks
-	GitHubAppID            string // GITHUB_APP_ID
-	GitHubAppWebhookSecret string // GITHUB_APP_WEBHOOK_SECRET (app-level secret)
-	GitHubAppPrivateKey    string // GITHUB_APP_PRIVATE_KEY (PEM-encoded private key, base64)
-	GitHubAppURL           string // GITHUB_APP_URL (install URL, e.g. https://github.com/apps/roxas/installations/new)
+	GitHubAppID            string // GH_APP_ID
+	GitHubAppWebhookSecret string // GH_APP_WEBHOOK_SECRET (app-level secret)
+	GitHubAppPrivateKey    string // GH_APP_PRIVATE_KEY (PEM-encoded private key, base64)
+	GitHubAppURL           string // GH_APP_URL (install URL, e.g. https://github.com/apps/roxas/installations/new)
 }
 
 // loadConfig loads configuration from environment variables
@@ -66,10 +66,10 @@ func loadConfig() Config {
 		ThreadsClientID:        os.Getenv("THREADS_CLIENT_ID"),
 		ThreadsClientSecret:    os.Getenv("THREADS_CLIENT_SECRET"),
 		OAuthCallbackURL:       os.Getenv("OAUTH_CALLBACK_URL"), // e.g., https://app.example.com
-		GitHubAppID:            os.Getenv("GITHUB_APP_ID"),
-		GitHubAppWebhookSecret: os.Getenv("GITHUB_APP_WEBHOOK_SECRET"),
-		GitHubAppPrivateKey:    os.Getenv("GITHUB_APP_PRIVATE_KEY"),
-		GitHubAppURL:           os.Getenv("GITHUB_APP_URL"),
+		GitHubAppID:            os.Getenv("GH_APP_ID"),
+		GitHubAppWebhookSecret: os.Getenv("GH_APP_WEBHOOK_SECRET"),
+		GitHubAppPrivateKey:    os.Getenv("GH_APP_PRIVATE_KEY"),
+		GitHubAppURL:           os.Getenv("GH_APP_URL"),
 	}
 }
 
@@ -997,11 +997,11 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 		if config.GitHubAppID != "" && config.GitHubAppPrivateKey != "" {
 			appID, err := strconv.ParseInt(config.GitHubAppID, 10, 64)
 			if err != nil {
-				log.Printf("Warning: Invalid GITHUB_APP_ID: %v", err)
+				log.Printf("Warning: Invalid GH_APP_ID: %v", err)
 			} else {
 				privateKeyPEM, err := base64.StdEncoding.DecodeString(config.GitHubAppPrivateKey)
 				if err != nil {
-					log.Printf("Warning: Invalid GITHUB_APP_PRIVATE_KEY (expected base64): %v", err)
+					log.Printf("Warning: Invalid GH_APP_PRIVATE_KEY (expected base64): %v", err)
 				} else {
 					appClient, err := clients.NewGitHubAppClient(appID, privateKeyPEM, "")
 					if err != nil {
