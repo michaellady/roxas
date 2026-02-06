@@ -106,7 +106,7 @@ jobs:
           TF_VAR_github_app_id: ${{ secrets.GH_APP_ID }}
           TF_VAR_github_app_webhook_secret: ${{ secrets.GH_APP_WEBHOOK_SECRET }}
           TF_VAR_github_app_private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-          TF_VAR_github_app_url: ${{ vars.GH_APP_URL }}
+          TF_VAR_github_app_url: ${{ secrets.GH_APP_URL }}
           TF_VAR_function_name: roxas-webhook-handler-dev
           TF_VAR_environment: dev
           TF_VAR_custom_domain_enabled: true
@@ -122,7 +122,7 @@ jobs:
           TF_VAR_github_app_id: ${{ secrets.GH_APP_ID }}
           TF_VAR_github_app_webhook_secret: ${{ secrets.GH_APP_WEBHOOK_SECRET }}
           TF_VAR_github_app_private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-          TF_VAR_github_app_url: ${{ vars.GH_APP_URL }}
+          TF_VAR_github_app_url: ${{ secrets.GH_APP_URL }}
           TF_VAR_function_name: roxas-webhook-handler-dev
           TF_VAR_environment: dev
           TF_VAR_custom_domain_enabled: true
@@ -176,7 +176,7 @@ jobs:
       - name: Run deployed browser E2E tests
         env:
           DEPLOY_URL: https://dev.roxasapp.com
-          EXPECTED_GH_APP_URL: ${{ vars.GH_APP_URL }}
+          EXPECTED_GH_APP_URL: ${{ secrets.GH_APP_URL }}
         run: go test -tags=browser -v ./internal/web -run TestDeployed -timeout 180s
 
   deploy-prod:
@@ -234,7 +234,7 @@ jobs:
           TF_VAR_github_app_id: ${{ secrets.GH_APP_ID }}
           TF_VAR_github_app_webhook_secret: ${{ secrets.GH_APP_WEBHOOK_SECRET }}
           TF_VAR_github_app_private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-          TF_VAR_github_app_url: ${{ vars.GH_APP_URL }}
+          TF_VAR_github_app_url: ${{ secrets.GH_APP_URL }}
           TF_VAR_function_name: roxas-webhook-handler-prod
           TF_VAR_environment: prod
           TF_VAR_custom_domain_enabled: true
@@ -250,7 +250,7 @@ jobs:
           TF_VAR_github_app_id: ${{ secrets.GH_APP_ID }}
           TF_VAR_github_app_webhook_secret: ${{ secrets.GH_APP_WEBHOOK_SECRET }}
           TF_VAR_github_app_private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-          TF_VAR_github_app_url: ${{ vars.GH_APP_URL }}
+          TF_VAR_github_app_url: ${{ secrets.GH_APP_URL }}
           TF_VAR_function_name: roxas-webhook-handler-prod
           TF_VAR_environment: prod
           TF_VAR_custom_domain_enabled: true
