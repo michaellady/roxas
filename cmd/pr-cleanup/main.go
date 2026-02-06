@@ -253,13 +253,38 @@ func handleDropDatabase(ctx context.Context, prNumber int) (Response, error) {
 		}, nil
 	}
 
-	// Connect to postgres database (not the PR database)
-	connString := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=postgres sslmode=require",
+	// Connect to postgres database (not the PR database) to check if the PR
+	// database exists. Use connect_timeout to fail fast on network issues
+	// (e.g., VPC cold start) instead of consuming the full Lambda timeout.
+	// Retry internally so the caller doesn't have to re-invoke the Lambda.
+	connString := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=postgres sslmode=require connect_timeout=5",
 		creds.Host, creds.Port, creds.Username, creds.Password)
 
-	conn, err := dbConnector.Connect(ctx, connString)
+	var conn DBConn
+	maxConnRetries := 3
+	for attempt := 1; attempt <= maxConnRetries; attempt++ {
+		connectCtx, connectCancel := context.WithTimeout(ctx, 7*time.Second)
+		conn, err = dbConnector.Connect(connectCtx, connString)
+		connectCancel()
+		if err == nil {
+			break
+		}
+		log.Printf("DB connection attempt %d/%d failed: %v", attempt, maxConnRetries, err)
+		if attempt < maxConnRetries {
+			// Check if parent context is still valid before retrying
+			if ctx.Err() != nil {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				break
+			case <-sleepChan(1):
+				// Brief wait before retry
+			}
+		}
+	}
 	if err != nil {
-		log.Printf("Error connecting to database: %v", err)
+		log.Printf("Error connecting to database after %d attempts: %v", maxConnRetries, err)
 		return Response{
 			StatusCode: 500,
 			Body: ResponseBody{
