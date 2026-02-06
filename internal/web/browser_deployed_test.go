@@ -309,6 +309,121 @@ func TestDeployed_SignupValidation(t *testing.T) {
 	t.Log("PASSED: Short password shows correct error")
 }
 
+// TestDeployed_GitHubAppInstallLink verifies the GitHub App install button renders
+// correctly on deployed environments and points to the correct URL.
+func TestDeployed_GitHubAppInstallLink(t *testing.T) {
+	baseURL := getDeployURL(t)
+
+	// Launch browser
+	cfg := getBrowserConfig()
+	browser, cleanup := launchBrowser(cfg)
+	defer cleanup()
+
+	page := browser.MustPage(baseURL).Timeout(30 * time.Second)
+	defer page.MustClose()
+
+	// Use unique email to avoid conflicts with existing users
+	testEmail := fmt.Sprintf("deployed-ghapp-test-%d@example.com", time.Now().UnixNano())
+	testPassword := "securepassword123"
+
+	// =========================================================================
+	// Step 1: Sign up and log in
+	// =========================================================================
+	t.Log("Step 1: Sign up")
+	page.MustNavigate(baseURL + "/signup").MustWaitLoad()
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	inputText(t, page, "#confirm_password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	t.Log("Step 1b: Log in")
+	inputText(t, page, "#email", testEmail)
+	inputText(t, page, "#password", testPassword)
+	page.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	currentURL := page.MustInfo().URL
+	if !strings.HasSuffix(currentURL, "/dashboard") {
+		t.Fatalf("Expected redirect to /dashboard after login, got: %s", currentURL)
+	}
+
+	// =========================================================================
+	// Step 2: Verify GitHub App install link on dashboard empty state
+	// =========================================================================
+	t.Log("Step 2: Check GitHub App install link on dashboard")
+
+	dashboardLink := page.MustElement(".empty-state a.btn-primary")
+	dashboardLinkText := dashboardLink.MustText()
+	if !strings.Contains(dashboardLinkText, "Install Roxas GitHub App") {
+		t.Fatalf("Expected link text to contain 'Install Roxas GitHub App', got: %s", dashboardLinkText)
+	}
+
+	dashboardHref := dashboardLink.MustProperty("href").String()
+	if !strings.Contains(dashboardHref, "github.com/apps/") || !strings.HasSuffix(dashboardHref, "/installations/new") {
+		t.Fatalf("Dashboard install link has unexpected href: %s (expected github.com/apps/.../installations/new)", dashboardHref)
+	}
+	t.Logf("Step 2 PASSED: Dashboard link href = %s", dashboardHref)
+
+	// =========================================================================
+	// Step 3: Verify GitHub App install link on /repositories/new
+	// =========================================================================
+	t.Log("Step 3: Check GitHub App install link on /repositories/new")
+
+	page.MustNavigate(baseURL + "/repositories/new").MustWaitLoad()
+	page.MustWaitStable()
+
+	repoLink := page.MustElement(".github-app-install a.btn-primary")
+	repoLinkText := repoLink.MustText()
+	if !strings.Contains(repoLinkText, "Install Roxas GitHub App") {
+		t.Fatalf("Expected link text to contain 'Install Roxas GitHub App', got: %s", repoLinkText)
+	}
+
+	repoHref := repoLink.MustProperty("href").String()
+	if !strings.Contains(repoHref, "github.com/apps/") || !strings.HasSuffix(repoHref, "/installations/new") {
+		t.Fatalf("Repo page install link has unexpected href: %s (expected github.com/apps/.../installations/new)", repoHref)
+	}
+	t.Logf("Step 3 PASSED: Repo page link href = %s", repoHref)
+
+	// =========================================================================
+	// Step 4: Verify both links point to the same URL
+	// =========================================================================
+	t.Log("Step 4: Verify href consistency")
+
+	if dashboardHref != repoHref {
+		t.Fatalf("Dashboard href (%s) does not match repo page href (%s)", dashboardHref, repoHref)
+	}
+	t.Log("Step 4 PASSED: Both links point to the same URL")
+
+	// =========================================================================
+	// Step 5: Optionally validate exact URL via EXPECTED_GH_APP_URL
+	// =========================================================================
+	if expectedURL := os.Getenv("EXPECTED_GH_APP_URL"); expectedURL != "" {
+		t.Logf("Step 5: Validating exact URL against EXPECTED_GH_APP_URL=%s", expectedURL)
+		if dashboardHref != expectedURL {
+			t.Fatalf("Install link href %q does not match EXPECTED_GH_APP_URL %q", dashboardHref, expectedURL)
+		}
+		t.Log("Step 5 PASSED: Href matches EXPECTED_GH_APP_URL exactly")
+	} else {
+		t.Log("Step 5 SKIPPED: EXPECTED_GH_APP_URL not set, URL shape already validated")
+	}
+
+	// =========================================================================
+	// Step 6: Logout
+	// =========================================================================
+	t.Log("Step 6: Logout")
+
+	page.MustNavigate(baseURL + "/dashboard").MustWaitLoad()
+	logoutForm := page.MustElement("form[action='/logout']")
+	logoutForm.MustElement("button[type=submit]").MustClick()
+	page.MustWaitLoad()
+	page.MustWaitStable()
+
+	t.Log("=== TestDeployed_GitHubAppInstallLink PASSED ===")
+}
+
 // TestDeployed_LoginValidation tests login error handling on deployed environment
 func TestDeployed_LoginValidation(t *testing.T) {
 	baseURL := getDeployURL(t)

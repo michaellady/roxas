@@ -1453,13 +1453,19 @@ func (r *Router) handleRepositoriesNew(w http.ResponseWriter, req *http.Request)
 	}
 
 	// Fall back to manual URL form
-	r.renderPageWithCSRF(w, req, "repositories_new.html", PageData{
+	pageData := PageData{
 		Title: "Add Repository",
 		User: &UserData{
 			ID:    claims.UserID,
 			Email: claims.Email,
 		},
-	})
+	}
+	if r.githubAppURL != "" {
+		pageData.Data = &RepoSelectionData{
+			GitHubAppURL: r.githubAppURL,
+		}
+	}
+	r.renderPageWithCSRF(w, req, "repositories_new.html", pageData)
 }
 
 // handleRepoSelectionPage renders the GitHub repo selection page
@@ -1487,11 +1493,14 @@ func (r *Router) handleRepoSelectionPage(w http.ResponseWriter, req *http.Reques
 
 	githubRepos, err := r.githubRepoLister.ListUserRepos(req.Context(), accessToken)
 	if err != nil {
-		r.renderPage(w, "repositories_new.html", PageData{
+		r.renderPageWithCSRF(w, req, "repositories_new.html", PageData{
 			Title: "Add Repository",
 			User: &UserData{
 				ID:    claims.UserID,
 				Email: claims.Email,
+			},
+			Data: &RepoSelectionData{
+				GitHubAppURL: r.githubAppURL,
 			},
 			Error: "Failed to fetch GitHub repositories",
 		})
