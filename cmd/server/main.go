@@ -917,7 +917,8 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 
 		router := web.NewRouterWithActivityLister(userStore, repoStore, commitStore, postStore, activityStore, secretGen, config.WebhookBaseURL).
 			WithDraftLister(draftLister).
-			WithDraftStore(webDraftStore)
+			WithDraftStore(webDraftStore).
+			WithWebhookTester(web.NewHTTPWebhookTester())
 
 		// Add social poster and Threads OAuth if encryption key is configured
 		if config.EncryptionKey != "" {

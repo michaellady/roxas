@@ -592,6 +592,18 @@ func (r *Router) WithAuthRateLimiter(limiter *auth.RateLimiter) *Router {
 	return r
 }
 
+// WithWebhookTester configures the router with a webhook tester for testing webhook connectivity.
+func (r *Router) WithWebhookTester(tester WebhookTester) *Router {
+	r.webhookTester = tester
+	return r
+}
+
+// WithWebhookDeliveryStore configures the router with a webhook delivery store for recording deliveries.
+func (r *Router) WithWebhookDeliveryStore(store WebhookDeliveryStore) *Router {
+	r.webhookDeliveryStore = store
+	return r
+}
+
 // WithGitHubAppSetup configures the router with a GitHub App setup handler and install URL.
 func (r *Router) WithGitHubAppSetup(setupHandler http.Handler, appURL string) *Router {
 	r.githubAppSetup = setupHandler
