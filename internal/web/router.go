@@ -478,6 +478,8 @@ type Router struct {
 	aiRegenerator        AIRegenerator
 	socialPoster         SocialPoster
 	authRateLimiter      *auth.RateLimiter // Rate limiter for auth endpoints (login, signup)
+	githubAppSetup       http.Handler      // GitHub App setup callback handler
+	githubAppURL         string            // URL for installing the GitHub App (e.g., "https://github.com/apps/roxas/installations/new")
 }
 
 // NewRouter creates a new web router with all routes configured (no user store)
@@ -587,6 +589,13 @@ func (r *Router) WithConnectionService(service ConnectionService) *Router {
 // This helps prevent brute force attacks on login and signup endpoints.
 func (r *Router) WithAuthRateLimiter(limiter *auth.RateLimiter) *Router {
 	r.authRateLimiter = limiter
+	return r
+}
+
+// WithGitHubAppSetup configures the router with a GitHub App setup handler and install URL.
+func (r *Router) WithGitHubAppSetup(setupHandler http.Handler, appURL string) *Router {
+	r.githubAppSetup = setupHandler
+	r.githubAppURL = appURL
 	return r
 }
 
@@ -775,6 +784,9 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("GET /oauth/threads", r.handleThreadsOAuth)
 	r.mux.HandleFunc("GET /oauth/threads/callback", r.handleThreadsOAuthCallback)
 	r.mux.HandleFunc("POST /oauth/threads/refresh", r.handleThreadsTokenRefresh)
+
+	// GitHub App setup callback
+	r.mux.HandleFunc("GET /github-app/setup", r.handleGitHubAppSetup)
 }
 
 func (r *Router) handleHome(w http.ResponseWriter, req *http.Request) {
@@ -1001,6 +1013,7 @@ type DashboardData struct {
 	Posts        []*DashboardPost
 	Activities   []*DashboardActivity
 	IsEmpty      bool
+	GitHubAppURL string // URL for installing the GitHub App (shown in empty state CTA)
 	// Pagination for activities
 	ActivityPage       int
 	ActivityTotalPages int
@@ -1038,6 +1051,7 @@ func (r *Router) handleDashboard(w http.ResponseWriter, req *http.Request) {
 	dashData := &DashboardData{
 		ActivityPage:     activityPage,
 		ActivityPageSize: activityPageSize,
+		GitHubAppURL:     r.githubAppURL,
 	}
 
 	// Get repositories if store is available
@@ -1328,6 +1342,15 @@ func (r *Router) handleRepositories(w http.ResponseWriter, req *http.Request) {
 		listData.Repositories = repos
 	}
 
+	// Check for flash message from GitHub App installation
+	var flash *FlashMessage
+	if req.URL.Query().Get("installed") == "true" {
+		flash = &FlashMessage{
+			Type:    "success",
+			Message: "GitHub App installed successfully! Your repositories have been synced.",
+		}
+	}
+
 	r.renderPage(w, "repositories_list.html", PageData{
 		Title: "Repositories",
 		User: &UserData{
@@ -1335,6 +1358,7 @@ func (r *Router) handleRepositories(w http.ResponseWriter, req *http.Request) {
 			Email: claims.Email,
 		},
 		Data:       listData,
+		Flash:      flash,
 		DraftCount: r.getDraftCount(req.Context(), claims.UserID),
 	})
 }
@@ -1344,6 +1368,7 @@ type RepoSelectionData struct {
 	GitHubRepos      []GitHubRepoItem
 	HasGitHubRepos   bool
 	ConnectedRepoIDs map[string]bool // Map of GitHub URLs that are already connected
+	GitHubAppURL     string          // URL for installing the GitHub App
 }
 
 // GitHubRepoItem represents a repo item for display in the selection list
@@ -1497,6 +1522,7 @@ func (r *Router) handleRepoSelectionPage(w http.ResponseWriter, req *http.Reques
 			GitHubRepos:      repoItems,
 			HasGitHubRepos:   len(repoItems) > 0,
 			ConnectedRepoIDs: connectedRepos,
+			GitHubAppURL:     r.githubAppURL,
 		},
 	})
 }
@@ -3282,5 +3308,13 @@ func (r *Router) handleDraftPost(w http.ResponseWriter, req *http.Request) {
 
 	// Redirect to dashboard with success message
 	http.Redirect(w, req, "/dashboard?posted=true", http.StatusSeeOther)
+}
+
+func (r *Router) handleGitHubAppSetup(w http.ResponseWriter, req *http.Request) {
+	if r.githubAppSetup == nil {
+		http.NotFound(w, req)
+		return
+	}
+	r.githubAppSetup.ServeHTTP(w, req)
 }
 

@@ -1,0 +1,2 @@
+DROP TRIGGER IF EXISTS update_github_app_installations_updated_at ON github_app_installations;
+DROP TABLE IF EXISTS github_app_installations;

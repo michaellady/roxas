@@ -33,66 +33,69 @@ func NewRepositoryStoreWithDB(db DBTX) *RepositoryStore {
 	return &RepositoryStore{db: db}
 }
 
-// CreateRepository creates a new repository in the database
-func (s *RepositoryStore) CreateRepository(ctx context.Context, userID, githubURL, webhookSecret string) (*handlers.Repository, error) {
+const repoColumns = `id, user_id, github_url, webhook_secret, name, is_active, created_at, github_repo_id, webhook_id, is_private, github_app_repo_id, webhook_source`
+
+// scanRepo scans a repository row into a handlers.Repository, handling nullable fields.
+func scanRepo(scan func(dest ...any) error) (*handlers.Repository, error) {
 	var repo handlers.Repository
 	var createdAt time.Time
 	var name *string
 
-	err := s.db.QueryRow(ctx,
+	err := scan(&repo.ID, &repo.UserID, &repo.GitHubURL, &repo.WebhookSecret, &name, &repo.IsActive,
+		&createdAt, &repo.GitHubRepoID, &repo.WebhookID, &repo.IsPrivate,
+		&repo.GitHubAppRepoID, &repo.WebhookSource)
+	if err != nil {
+		return nil, err
+	}
+
+	if name != nil {
+		repo.Name = *name
+	}
+	repo.CreatedAt = createdAt
+	return &repo, nil
+}
+
+// CreateRepository creates a new repository in the database
+func (s *RepositoryStore) CreateRepository(ctx context.Context, userID, githubURL, webhookSecret string) (*handlers.Repository, error) {
+	row := s.db.QueryRow(ctx,
 		`INSERT INTO repositories (user_id, github_url, webhook_secret)
 		 VALUES ($1, $2, $3)
-		 RETURNING id, user_id, github_url, webhook_secret, name, is_active, created_at, github_repo_id, webhook_id, is_private`,
+		 RETURNING `+repoColumns,
 		userID, githubURL, webhookSecret,
-	).Scan(&repo.ID, &repo.UserID, &repo.GitHubURL, &repo.WebhookSecret, &name, &repo.IsActive, &createdAt, &repo.GitHubRepoID, &repo.WebhookID, &repo.IsPrivate)
-
+	)
+	repo, err := scanRepo(row.Scan)
 	if err != nil {
-		// Check for unique constraint violation (duplicate repo for user)
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return nil, handlers.ErrDuplicateRepository
 		}
 		return nil, err
 	}
-
-	if name != nil {
-		repo.Name = *name
-	}
-	repo.CreatedAt = createdAt
-	return &repo, nil
+	return repo, nil
 }
 
 // GetRepositoryByUserAndURL retrieves a repository by user ID and GitHub URL
 func (s *RepositoryStore) GetRepositoryByUserAndURL(ctx context.Context, userID, githubURL string) (*handlers.Repository, error) {
-	var repo handlers.Repository
-	var createdAt time.Time
-	var name *string
-
-	err := s.db.QueryRow(ctx,
-		`SELECT id, user_id, github_url, webhook_secret, name, is_active, created_at, github_repo_id, webhook_id, is_private
+	row := s.db.QueryRow(ctx,
+		`SELECT `+repoColumns+`
 		 FROM repositories
 		 WHERE user_id = $1 AND github_url = $2`,
 		userID, githubURL,
-	).Scan(&repo.ID, &repo.UserID, &repo.GitHubURL, &repo.WebhookSecret, &name, &repo.IsActive, &createdAt, &repo.GitHubRepoID, &repo.WebhookID, &repo.IsPrivate)
-
+	)
+	repo, err := scanRepo(row.Scan)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
-
-	if name != nil {
-		repo.Name = *name
-	}
-	repo.CreatedAt = createdAt
-	return &repo, nil
+	return repo, nil
 }
 
 // ListRepositoriesByUser retrieves all repositories for a user
 func (s *RepositoryStore) ListRepositoriesByUser(ctx context.Context, userID string) ([]*handlers.Repository, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT id, user_id, github_url, webhook_secret, name, is_active, created_at, github_repo_id, webhook_id, is_private
+		`SELECT `+repoColumns+`
 		 FROM repositories
 		 WHERE user_id = $1
 		 ORDER BY created_at DESC`,
@@ -105,79 +108,54 @@ func (s *RepositoryStore) ListRepositoriesByUser(ctx context.Context, userID str
 
 	var repos []*handlers.Repository
 	for rows.Next() {
-		var repo handlers.Repository
-		var createdAt time.Time
-		var name *string
-		if err := rows.Scan(&repo.ID, &repo.UserID, &repo.GitHubURL, &repo.WebhookSecret, &name, &repo.IsActive, &createdAt, &repo.GitHubRepoID, &repo.WebhookID, &repo.IsPrivate); err != nil {
+		repo, err := scanRepo(rows.Scan)
+		if err != nil {
 			return nil, err
 		}
-		if name != nil {
-			repo.Name = *name
-		}
-		repo.CreatedAt = createdAt
-		repos = append(repos, &repo)
+		repos = append(repos, repo)
 	}
 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-
 	return repos, nil
 }
 
 // GetRepositoryByID retrieves a repository by its ID (for webhook handling)
 func (s *RepositoryStore) GetRepositoryByID(ctx context.Context, repoID string) (*handlers.Repository, error) {
-	var repo handlers.Repository
-	var createdAt time.Time
-	var name *string
-
-	err := s.db.QueryRow(ctx,
-		`SELECT id, user_id, github_url, webhook_secret, name, is_active, created_at, github_repo_id, webhook_id, is_private
+	row := s.db.QueryRow(ctx,
+		`SELECT `+repoColumns+`
 		 FROM repositories
 		 WHERE id = $1`,
 		repoID,
-	).Scan(&repo.ID, &repo.UserID, &repo.GitHubURL, &repo.WebhookSecret, &name, &repo.IsActive, &createdAt, &repo.GitHubRepoID, &repo.WebhookID, &repo.IsPrivate)
-
+	)
+	repo, err := scanRepo(row.Scan)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
-
-	if name != nil {
-		repo.Name = *name
-	}
-	repo.CreatedAt = createdAt
-	return &repo, nil
+	return repo, nil
 }
 
 // UpdateRepository updates a repository's name and active status
 func (s *RepositoryStore) UpdateRepository(ctx context.Context, repoID, name string, isActive bool) (*handlers.Repository, error) {
-	var repo handlers.Repository
-	var createdAt time.Time
-	var namePtr *string
-
-	err := s.db.QueryRow(ctx,
+	row := s.db.QueryRow(ctx,
 		`UPDATE repositories
 		 SET name = $2, is_active = $3
 		 WHERE id = $1
-		 RETURNING id, user_id, github_url, webhook_secret, name, is_active, created_at, github_repo_id, webhook_id, is_private`,
+		 RETURNING `+repoColumns,
 		repoID, name, isActive,
-	).Scan(&repo.ID, &repo.UserID, &repo.GitHubURL, &repo.WebhookSecret, &namePtr, &repo.IsActive, &createdAt, &repo.GitHubRepoID, &repo.WebhookID, &repo.IsPrivate)
-
+	)
+	repo, err := scanRepo(row.Scan)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
-
-	if namePtr != nil {
-		repo.Name = *namePtr
-	}
-	repo.CreatedAt = createdAt
-	return &repo, nil
+	return repo, nil
 }
 
 // UpdateWebhookSecret updates the webhook secret for a repository
@@ -195,6 +173,43 @@ func (s *RepositoryStore) UpdateWebhookSecret(ctx context.Context, repoID, newSe
 	}
 
 	return nil
+}
+
+// GetRepositoryByAppRepoID retrieves a repository by its linked github_app_repo_id
+func (s *RepositoryStore) GetRepositoryByAppRepoID(ctx context.Context, appRepoID string) (*handlers.Repository, error) {
+	row := s.db.QueryRow(ctx,
+		`SELECT `+repoColumns+`
+		 FROM repositories
+		 WHERE github_app_repo_id = $1`,
+		appRepoID,
+	)
+	repo, err := scanRepo(row.Scan)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return repo, nil
+}
+
+// CreateRepositoryFromApp creates a repository linked to a GitHub App repo
+func (s *RepositoryStore) CreateRepositoryFromApp(ctx context.Context, userID, githubURL, webhookSecret, appRepoID string) (*handlers.Repository, error) {
+	row := s.db.QueryRow(ctx,
+		`INSERT INTO repositories (user_id, github_url, webhook_secret, github_app_repo_id, webhook_source)
+		 VALUES ($1, $2, $3, $4, 'github_app')
+		 RETURNING `+repoColumns,
+		userID, githubURL, webhookSecret, appRepoID,
+	)
+	repo, err := scanRepo(row.Scan)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return nil, handlers.ErrDuplicateRepository
+		}
+		return nil, err
+	}
+	return repo, nil
 }
 
 // DeleteRepository removes a repository from the database
