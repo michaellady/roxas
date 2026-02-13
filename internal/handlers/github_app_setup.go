@@ -19,6 +19,8 @@ type GitHubAppClientInterface interface {
 // SetupUserStore defines user operations needed by the setup handler.
 type SetupUserStore interface {
 	GetOrCreateByGitHub(ctx context.Context, githubID int64, githubLogin, email string) (*User, bool, error)
+	GetUserByID(ctx context.Context, userID string) (*User, error)
+	LinkGitHubIdentity(ctx context.Context, userID string, githubID int64, githubLogin string) error
 }
 
 // SetupInstallationStore defines installation operations needed by the setup handler.
@@ -140,24 +142,44 @@ func (h *GitHubAppSetupHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// 3. Get or create user from GitHub account
-	email := installation.Account.Login + "@users.noreply.github.com"
-	user, _, err := h.userStore.GetOrCreateByGitHub(ctx, installation.Account.ID, installation.Account.Login, email)
-	if err != nil {
-		log.Printf("ERROR: failed to get/create user for GitHub account %s: %v", installation.Account.Login, err)
-		http.Redirect(w, r, "/repositories?error=user_creation_failed", http.StatusSeeOther)
-		return
+	// 3. Resolve user: prefer existing session, fall back to GitHub identity
+	var user *User
+
+	// Check if user is already logged in
+	if cookie, cookieErr := r.Cookie(auth.CookieName); cookieErr == nil && cookie.Value != "" {
+		if claims, validateErr := auth.ValidateToken(cookie.Value); validateErr == nil {
+			existingUser, lookupErr := h.userStore.GetUserByID(ctx, claims.UserID)
+			if lookupErr == nil && existingUser != nil {
+				user = existingUser
+				// Link GitHub identity to existing user so future lookups find them
+				if linkErr := h.userStore.LinkGitHubIdentity(ctx, user.ID, installation.Account.ID, installation.Account.Login); linkErr != nil {
+					log.Printf("WARNING: failed to link GitHub identity to user %s: %v", user.ID, linkErr)
+				}
+			}
+		}
 	}
 
-	// 4. Generate JWT and set auth cookie
-	token, err := auth.GenerateToken(user.ID, user.Email)
-	if err != nil {
-		log.Printf("ERROR: failed to generate token for user %s: %v", user.ID, err)
-		http.Redirect(w, r, "/repositories?error=auth_failed", http.StatusSeeOther)
-		return
-	}
+	// Fall back to GetOrCreateByGitHub if not logged in
+	if user == nil {
+		email := installation.Account.Login + "@users.noreply.github.com"
+		var err error
+		user, _, err = h.userStore.GetOrCreateByGitHub(ctx, installation.Account.ID, installation.Account.Login, email)
+		if err != nil {
+			log.Printf("ERROR: failed to get/create user for GitHub account %s: %v", installation.Account.Login, err)
+			http.Redirect(w, r, "/repositories?error=user_creation_failed", http.StatusSeeOther)
+			return
+		}
 
-	auth.SetAuthCookie(w, token, 86400)
+		// Generate JWT and set auth cookie only for new/unauthenticated users
+		token, err := auth.GenerateToken(user.ID, user.Email)
+		if err != nil {
+			log.Printf("ERROR: failed to generate token for user %s: %v", user.ID, err)
+			http.Redirect(w, r, "/repositories?error=auth_failed", http.StatusSeeOther)
+			return
+		}
+
+		auth.SetAuthCookie(w, token, 86400)
+	}
 
 	// 5. Upsert installation record
 	_, err = h.installationStore.UpsertInstallation(ctx, &InstallationRecord{
