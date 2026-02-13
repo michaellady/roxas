@@ -212,6 +212,21 @@ func (s *RepositoryStore) CreateRepositoryFromApp(ctx context.Context, userID, g
 	return repo, nil
 }
 
+// UpdateRepositoryUserID reassigns a repository to a different user.
+func (s *RepositoryStore) UpdateRepositoryUserID(ctx context.Context, repoID, userID string) error {
+	result, err := s.db.Exec(ctx,
+		`UPDATE repositories SET user_id = $1 WHERE id = $2`,
+		userID, repoID,
+	)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
 // DeleteRepository removes a repository from the database
 func (s *RepositoryStore) DeleteRepository(ctx context.Context, repoID string) error {
 	result, err := s.db.Exec(ctx,
