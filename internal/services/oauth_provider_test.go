@@ -6,9 +6,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/leanovate/gopter"
+	"github.com/leanovate/gopter/gen"
+	"github.com/leanovate/gopter/prop"
 )
 
 // =============================================================================
@@ -671,6 +676,189 @@ func TestBlueskyAuthProvider_HandleNormalization(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Property-Based Tests for Handle Normalization
+// Property 11: Bluesky handles normalized (remove @, add .bsky.social if no domain)
+// Validates Requirements 4.1, 4.2
+// =============================================================================
+
+// TestProperty_HandleNormalization_NeverStartsWithAt verifies that normalized
+// handles never start with @, regardless of input.
+func TestProperty_HandleNormalization_NeverStartsWithAt(t *testing.T) {
+	parameters := gopter.DefaultTestParameters()
+	parameters.MinSuccessfulTests = 100
+	parameters.MaxSize = 100
+
+	properties := gopter.NewProperties(parameters)
+
+	// Generate handles that may or may not have @ prefix
+	handleGen := gen.AnyString().Map(func(s string) string {
+		// Ensure non-empty string for meaningful test
+		if s == "" {
+			return "user"
+		}
+		return s
+	})
+
+	properties.Property("normalized handle never starts with @", prop.ForAll(
+		func(handle string) bool {
+			normalized := normalizeBlueskyHandle(handle)
+			return !strings.HasPrefix(normalized, "@")
+		},
+		handleGen,
+	))
+
+	properties.TestingRun(t)
+}
+
+// TestProperty_HandleNormalization_AlwaysHasDomain verifies that normalized
+// handles always contain a domain (indicated by having a dot).
+func TestProperty_HandleNormalization_AlwaysHasDomain(t *testing.T) {
+	parameters := gopter.DefaultTestParameters()
+	parameters.MinSuccessfulTests = 100
+	parameters.MaxSize = 100
+
+	properties := gopter.NewProperties(parameters)
+
+	// Generate handles that may or may not have a domain
+	handleGen := gen.AnyString().Map(func(s string) string {
+		if s == "" {
+			return "user"
+		}
+		return s
+	})
+
+	properties.Property("normalized handle always contains a dot (has domain)", prop.ForAll(
+		func(handle string) bool {
+			normalized := normalizeBlueskyHandle(handle)
+			return strings.Contains(normalized, ".")
+		},
+		handleGen,
+	))
+
+	properties.TestingRun(t)
+}
+
+// TestProperty_HandleNormalization_AtPrefixRemoval verifies that handles with
+// @ prefix normalize the same as handles without @ prefix.
+func TestProperty_HandleNormalization_AtPrefixRemoval(t *testing.T) {
+	parameters := gopter.DefaultTestParameters()
+	parameters.MinSuccessfulTests = 100
+	parameters.MaxSize = 100
+
+	properties := gopter.NewProperties(parameters)
+
+	// Generate non-@ prefixed handles
+	baseHandleGen := gen.AnyString().SuchThat(func(s string) bool {
+		return s != "" && !strings.HasPrefix(s, "@")
+	}).Map(func(s string) string {
+		if s == "" {
+			return "user"
+		}
+		return s
+	})
+
+	properties.Property("@handle normalizes same as handle", prop.ForAll(
+		func(baseHandle string) bool {
+			withAt := "@" + baseHandle
+			withoutAt := baseHandle
+
+			normalizedWithAt := normalizeBlueskyHandle(withAt)
+			normalizedWithoutAt := normalizeBlueskyHandle(withoutAt)
+
+			return normalizedWithAt == normalizedWithoutAt
+		},
+		baseHandleGen,
+	))
+
+	properties.TestingRun(t)
+}
+
+// TestProperty_HandleNormalization_PreservesDomain verifies that handles with
+// custom domains keep their domain intact.
+func TestProperty_HandleNormalization_PreservesDomain(t *testing.T) {
+	parameters := gopter.DefaultTestParameters()
+	parameters.MinSuccessfulTests = 100
+	parameters.MaxSize = 100
+
+	properties := gopter.NewProperties(parameters)
+
+	// Generate handles with domains by combining user and domain parts
+	handleWithDomainGen := gopter.CombineGens(
+		gen.AlphaString().SuchThat(func(s string) bool { return len(s) > 0 }),
+		gen.AlphaString().SuchThat(func(s string) bool { return len(s) > 0 }),
+	).Map(func(vals []interface{}) string {
+		user := vals[0].(string)
+		domain := vals[1].(string)
+		return user + "." + domain
+	})
+
+	properties.Property("handles with domain preserve their domain", prop.ForAll(
+		func(handle string) bool {
+			normalized := normalizeBlueskyHandle(handle)
+			// If input has a dot, output should not end with .bsky.social (unless it was the original domain)
+			// More precisely: input with dot should equal output (no .bsky.social appended)
+			return normalized == handle
+		},
+		handleWithDomainGen,
+	))
+
+	properties.TestingRun(t)
+}
+
+// TestProperty_HandleNormalization_BareHandleGetsBskySocial verifies that
+// handles without a domain get .bsky.social appended.
+func TestProperty_HandleNormalization_BareHandleGetsBskySocial(t *testing.T) {
+	parameters := gopter.DefaultTestParameters()
+	parameters.MinSuccessfulTests = 100
+	parameters.MaxSize = 100
+
+	properties := gopter.NewProperties(parameters)
+
+	// Generate bare handles (no dot, no @)
+	bareHandleGen := gen.AlphaString().SuchThat(func(s string) bool {
+		return len(s) > 0 && !strings.Contains(s, ".") && !strings.HasPrefix(s, "@")
+	})
+
+	properties.Property("bare handles get .bsky.social appended", prop.ForAll(
+		func(handle string) bool {
+			normalized := normalizeBlueskyHandle(handle)
+			return normalized == handle+".bsky.social"
+		},
+		bareHandleGen,
+	))
+
+	properties.TestingRun(t)
+}
+
+// TestProperty_HandleNormalization_Idempotent verifies that normalizing
+// an already-normalized handle produces the same result.
+func TestProperty_HandleNormalization_Idempotent(t *testing.T) {
+	parameters := gopter.DefaultTestParameters()
+	parameters.MinSuccessfulTests = 100
+	parameters.MaxSize = 100
+
+	properties := gopter.NewProperties(parameters)
+
+	handleGen := gen.AnyString().Map(func(s string) string {
+		if s == "" {
+			return "user"
+		}
+		return s
+	})
+
+	properties.Property("normalization is idempotent", prop.ForAll(
+		func(handle string) bool {
+			once := normalizeBlueskyHandle(handle)
+			twice := normalizeBlueskyHandle(once)
+			return once == twice
+		},
+		handleGen,
+	))
+
+	properties.TestingRun(t)
+}
+
 func TestBlueskyAuthProvider_ParseCredentials(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -1192,6 +1380,172 @@ func TestGitHubExpiryFromResponse(t *testing.T) {
 			}
 		})
 	}
+}
+
+// =============================================================================
+// Property-Based Tests (using gopter)
+// =============================================================================
+
+// TestProperty_GitHubOAuthURL_ContainsRequiredScopes validates that the GitHub
+// OAuth authorization URL always contains the required scopes 'repo' and
+// 'admin:repo_hook', regardless of the input parameters provided.
+// This is Property 5 from Requirements 2.1.
+func TestProperty_GitHubOAuthURL_ContainsRequiredScopes(t *testing.T) {
+	parameters := gopter.DefaultTestParameters()
+	parameters.MinSuccessfulTests = 100
+	properties := gopter.NewProperties(parameters)
+
+	// Generator for valid OAuth state strings (non-empty alphanumeric)
+	genState := gen.AlphaString().SuchThat(func(s string) bool {
+		return len(s) > 0 && len(s) <= 128
+	})
+
+	// Generator for valid redirect URLs
+	genRedirectURL := gen.AnyString().Map(func(s string) string {
+		// Create a valid HTTPS URL for testing
+		return "https://example.com/callback/" + url.PathEscape(s)
+	})
+
+	// Generator for valid client IDs (non-empty)
+	genClientID := gen.AlphaString().SuchThat(func(s string) bool {
+		return len(s) > 0
+	})
+
+	// Generator for client secrets (can be empty for this test)
+	genClientSecret := gen.AlphaString()
+
+	properties.Property("GitHub OAuth URL always contains 'repo' scope", prop.ForAll(
+		func(state, redirectURL, clientID, clientSecret string) bool {
+			provider := &GitHubOAuthProvider{
+				ClientID:     clientID,
+				ClientSecret: clientSecret,
+			}
+
+			authURL := provider.GetAuthURL(state, redirectURL)
+
+			// Parse the URL to extract the scope parameter
+			parsedURL, err := url.Parse(authURL)
+			if err != nil {
+				return false
+			}
+
+			scopeParam := parsedURL.Query().Get("scope")
+			// The scope parameter should contain 'repo'
+			return strings.Contains(scopeParam, "repo")
+		},
+		genState,
+		genRedirectURL,
+		genClientID,
+		genClientSecret,
+	))
+
+	properties.Property("GitHub OAuth URL always contains 'admin:repo_hook' scope", prop.ForAll(
+		func(state, redirectURL, clientID, clientSecret string) bool {
+			provider := &GitHubOAuthProvider{
+				ClientID:     clientID,
+				ClientSecret: clientSecret,
+			}
+
+			authURL := provider.GetAuthURL(state, redirectURL)
+
+			// Parse the URL to extract the scope parameter
+			parsedURL, err := url.Parse(authURL)
+			if err != nil {
+				return false
+			}
+
+			scopeParam := parsedURL.Query().Get("scope")
+			// The scope parameter should contain 'admin:repo_hook'
+			return strings.Contains(scopeParam, "admin:repo_hook")
+		},
+		genState,
+		genRedirectURL,
+		genClientID,
+		genClientSecret,
+	))
+
+	properties.Property("GitHub OAuth URL contains both required scopes", prop.ForAll(
+		func(state, redirectURL, clientID, clientSecret string) bool {
+			provider := &GitHubOAuthProvider{
+				ClientID:     clientID,
+				ClientSecret: clientSecret,
+			}
+
+			authURL := provider.GetAuthURL(state, redirectURL)
+
+			// Parse the URL to extract the scope parameter
+			parsedURL, err := url.Parse(authURL)
+			if err != nil {
+				return false
+			}
+
+			scopeParam := parsedURL.Query().Get("scope")
+
+			// Both required scopes must be present
+			hasRepo := strings.Contains(scopeParam, "repo")
+			hasAdminRepoHook := strings.Contains(scopeParam, "admin:repo_hook")
+
+			return hasRepo && hasAdminRepoHook
+		},
+		genState,
+		genRedirectURL,
+		genClientID,
+		genClientSecret,
+	))
+
+	properties.TestingRun(t)
+}
+
+// TestProperty_GitHubOAuthURL_ScopesMatchGetRequiredScopes validates that the
+// scopes in the OAuth URL exactly match what GetRequiredScopes() returns.
+func TestProperty_GitHubOAuthURL_ScopesMatchGetRequiredScopes(t *testing.T) {
+	parameters := gopter.DefaultTestParameters()
+	parameters.MinSuccessfulTests = 100
+	properties := gopter.NewProperties(parameters)
+
+	genState := gen.AlphaString().SuchThat(func(s string) bool {
+		return len(s) > 0 && len(s) <= 128
+	})
+
+	genRedirectURL := gen.AnyString().Map(func(s string) string {
+		return "https://example.com/callback/" + url.PathEscape(s)
+	})
+
+	genClientID := gen.AlphaString().SuchThat(func(s string) bool {
+		return len(s) > 0
+	})
+
+	properties.Property("OAuth URL scope parameter contains all required scopes", prop.ForAll(
+		func(state, redirectURL, clientID string) bool {
+			provider := &GitHubOAuthProvider{
+				ClientID: clientID,
+			}
+
+			authURL := provider.GetAuthURL(state, redirectURL)
+			requiredScopes := provider.GetRequiredScopes()
+
+			parsedURL, err := url.Parse(authURL)
+			if err != nil {
+				return false
+			}
+
+			scopeParam := parsedURL.Query().Get("scope")
+
+			// Check each required scope is present in the URL
+			for _, scope := range requiredScopes {
+				if !strings.Contains(scopeParam, scope) {
+					return false
+				}
+			}
+
+			return true
+		},
+		genState,
+		genRedirectURL,
+		genClientID,
+	))
+
+	properties.TestingRun(t)
 }
 
 // =============================================================================

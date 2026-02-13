@@ -21,6 +21,8 @@ type User struct {
 	ID           string    `json:"id"`
 	Email        string    `json:"email"`
 	PasswordHash string    `json:"-"`
+	GitHubID     *int64    `json:"github_id,omitempty"`
+	GitHubLogin  *string   `json:"github_login,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }

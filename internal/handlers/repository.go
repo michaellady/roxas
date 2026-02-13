@@ -17,16 +17,18 @@ import (
 
 // Repository represents a tracked GitHub repository
 type Repository struct {
-	ID            string    `json:"id"`
-	UserID        string    `json:"user_id"`
-	GitHubURL     string    `json:"github_url"`
-	WebhookSecret string    `json:"webhook_secret,omitempty"`
-	Name          string    `json:"name"`
-	IsActive      bool      `json:"is_active"`
-	CreatedAt     time.Time `json:"created_at"`
-	GitHubRepoID  *int64    `json:"github_repo_id,omitempty"`
-	WebhookID     *int64    `json:"webhook_id,omitempty"`
-	IsPrivate     bool      `json:"is_private"`
+	ID              string    `json:"id"`
+	UserID          string    `json:"user_id"`
+	GitHubURL       string    `json:"github_url"`
+	WebhookSecret   string    `json:"webhook_secret,omitempty"`
+	Name            string    `json:"name"`
+	IsActive        bool      `json:"is_active"`
+	CreatedAt       time.Time `json:"created_at"`
+	GitHubRepoID    *int64    `json:"github_repo_id,omitempty"`
+	WebhookID       *int64    `json:"webhook_id,omitempty"`
+	IsPrivate       bool      `json:"is_private"`
+	GitHubAppRepoID *string   `json:"github_app_repo_id,omitempty"`
+	WebhookSource   string    `json:"webhook_source"`
 }
 
 // RepositoryStore defines the interface for repository persistence
@@ -239,4 +241,14 @@ func (h *RepositoryHandler) writeJSON(w http.ResponseWriter, status int, data in
 
 func (h *RepositoryHandler) writeError(w http.ResponseWriter, status int, message string) {
 	h.writeJSON(w, status, ErrorResponse{Error: message})
+}
+
+// GetWebhookConfigForTest returns a webhook configuration for the given repository ID.
+// This method is exported for property testing to verify webhook URL and secret format.
+func (h *RepositoryHandler) GetWebhookConfigForTest(repoID string) WebhookConfig {
+	secret, _ := h.secretGen.Generate()
+	return WebhookConfig{
+		URL:    fmt.Sprintf("%s/webhook/%s", h.webhookURL, repoID),
+		Secret: secret,
+	}
 }

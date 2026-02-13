@@ -27,12 +27,18 @@ var _ web.ActivityLister = (*ActivityStore)(nil)
 
 // ActivityStore implements web.ActivityLister using PostgreSQL
 type ActivityStore struct {
-	pool *Pool
+	db DBTX
 }
 
 // NewActivityStore creates a new database-backed activity store
 func NewActivityStore(pool *Pool) *ActivityStore {
-	return &ActivityStore{pool: pool}
+	return &ActivityStore{db: pool}
+}
+
+// NewActivityStoreWithDB creates an activity store with a custom DBTX implementation.
+// This is primarily used for testing with pgxmock.
+func NewActivityStoreWithDB(db DBTX) *ActivityStore {
+	return &ActivityStore{db: db}
 }
 
 // Activity represents an activity record from the database
@@ -54,7 +60,7 @@ func (s *ActivityStore) CreateActivity(ctx context.Context, userID, activityType
 	}
 
 	var activity Activity
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRow(ctx,
 		`INSERT INTO activities (user_id, type, draft_id, post_id, platform, message)
 		 VALUES ($1, $2, $3, $4, $5, $6)
 		 RETURNING id, user_id, type, draft_id, post_id, platform, message, created_at`,
@@ -71,7 +77,7 @@ func (s *ActivityStore) CreateActivity(ctx context.Context, userID, activityType
 // GetActivityByID retrieves an activity by its ID
 func (s *ActivityStore) GetActivityByID(ctx context.Context, activityID string) (*Activity, error) {
 	var activity Activity
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRow(ctx,
 		`SELECT id, user_id, type, draft_id, post_id, platform, message, created_at
 		 FROM activities
 		 WHERE id = $1`,
@@ -101,7 +107,7 @@ func (s *ActivityStore) ListActivitiesByUser(ctx context.Context, userID string,
 		offset = 0
 	}
 
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db.Query(ctx,
 		`SELECT id, type, draft_id, post_id, platform, message, created_at
 		 FROM activities
 		 WHERE user_id = $1
@@ -135,7 +141,7 @@ func (s *ActivityStore) ListActivitiesByUser(ctx context.Context, userID string,
 // CountActivitiesByUser returns the total number of activities for a user
 func (s *ActivityStore) CountActivitiesByUser(ctx context.Context, userID string) (int, error) {
 	var count int
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRow(ctx,
 		`SELECT COUNT(*) FROM activities WHERE user_id = $1`,
 		userID,
 	).Scan(&count)

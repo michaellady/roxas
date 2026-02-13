@@ -45,19 +45,105 @@ jobs:
       - name: Run integration tests
         run: make test-int
 
+      - name: Generate coverage data
+        run: |
+          # Run unit tests only (excluding property tests) and capture coverage
+          go test -short -skip 'Property' -coverprofile=unit-coverage.out ./internal/... ./cmd/... 2>&1 | tee unit-test-output.txt
+          UNIT_TOTAL=$(go tool cover -func=unit-coverage.out | grep total | awk '{print $3}')
+
+          # Run property tests only and capture standalone coverage
+          go test -short -run 'Property' -coverprofile=property-coverage.out ./internal/... ./cmd/... 2>&1 | tee property-test-output.txt
+          PROPERTY_STANDALONE=$(go tool cover -func=property-coverage.out | grep total | awk '{print $3}')
+
+          # Run all tests and capture package-level coverage
+          go test -short -cover ./internal/... ./cmd/... 2>&1 | tee test-output.txt
+          go test -short -coverprofile=coverage.out ./internal/... ./cmd/... > /dev/null 2>&1
+          TOTAL=$(go tool cover -func=coverage.out | grep total | awk '{print $3}')
+
+          # Save coverage values for later steps
+          echo "UNIT_TOTAL=${UNIT_TOTAL}" >> $GITHUB_ENV
+          echo "PROPERTY_STANDALONE=${PROPERTY_STANDALONE}" >> $GITHUB_ENV
+          echo "TOTAL=${TOTAL}" >> $GITHUB_ENV
+
+          # Save total coverage to file for caching (main branch only)
+          TOTAL_NUM=$(echo "$TOTAL" | tr -d '%')
+          echo "$TOTAL_NUM" > main-coverage.txt
+
+      - name: Save main branch coverage
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: main-coverage.txt
+          key: coverage-main-${{ github.sha }}
+
+      - name: Update main branch coverage reference
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: main-coverage.txt
+          key: coverage-main-latest
+
+      - name: Restore main branch coverage
+        if: github.event_name == 'pull_request'
+        id: restore-main-coverage
+        uses: actions/cache/restore@v4
+        with:
+          path: main-coverage.txt
+          key: coverage-main-latest
+
       - name: Generate coverage report
         if: github.event_name == 'pull_request'
         run: |
-          # Run tests and capture package-level coverage
-          go test -short -cover ./internal/... ./cmd/... 2>&1 | tee test-output.txt
+          UNIT_TOTAL="${{ env.UNIT_TOTAL }}"
+          PROPERTY_STANDALONE="${{ env.PROPERTY_STANDALONE }}"
+          TOTAL="${{ env.TOTAL }}"
+
+          # Calculate property test contribution (delta = total - unit)
+          UNIT_NUM=$(echo "$UNIT_TOTAL" | tr -d '%')
+          TOTAL_NUM=$(echo "$TOTAL" | tr -d '%')
+          PROPERTY_CONTRIB=$(printf "%.1f" $(echo "scale=2; $TOTAL_NUM - $UNIT_NUM" | bc))
+
+          # Get main branch coverage for delta calculation
+          MAIN_COVERAGE=""
+          DELTA_LINE=""
+          if [ -f main-coverage.txt ]; then
+            MAIN_COVERAGE=$(cat main-coverage.txt)
+            DELTA=$(printf "%.1f" $(echo "scale=2; $TOTAL_NUM - $MAIN_COVERAGE" | bc))
+            if (( $(echo "$DELTA > 0" | bc -l) )); then
+              DELTA_INDICATOR="✅ +${DELTA}%"
+            elif (( $(echo "$DELTA < 0" | bc -l) )); then
+              DELTA_INDICATOR="⚠️ ${DELTA}%"
+            else
+              DELTA_INDICATOR="➖ No change"
+            fi
+            DELTA_LINE="| **Delta (vs main)** | **${DELTA_INDICATOR}** |"
+          fi
 
           echo "## 📊 Test Coverage Report" >> coverage-report.md
           echo "" >> coverage-report.md
 
-          # Calculate total from coverage.out
-          go test -short -coverprofile=coverage.out ./internal/... ./cmd/... > /dev/null 2>&1
-          TOTAL=$(go tool cover -func=coverage.out | grep total | awk '{print $3}')
-          echo "**Total Coverage: ${TOTAL}**" >> coverage-report.md
+          # Show coverage comparison if main coverage is available
+          if [ -n "$MAIN_COVERAGE" ]; then
+            echo "### Coverage Comparison" >> coverage-report.md
+            echo "" >> coverage-report.md
+            echo "| Branch | Coverage |" >> coverage-report.md
+            echo "|--------|----------|" >> coverage-report.md
+            echo "| Previous (main) | ${MAIN_COVERAGE}% |" >> coverage-report.md
+            echo "| This PR | ${TOTAL} |" >> coverage-report.md
+            echo "${DELTA_LINE}" >> coverage-report.md
+            echo "" >> coverage-report.md
+          fi
+
+          echo "### Coverage Breakdown" >> coverage-report.md
+          echo "" >> coverage-report.md
+          echo "| Test Type | Coverage |" >> coverage-report.md
+          echo "|-----------|----------|" >> coverage-report.md
+          echo "| Unit Tests | ${UNIT_TOTAL} |" >> coverage-report.md
+          echo "| Property Tests (standalone) | ${PROPERTY_STANDALONE} |" >> coverage-report.md
+          echo "| Property Tests (contribution) | +${PROPERTY_CONTRIB}% |" >> coverage-report.md
+          echo "| **Total (Unit + Property)** | **${TOTAL}** |" >> coverage-report.md
+          echo "" >> coverage-report.md
+          echo "### Package Breakdown" >> coverage-report.md
           echo "" >> coverage-report.md
           echo "| Package | Coverage |" >> coverage-report.md
           echo "|---------|----------|" >> coverage-report.md

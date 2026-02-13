@@ -38,12 +38,18 @@ func (d *WebhookDelivery) PayloadPreview(maxLen int) string {
 
 // WebhookDeliveryStore handles webhook delivery persistence
 type WebhookDeliveryStore struct {
-	pool *Pool
+	db DBTX
 }
 
 // NewWebhookDeliveryStore creates a new webhook delivery store
 func NewWebhookDeliveryStore(pool *Pool) *WebhookDeliveryStore {
-	return &WebhookDeliveryStore{pool: pool}
+	return &WebhookDeliveryStore{db: pool}
+}
+
+// NewWebhookDeliveryStoreWithDB creates a webhook delivery store with a custom DBTX implementation.
+// This is primarily used for testing with pgxmock.
+func NewWebhookDeliveryStoreWithDB(db DBTX) *WebhookDeliveryStore {
+	return &WebhookDeliveryStore{db: db}
 }
 
 // CreateDeliveryParams holds parameters for creating a webhook delivery
@@ -83,7 +89,7 @@ func (s *WebhookDeliveryStore) CreateDelivery(ctx context.Context, params Create
 		deliveryID = "generated-" + now.Format("20060102150405.000000")
 	}
 
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRow(ctx,
 		`INSERT INTO webhook_deliveries (repository_id, delivery_id, event_type, ref, before_sha, after_sha, payload, status_code, error_message, processed_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		 RETURNING id, repository_id, delivery_id, event_type, ref, before_sha, after_sha, payload, status_code, error_message, processed_at, created_at`,
@@ -102,7 +108,7 @@ func (s *WebhookDeliveryStore) CreateDelivery(ctx context.Context, params Create
 // ExistsByDeliveryID checks if a delivery with the given delivery_id already exists for a repository
 func (s *WebhookDeliveryStore) ExistsByDeliveryID(ctx context.Context, repoID, deliveryID string) (bool, error) {
 	var exists bool
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRow(ctx,
 		`SELECT EXISTS(SELECT 1 FROM webhook_deliveries WHERE repository_id = $1 AND delivery_id = $2)`,
 		repoID, deliveryID,
 	).Scan(&exists)
@@ -112,7 +118,7 @@ func (s *WebhookDeliveryStore) ExistsByDeliveryID(ctx context.Context, repoID, d
 // DeliveryExists checks if a delivery with the given delivery_id already exists (global lookup)
 func (s *WebhookDeliveryStore) DeliveryExists(ctx context.Context, deliveryID string) (bool, error) {
 	var exists bool
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRow(ctx,
 		`SELECT EXISTS(SELECT 1 FROM webhook_deliveries WHERE delivery_id = $1)`,
 		deliveryID,
 	).Scan(&exists)
@@ -125,7 +131,7 @@ func (s *WebhookDeliveryStore) ListDeliveriesByRepository(ctx context.Context, r
 		limit = 20 // Default limit
 	}
 
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.db.Query(ctx,
 		`SELECT id, repository_id, delivery_id, event_type, ref, before_sha, after_sha, payload, status_code, error_message, processed_at, created_at
 		 FROM webhook_deliveries
 		 WHERE repository_id = $1
@@ -160,7 +166,7 @@ func (s *WebhookDeliveryStore) ListDeliveriesByRepository(ctx context.Context, r
 func (s *WebhookDeliveryStore) GetDeliveryByID(ctx context.Context, id string) (*WebhookDelivery, error) {
 	var d WebhookDelivery
 
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRow(ctx,
 		`SELECT id, repository_id, delivery_id, event_type, ref, before_sha, after_sha, payload, status_code, error_message, processed_at, created_at
 		 FROM webhook_deliveries
 		 WHERE id = $1`,
@@ -184,7 +190,7 @@ func (s *WebhookDeliveryStore) GetDeliveryByID(ctx context.Context, id string) (
 // This implements the IdempotencyStore interface for webhook deduplication.
 func (s *WebhookDeliveryStore) CheckDeliveryProcessed(ctx context.Context, deliveryID string) (bool, error) {
 	var exists bool
-	err := s.pool.QueryRow(ctx,
+	err := s.db.QueryRow(ctx,
 		`SELECT EXISTS(SELECT 1 FROM webhook_deliveries WHERE delivery_id = $1)`,
 		deliveryID,
 	).Scan(&exists)
@@ -195,7 +201,7 @@ func (s *WebhookDeliveryStore) CheckDeliveryProcessed(ctx context.Context, deliv
 // This implements the IdempotencyStore interface for webhook deduplication.
 // It creates a minimal delivery record to mark the delivery_id as processed.
 func (s *WebhookDeliveryStore) MarkDeliveryProcessed(ctx context.Context, deliveryID, repoID string) error {
-	_, err := s.pool.Exec(ctx,
+	_, err := s.db.Exec(ctx,
 		`INSERT INTO webhook_deliveries (repository_id, delivery_id, event_type, payload, status_code, processed_at)
 		 VALUES ($1, $2, 'push', '{}', 200, NOW())
 		 ON CONFLICT (delivery_id) DO NOTHING`,

@@ -397,6 +397,176 @@ func TestBlueskyClient_ATURIToWebURL(t *testing.T) {
 }
 
 // =============================================================================
+// Post with ThreadID Tests
+// =============================================================================
+
+func TestBlueskyClient_Post_WithReply(t *testing.T) {
+	var receivedReply map[string]interface{}
+	server := newTestBlueskyServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch r.URL.Path {
+		case "/xrpc/com.atproto.server.createSession":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"accessJwt":  "access-jwt-token",
+				"refreshJwt": "refresh-jwt-token",
+				"did":        "did:plc:abc123",
+				"handle":     "test.bsky.social",
+			})
+
+		case "/xrpc/com.atproto.repo.createRecord":
+			var req struct {
+				Repo       string                 `json:"repo"`
+				Collection string                 `json:"collection"`
+				Record     map[string]interface{} `json:"record"`
+			}
+			json.NewDecoder(r.Body).Decode(&req)
+			if reply, ok := req.Record["reply"]; ok {
+				receivedReply = reply.(map[string]interface{})
+			}
+
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"uri": "at://did:plc:abc123/app.bsky.feed.post/reply123",
+				"cid": "bafyreireply",
+			})
+		}
+	})
+	defer server.Close()
+
+	client := NewBlueskyClient("test.bsky.social", "app-password-123", server.URL)
+
+	threadID := "at://did:plc:parent/app.bsky.feed.post/parent123"
+	result, err := client.Post(context.Background(), services.PostContent{
+		Text:     "Reply post",
+		ThreadID: &threadID,
+	})
+
+	if err != nil {
+		t.Fatalf("Post() error = %v", err)
+	}
+	if result == nil {
+		t.Fatal("Post() returned nil result")
+	}
+	if receivedReply == nil {
+		t.Error("Expected reply object in record")
+	}
+}
+
+func TestBlueskyClient_Post_ServerError(t *testing.T) {
+	server := newTestBlueskyServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch r.URL.Path {
+		case "/xrpc/com.atproto.server.createSession":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"accessJwt":  "access-jwt-token",
+				"refreshJwt": "refresh-jwt-token",
+				"did":        "did:plc:abc123",
+				"handle":     "test.bsky.social",
+			})
+
+		case "/xrpc/com.atproto.repo.createRecord":
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":   "InternalServerError",
+				"message": "Something went wrong",
+			})
+		}
+	})
+	defer server.Close()
+
+	client := NewBlueskyClient("test.bsky.social", "app-password-123", server.URL)
+
+	_, err := client.Post(context.Background(), services.PostContent{
+		Text: "Hello!",
+	})
+
+	if err == nil {
+		t.Fatal("expected error for server error")
+	}
+}
+
+func TestBlueskyClient_Post_InvalidResponseJSON(t *testing.T) {
+	server := newTestBlueskyServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch r.URL.Path {
+		case "/xrpc/com.atproto.server.createSession":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"accessJwt":  "access-jwt-token",
+				"refreshJwt": "refresh-jwt-token",
+				"did":        "did:plc:abc123",
+				"handle":     "test.bsky.social",
+			})
+
+		case "/xrpc/com.atproto.repo.createRecord":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("not valid json"))
+		}
+	})
+	defer server.Close()
+
+	client := NewBlueskyClient("test.bsky.social", "app-password-123", server.URL)
+
+	_, err := client.Post(context.Background(), services.PostContent{
+		Text: "Hello!",
+	})
+
+	if err == nil {
+		t.Fatal("expected error for invalid JSON response")
+	}
+}
+
+func TestBlueskyClient_CreateSession_BadRequestError(t *testing.T) {
+	server := newTestBlueskyServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error":   "InvalidRequest",
+			"message": "Bad request",
+		})
+	})
+	defer server.Close()
+
+	client := NewBlueskyClient("test.bsky.social", "password", server.URL)
+	err := client.Authenticate(context.Background())
+	if err == nil {
+		t.Fatal("expected error for bad request")
+	}
+	if !client.IsAuthError(err) {
+		t.Errorf("expected auth error, got %v", err)
+	}
+}
+
+func TestBlueskyClient_CreateSession_InvalidResponseJSON(t *testing.T) {
+	server := newTestBlueskyServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("not valid json"))
+	})
+	defer server.Close()
+
+	client := NewBlueskyClient("test.bsky.social", "password", server.URL)
+	err := client.Authenticate(context.Background())
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+func TestBlueskyClient_ATURIToWebURL_InvalidShortURI(t *testing.T) {
+	client := NewBlueskyClient("test.bsky.social", "password", "")
+
+	// Test with a URI that has fewer than 5 parts
+	result := client.ATURIToWebURL("at://short")
+	if result != "at://short" {
+		t.Errorf("expected fallback to original URI, got %q", result)
+	}
+
+	result = client.ATURIToWebURL("")
+	if result != "" {
+		t.Errorf("expected empty string for empty input, got %q", result)
+	}
+}
+
+// =============================================================================
 // Context Cancellation Tests
 // =============================================================================
 

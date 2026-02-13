@@ -1,7 +1,8 @@
 # Custom Domain Configuration for Stable Webhook URLs
 #
 # Production: roxas.ai/webhook
-# Development: pr-{NUMBER}.roxasapp.com/webhook
+# Dev: dev.roxasapp.com/webhook
+# PR environments: pr-{NUMBER}.roxasapp.com/webhook
 #
 # ACM certificate is managed by terraform/shared/ and referenced via SSM
 

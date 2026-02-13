@@ -108,7 +108,8 @@ type PageData struct {
 	Flash      *FlashMessage
 	Error      string
 	Data       interface{}
-	DraftCount int // Number of pending drafts (for navigation badge)
+	DraftCount int    // Number of pending drafts (for navigation badge)
+	CSRFToken  string // CSRF token for form submissions
 }
 
 // UserData represents authenticated user info for templates
@@ -476,6 +477,9 @@ type Router struct {
 	oauthCallbackURL     string // Base URL for OAuth callbacks (e.g., "https://app.example.com")
 	aiRegenerator        AIRegenerator
 	socialPoster         SocialPoster
+	authRateLimiter      *auth.RateLimiter // Rate limiter for auth endpoints (login, signup)
+	githubAppSetup       http.Handler      // GitHub App setup callback handler
+	githubAppURL         string            // URL for installing the GitHub App (e.g., "https://github.com/apps/roxas/installations/new")
 }
 
 // NewRouter creates a new web router with all routes configured (no user store)
@@ -578,6 +582,32 @@ func (r *Router) WithConnectionLister(lister ConnectionLister) *Router {
 // WithConnectionService configures the router with a connection service for disconnect operations
 func (r *Router) WithConnectionService(service ConnectionService) *Router {
 	r.connectionService = service
+	return r
+}
+
+// WithAuthRateLimiter configures the router with a rate limiter for auth endpoints.
+// This helps prevent brute force attacks on login and signup endpoints.
+func (r *Router) WithAuthRateLimiter(limiter *auth.RateLimiter) *Router {
+	r.authRateLimiter = limiter
+	return r
+}
+
+// WithWebhookTester configures the router with a webhook tester for testing webhook connectivity.
+func (r *Router) WithWebhookTester(tester WebhookTester) *Router {
+	r.webhookTester = tester
+	return r
+}
+
+// WithWebhookDeliveryStore configures the router with a webhook delivery store for recording deliveries.
+func (r *Router) WithWebhookDeliveryStore(store WebhookDeliveryStore) *Router {
+	r.webhookDeliveryStore = store
+	return r
+}
+
+// WithGitHubAppSetup configures the router with a GitHub App setup handler and install URL.
+func (r *Router) WithGitHubAppSetup(setupHandler http.Handler, appURL string) *Router {
+	r.githubAppSetup = setupHandler
+	r.githubAppURL = appURL
 	return r
 }
 
@@ -766,6 +796,9 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("GET /oauth/threads", r.handleThreadsOAuth)
 	r.mux.HandleFunc("GET /oauth/threads/callback", r.handleThreadsOAuthCallback)
 	r.mux.HandleFunc("POST /oauth/threads/refresh", r.handleThreadsTokenRefresh)
+
+	// GitHub App setup callback
+	r.mux.HandleFunc("GET /github-app/setup", r.handleGitHubAppSetup)
 }
 
 func (r *Router) handleHome(w http.ResponseWriter, req *http.Request) {
@@ -786,15 +819,28 @@ func (r *Router) handleLogin(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	r.renderPage(w, "login.html", PageData{
+	r.renderPageWithCSRF(w, req, "login.html", PageData{
 		Title: "Login",
 	})
 }
 
 func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
+	// Check rate limit to prevent brute force attacks
+	if !auth.CheckRateLimit(r.authRateLimiter, w, req) {
+		return
+	}
+
+	// Validate CSRF token
+	cookieToken := auth.GetCSRFTokenFromCookie(req)
+	formToken := auth.GetCSRFTokenFromRequest(req)
+	if !auth.ValidateCSRFToken(cookieToken, formToken) {
+		http.Error(w, "Forbidden - CSRF token validation failed", http.StatusForbidden)
+		return
+	}
+
 	// Parse form
 	if err := req.ParseForm(); err != nil {
-		r.renderPage(w, "login.html", PageData{
+		r.renderPageWithCSRF(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Invalid form data",
 		})
@@ -806,7 +852,7 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 
 	// Validate input
 	if email == "" || password == "" {
-		r.renderPage(w, "login.html", PageData{
+		r.renderPageWithCSRF(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Email and password are required",
 		})
@@ -815,7 +861,7 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 
 	// Check if we have a user store
 	if r.userStore == nil {
-		r.renderPage(w, "login.html", PageData{
+		r.renderPageWithCSRF(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Authentication not configured",
 		})
@@ -825,7 +871,7 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 	// Look up user
 	user, err := r.userStore.GetUserByEmail(req.Context(), email)
 	if err != nil {
-		r.renderPage(w, "login.html", PageData{
+		r.renderPageWithCSRF(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Invalid email or password",
 		})
@@ -834,7 +880,7 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 
 	if user == nil {
 		// User not found - use same error message for security
-		r.renderPage(w, "login.html", PageData{
+		r.renderPageWithCSRF(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Invalid email or password",
 		})
@@ -843,7 +889,7 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 
 	// Verify password
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
-		r.renderPage(w, "login.html", PageData{
+		r.renderPageWithCSRF(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Invalid email or password",
 		})
@@ -853,7 +899,7 @@ func (r *Router) handleLoginPost(w http.ResponseWriter, req *http.Request) {
 	// Generate JWT token
 	token, err := auth.GenerateToken(user.ID, user.Email)
 	if err != nil {
-		r.renderPage(w, "login.html", PageData{
+		r.renderPageWithCSRF(w, req, "login.html", PageData{
 			Title: "Login",
 			Error: "Failed to create session",
 		})
@@ -873,15 +919,28 @@ func (r *Router) handleSignup(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	r.renderPage(w, "signup.html", PageData{
+	r.renderPageWithCSRF(w, req, "signup.html", PageData{
 		Title: "Sign Up",
 	})
 }
 
 func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
+	// Check rate limit to prevent abuse
+	if !auth.CheckRateLimit(r.authRateLimiter, w, req) {
+		return
+	}
+
+	// Validate CSRF token
+	cookieToken := auth.GetCSRFTokenFromCookie(req)
+	formToken := auth.GetCSRFTokenFromRequest(req)
+	if !auth.ValidateCSRFToken(cookieToken, formToken) {
+		http.Error(w, "Forbidden - CSRF token validation failed", http.StatusForbidden)
+		return
+	}
+
 	// Parse form
 	if err := req.ParseForm(); err != nil {
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPageWithCSRF(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Invalid form data",
 		})
@@ -894,7 +953,7 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 
 	// Validate input
 	if email == "" || password == "" {
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPageWithCSRF(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Email and password are required",
 		})
@@ -903,7 +962,7 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 
 	// Validate password length (min 8 characters)
 	if len(password) < 8 {
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPageWithCSRF(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Password must be at least 8 characters",
 		})
@@ -912,7 +971,7 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 
 	// Validate passwords match
 	if password != confirmPassword {
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPageWithCSRF(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Passwords do not match",
 		})
@@ -921,7 +980,7 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 
 	// Check if we have a user store
 	if r.userStore == nil {
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPageWithCSRF(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Registration not configured",
 		})
@@ -931,7 +990,7 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 	// Hash password
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPageWithCSRF(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Failed to process registration",
 		})
@@ -942,13 +1001,13 @@ func (r *Router) handleSignupPost(w http.ResponseWriter, req *http.Request) {
 	_, err = r.userStore.CreateUser(req.Context(), email, string(hashedPassword))
 	if err != nil {
 		if err == handlers.ErrDuplicateEmail {
-			r.renderPage(w, "signup.html", PageData{
+			r.renderPageWithCSRF(w, req, "signup.html", PageData{
 				Title: "Sign Up",
 				Error: "An account with this email already exists",
 			})
 			return
 		}
-		r.renderPage(w, "signup.html", PageData{
+		r.renderPageWithCSRF(w, req, "signup.html", PageData{
 			Title: "Sign Up",
 			Error: "Failed to create account",
 		})
@@ -966,6 +1025,7 @@ type DashboardData struct {
 	Posts        []*DashboardPost
 	Activities   []*DashboardActivity
 	IsEmpty      bool
+	GitHubAppURL string // URL for installing the GitHub App (shown in empty state CTA)
 	// Pagination for activities
 	ActivityPage       int
 	ActivityTotalPages int
@@ -1003,6 +1063,7 @@ func (r *Router) handleDashboard(w http.ResponseWriter, req *http.Request) {
 	dashData := &DashboardData{
 		ActivityPage:     activityPage,
 		ActivityPageSize: activityPageSize,
+		GitHubAppURL:     r.githubAppURL,
 	}
 
 	// Get repositories if store is available
@@ -1293,6 +1354,15 @@ func (r *Router) handleRepositories(w http.ResponseWriter, req *http.Request) {
 		listData.Repositories = repos
 	}
 
+	// Check for flash message from GitHub App installation
+	var flash *FlashMessage
+	if req.URL.Query().Get("installed") == "true" {
+		flash = &FlashMessage{
+			Type:    "success",
+			Message: "GitHub App installed successfully! Your repositories have been synced.",
+		}
+	}
+
 	r.renderPage(w, "repositories_list.html", PageData{
 		Title: "Repositories",
 		User: &UserData{
@@ -1300,6 +1370,7 @@ func (r *Router) handleRepositories(w http.ResponseWriter, req *http.Request) {
 			Email: claims.Email,
 		},
 		Data:       listData,
+		Flash:      flash,
 		DraftCount: r.getDraftCount(req.Context(), claims.UserID),
 	})
 }
@@ -1309,6 +1380,7 @@ type RepoSelectionData struct {
 	GitHubRepos      []GitHubRepoItem
 	HasGitHubRepos   bool
 	ConnectedRepoIDs map[string]bool // Map of GitHub URLs that are already connected
+	GitHubAppURL     string          // URL for installing the GitHub App
 }
 
 // GitHubRepoItem represents a repo item for display in the selection list
@@ -1393,13 +1465,19 @@ func (r *Router) handleRepositoriesNew(w http.ResponseWriter, req *http.Request)
 	}
 
 	// Fall back to manual URL form
-	r.renderPage(w, "repositories_new.html", PageData{
+	pageData := PageData{
 		Title: "Add Repository",
 		User: &UserData{
 			ID:    claims.UserID,
 			Email: claims.Email,
 		},
-	})
+	}
+	if r.githubAppURL != "" {
+		pageData.Data = &RepoSelectionData{
+			GitHubAppURL: r.githubAppURL,
+		}
+	}
+	r.renderPageWithCSRF(w, req, "repositories_new.html", pageData)
 }
 
 // handleRepoSelectionPage renders the GitHub repo selection page
@@ -1427,11 +1505,14 @@ func (r *Router) handleRepoSelectionPage(w http.ResponseWriter, req *http.Reques
 
 	githubRepos, err := r.githubRepoLister.ListUserRepos(req.Context(), accessToken)
 	if err != nil {
-		r.renderPage(w, "repositories_new.html", PageData{
+		r.renderPageWithCSRF(w, req, "repositories_new.html", PageData{
 			Title: "Add Repository",
 			User: &UserData{
 				ID:    claims.UserID,
 				Email: claims.Email,
+			},
+			Data: &RepoSelectionData{
+				GitHubAppURL: r.githubAppURL,
 			},
 			Error: "Failed to fetch GitHub repositories",
 		})
@@ -1452,7 +1533,7 @@ func (r *Router) handleRepoSelectionPage(w http.ResponseWriter, req *http.Reques
 		})
 	}
 
-	r.renderPage(w, "repositories_new.html", PageData{
+	r.renderPageWithCSRF(w, req, "repositories_new.html", PageData{
 		Title: "Add Repository",
 		User: &UserData{
 			ID:    claims.UserID,
@@ -1462,14 +1543,23 @@ func (r *Router) handleRepoSelectionPage(w http.ResponseWriter, req *http.Reques
 			GitHubRepos:      repoItems,
 			HasGitHubRepos:   len(repoItems) > 0,
 			ConnectedRepoIDs: connectedRepos,
+			GitHubAppURL:     r.githubAppURL,
 		},
 	})
 }
 
 func (r *Router) handleRepositoriesNewPost(w http.ResponseWriter, req *http.Request, claims *auth.Claims) {
+	// Validate CSRF token
+	cookieToken := auth.GetCSRFTokenFromCookie(req)
+	formToken := auth.GetCSRFTokenFromRequest(req)
+	if !auth.ValidateCSRFToken(cookieToken, formToken) {
+		http.Error(w, "Forbidden - CSRF token validation failed", http.StatusForbidden)
+		return
+	}
+
 	// Parse form
 	if err := req.ParseForm(); err != nil {
-		r.renderPage(w, "repositories_new.html", PageData{
+		r.renderPageWithCSRF(w, req, "repositories_new.html", PageData{
 			Title: "Add Repository",
 			User: &UserData{
 				ID:    claims.UserID,
@@ -2542,6 +2632,20 @@ func (r *Router) renderPage(w http.ResponseWriter, page string, data PageData) {
 	}
 }
 
+// renderPageWithCSRF renders a page with CSRF token support
+// This ensures a CSRF token exists (creates one if needed) and passes it to the template
+func (r *Router) renderPageWithCSRF(w http.ResponseWriter, req *http.Request, page string, data PageData) {
+	// Ensure CSRF token exists and get its value
+	token, err := auth.EnsureCSRFToken(w, req)
+	if err != nil {
+		http.Error(w, "Failed to generate CSRF token", http.StatusInternalServerError)
+		return
+	}
+	data.CSRFToken = token
+
+	r.renderPage(w, page, data)
+}
+
 // getDraftCount returns the draft count for a user, or 0 if not available
 func (r *Router) getDraftCount(ctx context.Context, userID string) int {
 	if r.draftCounter == nil {
@@ -3225,5 +3329,13 @@ func (r *Router) handleDraftPost(w http.ResponseWriter, req *http.Request) {
 
 	// Redirect to dashboard with success message
 	http.Redirect(w, req, "/dashboard?posted=true", http.StatusSeeOther)
+}
+
+func (r *Router) handleGitHubAppSetup(w http.ResponseWriter, req *http.Request) {
+	if r.githubAppSetup == nil {
+		http.NotFound(w, req)
+		return
+	}
+	r.githubAppSetup.ServeHTTP(w, req)
 }
 

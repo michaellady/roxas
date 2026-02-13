@@ -593,3 +593,309 @@ main {
     cursor: not-allowed;
     pointer-events: none;
 }
+
+/* Loading States */
+.spinner {
+    display: inline-block;
+    width: 1rem;
+    height: 1rem;
+    border: 2px solid var(--border);
+    border-top-color: var(--primary);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+.spinner-sm {
+    width: 0.75rem;
+    height: 0.75rem;
+    border-width: 1.5px;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.btn.loading {
+    position: relative;
+    color: transparent;
+    pointer-events: none;
+}
+
+.btn.loading::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 1rem;
+    height: 1rem;
+    margin: -0.5rem 0 0 -0.5rem;
+    border: 2px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+.btn-primary.loading::after {
+    border-color: rgba(255, 255, 255, 0.3);
+    border-top-color: white;
+}
+
+/* Status indicators for async results */
+.status-success {
+    color: var(--success);
+    font-weight: 500;
+}
+
+.status-error {
+    color: var(--error);
+    font-weight: 500;
+}
+
+.status-pending {
+    color: var(--secondary);
+    font-style: italic;
+}
+
+/* =============================================================================
+   Toast Notifications
+   ============================================================================= */
+
+.toast-container {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    max-width: 400px;
+    pointer-events: none;
+}
+
+.toast {
+    display: flex;
+    flex-direction: column;
+    background: white;
+    border-radius: 0.5rem;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    overflow: hidden;
+    pointer-events: auto;
+    transform: translateX(120%);
+    opacity: 0;
+    transition: transform 0.3s ease, opacity 0.3s ease;
+}
+
+.toast-visible {
+    transform: translateX(0);
+    opacity: 1;
+}
+
+.toast-dismissing {
+    transform: translateX(120%);
+    opacity: 0;
+}
+
+.toast-content {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 1rem;
+}
+
+.toast-icon {
+    flex-shrink: 0;
+    width: 1.25rem;
+    height: 1.25rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1rem;
+    line-height: 1;
+}
+
+.toast-message {
+    flex: 1;
+    font-size: 0.875rem;
+    line-height: 1.4;
+    color: var(--text);
+    word-break: break-word;
+}
+
+.toast-close {
+    flex-shrink: 0;
+    background: none;
+    border: none;
+    color: var(--secondary);
+    font-size: 1.25rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+    margin: -0.25rem;
+    width: 1.5rem;
+    height: 1.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0.25rem;
+    transition: background 0.2s, color 0.2s;
+}
+
+.toast-close:hover {
+    background: var(--bg);
+    color: var(--text);
+}
+
+/* Toast progress bar */
+.toast-progress {
+    height: 3px;
+    background: var(--border);
+}
+
+.toast-progress-bar {
+    height: 100%;
+    width: 100%;
+    transform-origin: left;
+    animation: toast-progress linear forwards;
+}
+
+@keyframes toast-progress {
+    from {
+        transform: scaleX(1);
+    }
+    to {
+        transform: scaleX(0);
+    }
+}
+
+/* Toast type variants */
+.toast-success {
+    border-left: 4px solid var(--success);
+}
+
+.toast-success .toast-icon {
+    color: var(--success);
+}
+
+.toast-success .toast-progress-bar {
+    background: var(--success);
+}
+
+.toast-error {
+    border-left: 4px solid var(--error);
+}
+
+.toast-error .toast-icon {
+    color: var(--error);
+}
+
+.toast-error .toast-progress-bar {
+    background: var(--error);
+}
+
+.toast-warning {
+    border-left: 4px solid var(--warning);
+}
+
+.toast-warning .toast-icon {
+    color: var(--warning);
+}
+
+.toast-warning .toast-progress-bar {
+    background: var(--warning);
+}
+
+.toast-info {
+    border-left: 4px solid var(--primary);
+}
+
+.toast-info .toast-icon {
+    color: var(--primary);
+}
+
+.toast-info .toast-progress-bar {
+    background: var(--primary);
+}
+
+/* Responsive: Stack toasts at bottom on mobile */
+@media (max-width: 480px) {
+    .toast-container {
+        top: auto;
+        bottom: 1rem;
+        left: 1rem;
+        right: 1rem;
+        max-width: none;
+    }
+
+    .toast {
+        transform: translateY(120%);
+    }
+
+    .toast-visible {
+        transform: translateY(0);
+    }
+
+    .toast-dismissing {
+        transform: translateY(120%);
+    }
+}
+
+/* =============================================================================
+   Loading Overlays and States
+   ============================================================================= */
+
+/* Loading overlay for containers */
+.loading-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(255, 255, 255, 0.8);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+    border-radius: inherit;
+}
+
+.loading-overlay-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.loading-overlay .spinner {
+    width: 2rem;
+    height: 2rem;
+}
+
+.loading-message {
+    color: var(--secondary);
+    font-size: 0.875rem;
+}
+
+/* Disabled button states during loading */
+.btn:disabled,
+.btn.loading {
+    opacity: 0.7;
+    cursor: not-allowed;
+}
+
+/* Ensure loading spinner is visible on different button types */
+.btn-secondary.loading::after {
+    border-color: rgba(0, 0, 0, 0.2);
+    border-top-color: var(--text);
+}
+
+.btn-danger.loading::after {
+    border-color: rgba(255, 255, 255, 0.3);
+    border-top-color: white;
+}
+
+.btn-warning.loading::after {
+    border-color: rgba(255, 255, 255, 0.3);
+    border-top-color: white;
+}

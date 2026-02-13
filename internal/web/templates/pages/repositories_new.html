@@ -5,10 +5,20 @@
     <div class="alert alert-error">{{.Error}}</div>
     {{end}}
 
+    {{if and .Data .Data.GitHubAppURL}}
+    <div class="github-app-install">
+        <a href="{{.Data.GitHubAppURL}}" class="btn btn-primary btn-block">Install Roxas GitHub App</a>
+        <p class="form-help">Automatically sync repositories by installing the Roxas GitHub App. This is the recommended way to connect your repos.</p>
+    </div>
+    <hr style="margin: 1.5rem 0;">
+    <p class="form-help" style="text-align: center; margin-bottom: 1rem;">Or connect repositories manually below.</p>
+    {{end}}
+
     {{if .Data}}
     {{/* GitHub repo selection mode */}}
     {{if .Data.HasGitHubRepos}}
     <form action="/repositories/new" method="POST" class="auth-form">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         <p class="form-help">Select the repositories you want to connect:</p>
         <div class="repo-list">
             {{range .Data.GitHubRepos}}
@@ -38,6 +48,7 @@
     {{else}}
     {{/* Manual URL form - fallback mode */}}
     <form action="/repositories/new" method="POST" class="auth-form">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         <div class="form-group">
             <label for="github_url">GitHub Repository URL</label>
             <input type="url" id="github_url" name="github_url" required

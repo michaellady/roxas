@@ -16,6 +16,7 @@
                 <a href="/drafts" class="nav-drafts">Drafts{{if .DraftCount}} <span class="badge">{{.DraftCount}}</span>{{end}}</a>
                 <a href="/connections">Connections</a>
                 <form action="/logout" method="POST" style="display:inline">
+                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                     <button type="submit" class="btn-link">Logout</button>
                 </form>
                 {{else}}
@@ -27,7 +28,7 @@
     </nav>
     <main class="container">
         {{if .Flash}}
-        <div class="alert alert-{{.Flash.Type}}">{{.Flash.Message}}</div>
+        <div class="alert alert-{{.Flash.Type}}" data-flash>{{.Flash.Message}}</div>
         {{end}}
         {{template "content" .}}
     </main>
@@ -36,5 +37,8 @@
             <p>&copy; 2024 Roxas - Automated Social Media Posting for Developers</p>
         </div>
     </footer>
+    <div id="toast-container" class="toast-container"></div>
+    <script src="/static/js/toast.js"></script>
+    <script src="/static/js/loading.js"></script>
 </body>
 </html>

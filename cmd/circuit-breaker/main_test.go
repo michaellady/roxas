@@ -301,6 +301,146 @@ func TestHandler_HandlesAPIErrors(t *testing.T) {
 	}
 }
 
+func TestHandler_DryRunMode(t *testing.T) {
+	// Save original state and restore after test
+	origDryRun := dryRun
+	dryRun = true
+	defer func() { dryRun = origDryRun }()
+
+	mockLambda := &MockLambdaClient{
+		Functions: []lambdatypes.FunctionConfiguration{
+			{FunctionName: aws.String("roxas-fn1")},
+		},
+	}
+	mockRDS := &MockRDSClient{
+		Instances: []rdstypes.DBInstance{
+			{DBInstanceIdentifier: aws.String("roxas-db-1"), DBInstanceStatus: aws.String("available")},
+		},
+	}
+	mockEC2 := &MockEC2Client{
+		Instances: []ec2types.Instance{
+			{
+				InstanceId: aws.String("i-nat-dry"),
+				Tags:       []ec2types.Tag{{Key: aws.String("Name"), Value: aws.String("roxas-dev-nat")}},
+			},
+		},
+	}
+
+	lambdaClient = mockLambda
+	rdsClient = mockRDS
+	ec2Client = mockEC2
+
+	event := events.SNSEvent{
+		Records: []events.SNSEventRecord{
+			{SNS: events.SNSEntity{Message: `{"budget": "200%"}`}},
+		},
+	}
+
+	result, err := handler(context.Background(), event)
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+
+	// In dry-run mode, functions should appear as disabled but PutFunctionConcurrency should not have been called
+	if len(result.FunctionsDisabled) != 1 {
+		t.Errorf("expected 1 function disabled (dry run), got %d", len(result.FunctionsDisabled))
+	}
+	if len(mockLambda.PutConcurrencyCalls) != 0 {
+		t.Errorf("expected 0 PutFunctionConcurrency calls in dry run, got %d", len(mockLambda.PutConcurrencyCalls))
+	}
+
+	// RDS should appear stopped but StopDBInstance not called
+	if len(result.RDSStopped) != 1 {
+		t.Errorf("expected 1 RDS stopped (dry run), got %d", len(result.RDSStopped))
+	}
+	if len(mockRDS.StopCalls) != 0 {
+		t.Errorf("expected 0 StopDBInstance calls in dry run, got %d", len(mockRDS.StopCalls))
+	}
+
+	// NAT should appear stopped but StopInstances not called
+	if len(result.NATStopped) != 1 {
+		t.Errorf("expected 1 NAT stopped (dry run), got %d", len(result.NATStopped))
+	}
+	if len(mockEC2.StopCalls) != 0 {
+		t.Errorf("expected 0 StopInstances calls in dry run, got %d", len(mockEC2.StopCalls))
+	}
+}
+
+func TestHandler_RDSNonStoppableState(t *testing.T) {
+	mockLambda := &MockLambdaClient{}
+	mockRDS := &MockRDSClient{
+		Instances: []rdstypes.DBInstance{
+			{DBInstanceIdentifier: aws.String("roxas-db-1"), DBInstanceStatus: aws.String("creating")},
+			{DBInstanceIdentifier: aws.String("roxas-db-2"), DBInstanceStatus: aws.String("modifying")},
+		},
+	}
+	mockEC2 := &MockEC2Client{}
+
+	lambdaClient = mockLambda
+	rdsClient = mockRDS
+	ec2Client = mockEC2
+
+	result, err := handler(context.Background(), events.SNSEvent{})
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+
+	// Should not stop them, but should add to failed
+	if len(result.RDSStopped) != 0 {
+		t.Errorf("expected 0 RDS stopped, got %d", len(result.RDSStopped))
+	}
+	if len(result.RDSFailed) != 2 {
+		t.Errorf("expected 2 RDS failed, got %d", len(result.RDSFailed))
+	}
+}
+
+func TestHandler_NATStopError(t *testing.T) {
+	mockLambda := &MockLambdaClient{}
+	mockRDS := &MockRDSClient{}
+	mockEC2 := &MockEC2Client{
+		Instances: []ec2types.Instance{
+			{
+				InstanceId: aws.String("i-nat-err"),
+				Tags:       []ec2types.Tag{{Key: aws.String("Name"), Value: aws.String("roxas-dev-nat")}},
+			},
+		},
+		StopErr: map[string]error{
+			"i-nat-err": errors.New("insufficient capacity"),
+		},
+	}
+
+	lambdaClient = mockLambda
+	rdsClient = mockRDS
+	ec2Client = mockEC2
+
+	result, err := handler(context.Background(), events.SNSEvent{})
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+
+	if len(result.NATStopped) != 0 {
+		t.Errorf("expected 0 NAT stopped, got %d", len(result.NATStopped))
+	}
+	if len(result.NATFailed) != 1 {
+		t.Errorf("expected 1 NAT failed, got %d", len(result.NATFailed))
+	}
+}
+
+func TestGetEnv_WithEnvSet(t *testing.T) {
+	t.Setenv("TEST_CB_VAR_123", "myvalue")
+	result := getEnv("TEST_CB_VAR_123", "default")
+	if result != "myvalue" {
+		t.Errorf("expected 'myvalue', got '%s'", result)
+	}
+}
+
+func TestGetEnv_WithDefault(t *testing.T) {
+	result := getEnv("TEST_CB_VAR_UNSET_456", "default")
+	if result != "default" {
+		t.Errorf("expected 'default', got '%s'", result)
+	}
+}
+
 func TestHandler_CalculatesTotals(t *testing.T) {
 	mockLambda := &MockLambdaClient{
 		Functions: []lambdatypes.FunctionConfiguration{
