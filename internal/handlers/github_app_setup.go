@@ -37,6 +37,7 @@ type SetupAppRepoStore interface {
 type SetupRepositoryStore interface {
 	CreateRepositoryFromApp(ctx context.Context, userID, githubURL, webhookSecret, appRepoID string) (*Repository, error)
 	GetRepositoryByAppRepoID(ctx context.Context, appRepoID string) (*Repository, error)
+	UpdateRepositoryUserID(ctx context.Context, repoID, userID string) error
 }
 
 // SetupSecretGenerator generates webhook secrets for new repositories.
@@ -226,6 +227,13 @@ func (h *GitHubAppSetupHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		}
 
 		if existing != nil {
+			// Reassign repo to current user if it belongs to a different user
+			// (e.g. a duplicate user created before the session-aware fix)
+			if existing.UserID != user.ID {
+				if err := h.repoStore.UpdateRepositoryUserID(ctx, existing.ID, user.ID); err != nil {
+					log.Printf("ERROR: failed to reassign repo %s to user %s: %v", existing.ID, user.ID, err)
+				}
+			}
 			continue
 		}
 

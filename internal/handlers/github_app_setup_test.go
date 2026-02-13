@@ -66,8 +66,9 @@ func (m *mockSetupAppRepoStore) UpsertAppRepository(ctx context.Context, repo *A
 }
 
 type mockSetupRepoStore struct {
-	createFromApp  func(ctx context.Context, userID, githubURL, webhookSecret, appRepoID string) (*Repository, error)
-	getByAppRepoID func(ctx context.Context, appRepoID string) (*Repository, error)
+	createFromApp      func(ctx context.Context, userID, githubURL, webhookSecret, appRepoID string) (*Repository, error)
+	getByAppRepoID     func(ctx context.Context, appRepoID string) (*Repository, error)
+	updateRepoUserID   func(ctx context.Context, repoID, userID string) error
 }
 
 func (m *mockSetupRepoStore) CreateRepositoryFromApp(ctx context.Context, userID, githubURL, webhookSecret, appRepoID string) (*Repository, error) {
@@ -76,6 +77,13 @@ func (m *mockSetupRepoStore) CreateRepositoryFromApp(ctx context.Context, userID
 
 func (m *mockSetupRepoStore) GetRepositoryByAppRepoID(ctx context.Context, appRepoID string) (*Repository, error) {
 	return m.getByAppRepoID(ctx, appRepoID)
+}
+
+func (m *mockSetupRepoStore) UpdateRepositoryUserID(ctx context.Context, repoID, userID string) error {
+	if m.updateRepoUserID != nil {
+		return m.updateRepoUserID(ctx, repoID, userID)
+	}
+	return nil
 }
 
 type mockSetupSecretGen struct {
@@ -320,5 +328,67 @@ func TestGitHubAppSetup_LoggedInUserReusesExistingAccount(t *testing.T) {
 		if cookie.Name == auth.CookieName {
 			t.Error("expected no new auth cookie to be set when user is already logged in")
 		}
+	}
+}
+
+func TestGitHubAppSetup_ReassignsReposFromDuplicateUser(t *testing.T) {
+	h, _, userStore, _, _, repoStore, _ := newTestSetupHandler()
+
+	existingUser := &User{ID: "existing-user", Email: "alice@example.com"}
+
+	userStore.getUserByID = func(ctx context.Context, userID string) (*User, error) {
+		if userID == "existing-user" {
+			return existingUser, nil
+		}
+		return nil, fmt.Errorf("not found")
+	}
+	userStore.linkGitHubIdentity = func(ctx context.Context, userID string, githubID int64, githubLogin string) error {
+		return nil
+	}
+
+	// Simulate a repo that already exists under a different (duplicate) user
+	repoStore.getByAppRepoID = func(ctx context.Context, appRepoID string) (*Repository, error) {
+		return &Repository{ID: "repo-1", UserID: "duplicate-user", GitHubURL: "https://github.com/testuser/repo1"}, nil
+	}
+
+	// Track reassignment
+	var reassignedRepoID, reassignedToUserID string
+	repoStore.updateRepoUserID = func(ctx context.Context, repoID, userID string) error {
+		reassignedRepoID = repoID
+		reassignedToUserID = userID
+		return nil
+	}
+
+	// CreateRepositoryFromApp should NOT be called (repo already exists)
+	createCalled := false
+	repoStore.createFromApp = func(ctx context.Context, userID, githubURL, webhookSecret, appRepoID string) (*Repository, error) {
+		createCalled = true
+		return &Repository{ID: "repo-1", UserID: userID, GitHubURL: githubURL}, nil
+	}
+
+	token, err := auth.GenerateToken("existing-user", "alice@example.com")
+	if err != nil {
+		t.Fatalf("failed to generate test token: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/github-app/setup?installation_id=42&setup_action=install", nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("expected status 303, got %d", resp.StatusCode)
+	}
+
+	if reassignedRepoID != "repo-1" {
+		t.Errorf("expected repo-1 to be reassigned, got %s", reassignedRepoID)
+	}
+	if reassignedToUserID != "existing-user" {
+		t.Errorf("expected repo reassigned to existing-user, got %s", reassignedToUserID)
+	}
+	if createCalled {
+		t.Error("expected CreateRepositoryFromApp to NOT be called when repo already exists")
 	}
 }
