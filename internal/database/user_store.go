@@ -94,6 +94,24 @@ func (s *UserStore) GetUserByEmail(ctx context.Context, email string) (*handlers
 	return user, nil
 }
 
+// GetUserByID retrieves a user by their ID.
+func (s *UserStore) GetUserByID(ctx context.Context, userID string) (*handlers.User, error) {
+	row := s.db.QueryRow(ctx,
+		`SELECT `+userColumns+`
+		 FROM users
+		 WHERE id = $1`,
+		userID,
+	)
+	user, err := scanUser(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return user, nil
+}
+
 // GetOrCreateByGitHub finds a user by github_id, or creates a new one without a password.
 // Returns the user and whether it was newly created.
 func (s *UserStore) GetOrCreateByGitHub(ctx context.Context, githubID int64, githubLogin, email string) (*handlers.User, bool, error) {
