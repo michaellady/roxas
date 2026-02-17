@@ -447,6 +447,45 @@ func TestRouter_GetNonRootPath_Returns404(t *testing.T) {
 	}
 }
 
+func TestRouter_GetHome_WithValidSession_RedirectsToDashboard(t *testing.T) {
+	router := NewRouter()
+	token := makeAuthToken(t, "user-123", "test@example.com")
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: token})
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("Expected redirect 303, got %d", rr.Code)
+	}
+	if rr.Header().Get("Location") != "/dashboard" {
+		t.Errorf("Expected redirect to /dashboard, got %s", rr.Header().Get("Location"))
+	}
+}
+
+func TestRouter_GetHome_WithInvalidToken_ShowsHomePage(t *testing.T) {
+	router := NewRouter()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: "invalid-token"})
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected 200, got %d", rr.Code)
+	}
+}
+
+func TestRouter_GetHome_WithoutSession_ShowsHomePage(t *testing.T) {
+	router := NewRouter()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected 200, got %d", rr.Code)
+	}
+}
+
 // =============================================================================
 // handleConnectionsNew coverage
 // =============================================================================
