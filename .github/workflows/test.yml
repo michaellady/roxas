@@ -76,20 +76,15 @@ jobs:
           path: main-coverage.txt
           key: coverage-main-${{ github.sha }}
 
-      - name: Update main branch coverage reference
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v4
-        with:
-          path: main-coverage.txt
-          key: coverage-main-latest
-
       - name: Restore main branch coverage
         if: github.event_name == 'pull_request'
         id: restore-main-coverage
         uses: actions/cache/restore@v4
         with:
           path: main-coverage.txt
-          key: coverage-main-latest
+          key: coverage-main-
+          restore-keys: |
+            coverage-main-
 
       - name: Generate coverage report
         if: github.event_name == 'pull_request'
