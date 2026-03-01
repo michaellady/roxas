@@ -7,9 +7,7 @@ aws_region    = "us-east-1"
 function_name = "roxas-webhook-handler"
 
 # Sensitive values - replace with actual credentials
-openai_api_key        = "sk-your-openai-api-key"
-linkedin_access_token = "your-linkedin-access-token"
-webhook_secret        = "your-webhook-secret"
+webhook_secret = "your-webhook-secret"
 
 # Optional overrides
 # lambda_timeout       = 60

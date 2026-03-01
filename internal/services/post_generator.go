@@ -34,7 +34,7 @@ type PostGeneratorService interface {
 	Generate(ctx context.Context, platform string, commit *Commit) (*GeneratedPost, error)
 }
 
-// ChatClient interface for OpenAI-like chat completions
+// ChatClient interface for AI chat completions (e.g., AWS Bedrock Claude)
 type ChatClient interface {
 	CreateChatCompletion(prompt string) (string, error)
 }

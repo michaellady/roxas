@@ -105,8 +105,6 @@ resource "aws_lambda_function" "roxas" {
 
   environment {
     variables = {
-      OPENAI_API_KEY            = var.openai_api_key
-      LINKEDIN_ACCESS_TOKEN     = var.linkedin_access_token
       WEBHOOK_SECRET            = var.webhook_secret
       LOG_LEVEL                 = var.log_level
       DB_SECRET_NAME            = aws_secretsmanager_secret.database.name

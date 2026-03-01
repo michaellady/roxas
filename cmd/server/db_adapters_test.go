@@ -838,7 +838,7 @@ func TestSocialPosterAdapter_PostDraft_DraftNotFound(t *testing.T) {
 }
 
 // =============================================================================
-// Test aiGeneratorAdapter with pgxmock and mock OpenAI
+// Test aiGeneratorAdapter with pgxmock and mock AI client
 // =============================================================================
 
 func TestAIGeneratorAdapter_TriggerGeneration(t *testing.T) {
@@ -848,23 +848,11 @@ func TestAIGeneratorAdapter_TriggerGeneration(t *testing.T) {
 	}
 	defer mock.Close()
 
-	// Mock OpenAI server
-	openAIMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"choices": []map[string]interface{}{
-				{"message": map[string]string{"content": "Generated social post content"}},
-			},
-		})
-	}))
-	defer openAIMock.Close()
-
 	draftStore := database.NewDraftStoreWithDB(mock)
 	repoStore := database.NewRepositoryStoreWithDB(mock)
 
-	// Create a real OpenAI client pointing to mock server
-	openaiClient := newMockChatClient("Generated social post content")
-	postGenerator := services.NewPostGenerator(openaiClient)
+	chatClient := newMockChatClient("Generated social post content")
+	postGenerator := services.NewPostGenerator(chatClient)
 
 	adapter := &aiGeneratorAdapter{
 		draftStore:    draftStore,
@@ -911,8 +899,8 @@ func TestAIGeneratorAdapter_TriggerGeneration_DraftNotFound(t *testing.T) {
 	draftStore := database.NewDraftStoreWithDB(mock)
 	repoStore := database.NewRepositoryStoreWithDB(mock)
 
-	openaiClient := newMockChatClient("content")
-	postGenerator := services.NewPostGenerator(openaiClient)
+	chatClient := newMockChatClient("content")
+	postGenerator := services.NewPostGenerator(chatClient)
 
 	adapter := &aiGeneratorAdapter{
 		draftStore:    draftStore,
@@ -943,8 +931,8 @@ func TestAIGeneratorAdapter_TriggerGeneration_RepoNotFound(t *testing.T) {
 	draftStore := database.NewDraftStoreWithDB(mock)
 	repoStore := database.NewRepositoryStoreWithDB(mock)
 
-	openaiClient := newMockChatClient("content")
-	postGenerator := services.NewPostGenerator(openaiClient)
+	chatClient := newMockChatClient("content")
+	postGenerator := services.NewPostGenerator(chatClient)
 
 	adapter := &aiGeneratorAdapter{
 		draftStore:    draftStore,
@@ -983,8 +971,8 @@ func TestAIGeneratorAdapter_TriggerGeneration_AIError(t *testing.T) {
 	repoStore := database.NewRepositoryStoreWithDB(mock)
 
 	// Create a failing mock client
-	openaiClient := &mockChatClientErr{err: fmt.Errorf("AI generation failed")}
-	postGenerator := services.NewPostGenerator(openaiClient)
+	chatClient := &mockChatClientErr{err: fmt.Errorf("AI generation failed")}
+	postGenerator := services.NewPostGenerator(chatClient)
 
 	adapter := &aiGeneratorAdapter{
 		draftStore:    draftStore,
@@ -1031,8 +1019,8 @@ func TestAIGeneratorAdapter_TriggerGeneration_MultipleCommits(t *testing.T) {
 	draftStore := database.NewDraftStoreWithDB(mock)
 	repoStore := database.NewRepositoryStoreWithDB(mock)
 
-	openaiClient := newMockChatClient("Multi-commit post")
-	postGenerator := services.NewPostGenerator(openaiClient)
+	chatClient := newMockChatClient("Multi-commit post")
+	postGenerator := services.NewPostGenerator(chatClient)
 
 	adapter := &aiGeneratorAdapter{
 		draftStore:    draftStore,
@@ -1081,8 +1069,8 @@ func TestAIRegeneratorAdapter_RegenerateDraft(t *testing.T) {
 	draftStore := database.NewDraftStoreWithDB(mock)
 	repoStore := database.NewRepositoryStoreWithDB(mock)
 
-	openaiClient := newMockChatClient("Regenerated content")
-	postGenerator := services.NewPostGenerator(openaiClient)
+	chatClient := newMockChatClient("Regenerated content")
+	postGenerator := services.NewPostGenerator(chatClient)
 
 	generator := &aiGeneratorAdapter{
 		draftStore:    draftStore,
@@ -1131,8 +1119,8 @@ func TestAIGeneratorAdapter_TriggerGeneration_CreateDraftFails_UpdatesContent(t 
 	draftStore := database.NewDraftStoreWithDB(mock)
 	repoStore := database.NewRepositoryStoreWithDB(mock)
 
-	openaiClient := newMockChatClient("New generated content")
-	postGenerator := services.NewPostGenerator(openaiClient)
+	chatClient := newMockChatClient("New generated content")
+	postGenerator := services.NewPostGenerator(chatClient)
 
 	adapter := &aiGeneratorAdapter{
 		draftStore:    draftStore,
@@ -1181,8 +1169,8 @@ func TestAIGeneratorAdapter_TriggerGeneration_BothFail(t *testing.T) {
 	draftStore := database.NewDraftStoreWithDB(mock)
 	repoStore := database.NewRepositoryStoreWithDB(mock)
 
-	openaiClient := newMockChatClient("Content")
-	postGenerator := services.NewPostGenerator(openaiClient)
+	chatClient := newMockChatClient("Content")
+	postGenerator := services.NewPostGenerator(chatClient)
 
 	adapter := &aiGeneratorAdapter{
 		draftStore:    draftStore,
@@ -1270,7 +1258,6 @@ func TestCreateRouterWithDBPool(t *testing.T) {
 
 	config := Config{
 		WebhookSecret:       "test-secret",
-		OpenAIAPIKey:        "test-openai-key",
 		EncryptionKey:       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", // 64 hex chars = 32 bytes
 		ThreadsClientID:     "threads-id",
 		ThreadsClientSecret: "threads-secret",
@@ -1290,7 +1277,6 @@ func TestCreateRouterWithDBPool(t *testing.T) {
 	req.Header.Set("X-Hub-Signature-256", sig)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
-	// Will succeed with 200 because missing LinkedIn token means credentials-missing path
 	if rec.Code != http.StatusOK {
 		t.Errorf("POST /webhook expected 200, got %d", rec.Code)
 	}
@@ -1309,7 +1295,6 @@ func TestCreateRouterWithDBPool_NoEncryptionKey(t *testing.T) {
 
 	config := Config{
 		WebhookSecret: "test-secret",
-		OpenAIAPIKey:  "test-openai-key",
 		// No EncryptionKey - social posting disabled
 	}
 
@@ -1362,12 +1347,11 @@ func TestCreateRouterWithDBPool_NoThreadsConfig(t *testing.T) {
 	}
 }
 
-func TestCreateRouterWithDBPool_NoOpenAIKey(t *testing.T) {
+func TestCreateRouterWithDBPool_MinimalConfig(t *testing.T) {
 	pool := &database.Pool{}
 
 	config := Config{
 		WebhookSecret: "test-secret",
-		// No OpenAIAPIKey
 	}
 
 	router := createRouter(config, pool)

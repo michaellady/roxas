@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -23,9 +22,7 @@ import (
 	"github.com/mikelady/roxas/internal/clients"
 	"github.com/mikelady/roxas/internal/database"
 	"github.com/mikelady/roxas/internal/handlers"
-	"github.com/mikelady/roxas/internal/models"
 	"github.com/mikelady/roxas/internal/oauth"
-	"github.com/mikelady/roxas/internal/orchestrator"
 	"github.com/mikelady/roxas/internal/services"
 	"github.com/mikelady/roxas/internal/web"
 )
@@ -35,10 +32,6 @@ var dbPool *database.Pool
 
 // Config holds application configuration from environment variables
 type Config struct {
-	OpenAIAPIKey        string
-	OpenAIChatModel     string
-	OpenAIImageModel    string
-	LinkedInAccessToken string
 	WebhookSecret       string
 	DBSecretName        string
 	WebhookBaseURL      string
@@ -57,10 +50,6 @@ type Config struct {
 // loadConfig loads configuration from environment variables
 func loadConfig() Config {
 	return Config{
-		OpenAIAPIKey:        os.Getenv("OPENAI_API_KEY"),
-		OpenAIChatModel:     os.Getenv("OPENAI_CHAT_MODEL"),  // defaults to gpt-4o-mini if empty
-		OpenAIImageModel:    os.Getenv("OPENAI_IMAGE_MODEL"), // defaults to dall-e-2 if empty
-		LinkedInAccessToken: os.Getenv("LINKEDIN_ACCESS_TOKEN"),
 		WebhookSecret:       os.Getenv("WEBHOOK_SECRET"),
 		DBSecretName:        os.Getenv("DB_SECRET_NAME"),
 		WebhookBaseURL:      os.Getenv("WEBHOOK_BASE_URL"),
@@ -82,22 +71,16 @@ func validateConfig(config Config) error {
 	if config.WebhookSecret == "" {
 		return fmt.Errorf("WEBHOOK_SECRET is required")
 	}
-	// OpenAI and LinkedIn tokens are optional for signature validation
-	// but required for processing
+	// Other tokens are optional - only webhook secret is required for validation
 	return nil
 }
 
-// webhookHandler handles GitHub webhook requests at /webhook
+// webhookHandler handles legacy GitHub webhook requests at /webhook
+// Now just validates signature and returns 200 (processing moved to multi-tenant handlers)
 func webhookHandler(config Config) http.HandlerFunc {
-	return webhookHandlerWithMocks(config, "", "")
-}
-
-// webhookHandlerWithMocks handles GitHub webhook requests with optional mock API URLs for testing
-func webhookHandlerWithMocks(config Config, openAIBaseURL, linkedInBaseURL string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Received webhook request: %s %s", r.Method, r.URL.Path)
 
-		// Read request body
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			log.Printf("Failed to read request body: %v", err)
@@ -105,7 +88,6 @@ func webhookHandlerWithMocks(config Config, openAIBaseURL, linkedInBaseURL strin
 			return
 		}
 
-		// Validate webhook signature
 		signature := r.Header.Get("X-Hub-Signature-256")
 		if signature == "" {
 			log.Println("Missing signature header")
@@ -113,57 +95,16 @@ func webhookHandlerWithMocks(config Config, openAIBaseURL, linkedInBaseURL strin
 			return
 		}
 
-		// Validate signature
 		if !validateSignature(body, signature, config.WebhookSecret) {
 			log.Println("Invalid signature")
 			http.Error(w, "Invalid signature", http.StatusUnauthorized)
 			return
 		}
 
-		// Parse webhook payload
-		commit, err := extractCommitFromWebhook(body)
-		if err != nil {
-			log.Printf("Failed to parse webhook: %v", err)
-			http.Error(w, fmt.Sprintf("Invalid webhook payload: %v", err), http.StatusBadRequest)
-			return
-		}
-
-		// Check if we have API credentials for processing
-		if config.OpenAIAPIKey == "" || config.LinkedInAccessToken == "" {
-			log.Println("Missing API credentials - webhook accepted but not processed")
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("Webhook received (credentials missing for processing)"))
-			return
-		}
-
-		// Initialize API clients (use mock URLs if provided, otherwise use defaults)
-		openAIClient := clients.NewOpenAIClient(config.OpenAIAPIKey, openAIBaseURL, config.OpenAIChatModel, config.OpenAIImageModel)
-		linkedInClient := clients.NewLinkedInClient(config.LinkedInAccessToken, linkedInBaseURL)
-
-		// Initialize services
-		summarizer := services.NewSummarizer(openAIClient)
-		imageGenerator := services.NewImageGenerator(openAIClient)
-		linkedInPoster := services.NewLinkedInPoster(linkedInClient, config.LinkedInAccessToken)
-
-		// Initialize orchestrator
-		orch := orchestrator.NewOrchestrator(summarizer, imageGenerator, linkedInPoster)
-
-		// Process commit synchronously (Lambda freezes goroutines when handler returns)
-		postURL, err := orch.ProcessCommit(*commit)
-		if err != nil {
-			log.Printf("Error processing commit: %v", err)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(fmt.Sprintf(`{"error": "Failed to process commit: %v"}`, err)))
-			return
-		}
-
-		log.Printf("Successfully posted to LinkedIn: %s", postURL)
-
-		// Return 200 with success
-		w.Header().Set("Content-Type", "application/json")
+		// Legacy endpoint - just acknowledge receipt
+		// Active processing happens via /webhooks/github/ and /webhooks/github-app
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(fmt.Sprintf(`{"message": "Webhook processed successfully", "linkedin_url": "%s"}`, postURL)))
+		w.Write([]byte("Webhook received (use /webhooks/github-app for active processing)"))
 	}
 }
 
@@ -860,7 +801,7 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 		idempotencyStore := &idempotencyStoreAdapter{store: deliveryStore}
 		activityStoreForWebhook := &activityStoreAdapter{store: activityStore}
 
-		// Create AI generator: prefer Bedrock (Claude), fall back to OpenAI
+		// Create AI generator using Bedrock (Claude)
 		var aiGenerator *aiGeneratorAdapter
 		bedrockClient := clients.NewBedrockClient(os.Getenv("AWS_REGION"), config.BedrockModelID, "")
 		postGenerator := services.NewPostGenerator(bedrockClient)
@@ -870,9 +811,6 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 			postGenerator: postGenerator,
 		}
 		log.Printf("AI content generation enabled (Bedrock Claude, model: %s)", bedrockClient.ModelID())
-		if config.OpenAIAPIKey != "" {
-			log.Println("OpenAI API key also configured (available for image generation)")
-		}
 
 		// Use DraftCreatingWebhookHandler which creates drafts on push events
 		draftHandler := handlers.NewDraftCreatingWebhookHandler(repoStore, draftWebhookStore, idempotencyStore).
@@ -1071,46 +1009,6 @@ func validateSignature(payload []byte, signature string, secret string) bool {
 
 	// Compare
 	return hmac.Equal([]byte(signature), []byte(expectedMAC))
-}
-
-// GitHubWebhookPayload represents the GitHub webhook JSON structure
-type GitHubWebhookPayload struct {
-	Repository struct {
-		HTMLURL string `json:"html_url"`
-	} `json:"repository"`
-	Commits []struct {
-		ID      string `json:"id"`
-		Message string `json:"message"`
-		Author  struct {
-			Name string `json:"name"`
-		} `json:"author"`
-	} `json:"commits"`
-}
-
-// extractCommitFromWebhook parses GitHub webhook payload and extracts commit info
-func extractCommitFromWebhook(payload []byte) (*models.Commit, error) {
-	var webhook GitHubWebhookPayload
-
-	err := json.Unmarshal(payload, &webhook)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse JSON: %w", err)
-	}
-
-	if len(webhook.Commits) == 0 {
-		return nil, fmt.Errorf("no commits in webhook payload")
-	}
-
-	// Get the first commit (most recent)
-	firstCommit := webhook.Commits[0]
-
-	commit := &models.Commit{
-		Message: firstCommit.Message,
-		Author:  firstCommit.Author.Name,
-		RepoURL: webhook.Repository.HTMLURL,
-		Diff:    "", // Not fetching diff for MVP
-	}
-
-	return commit, nil
 }
 
 func main() {

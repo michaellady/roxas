@@ -126,54 +126,6 @@ func TestConvertDraftToWebhookDraft(t *testing.T) {
 }
 
 // =============================================================================
-// Test extractCommitFromWebhook - additional error cases
-// =============================================================================
-
-func TestExtractCommitFromWebhook_NoCommits(t *testing.T) {
-	payload := `{"repository": {"html_url": "https://github.com/test/repo"}, "commits": []}`
-	_, err := extractCommitFromWebhook([]byte(payload))
-	if err == nil {
-		t.Error("Expected error for empty commits, got nil")
-	}
-	if !strings.Contains(err.Error(), "no commits") {
-		t.Errorf("Expected 'no commits' error, got: %v", err)
-	}
-}
-
-func TestExtractCommitFromWebhook_InvalidJSON(t *testing.T) {
-	_, err := extractCommitFromWebhook([]byte("not json"))
-	if err == nil {
-		t.Error("Expected error for invalid JSON, got nil")
-	}
-	if !strings.Contains(err.Error(), "failed to parse JSON") {
-		t.Errorf("Expected 'failed to parse JSON' error, got: %v", err)
-	}
-}
-
-func TestExtractCommitFromWebhook_ValidPayload(t *testing.T) {
-	payload := `{
-		"repository": {"html_url": "https://github.com/owner/repo"},
-		"commits": [
-			{"id": "abc123", "message": "feat: new feature", "author": {"name": "Dev"}},
-			{"id": "def456", "message": "fix: bug fix", "author": {"name": "Dev2"}}
-		]
-	}`
-	commit, err := extractCommitFromWebhook([]byte(payload))
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if commit.Message != "feat: new feature" {
-		t.Errorf("Message = %q, want %q", commit.Message, "feat: new feature")
-	}
-	if commit.Author != "Dev" {
-		t.Errorf("Author = %q, want %q", commit.Author, "Dev")
-	}
-	if commit.RepoURL != "https://github.com/owner/repo" {
-		t.Errorf("RepoURL = %q, want %q", commit.RepoURL, "https://github.com/owner/repo")
-	}
-}
-
-// =============================================================================
 // Test validateSignature
 // =============================================================================
 
@@ -213,137 +165,20 @@ func TestValidateSignature(t *testing.T) {
 }
 
 // =============================================================================
-// Test webhookHandlerWithMocks - additional branches
-// =============================================================================
-
-func TestWebhookHandlerMissingCredentials(t *testing.T) {
-	config := Config{
-		WebhookSecret:       "test-secret",
-		OpenAIAPIKey:        "",
-		LinkedInAccessToken: "",
-	}
-	handler := webhookHandlerWithMocks(config, "", "")
-
-	payload := `{
-		"repository": {"html_url": "https://github.com/test/repo"},
-		"commits": [{"id": "abc", "message": "test", "author": {"name": "Dev"}}]
-	}`
-	sig := "sha256=" + generateTestSignature([]byte(payload), "test-secret")
-
-	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(payload))
-	req.Header.Set("X-Hub-Signature-256", sig)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("Expected 200, got %d", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "credentials missing") {
-		t.Errorf("Expected 'credentials missing' message, got: %s", rec.Body.String())
-	}
-}
-
-func TestWebhookHandlerOnlyOpenAIKey(t *testing.T) {
-	config := Config{
-		WebhookSecret:       "test-secret",
-		OpenAIAPIKey:        "key",
-		LinkedInAccessToken: "", // Missing LinkedIn
-	}
-	handler := webhookHandlerWithMocks(config, "", "")
-
-	payload := `{
-		"repository": {"html_url": "https://github.com/test/repo"},
-		"commits": [{"id": "abc", "message": "test", "author": {"name": "Dev"}}]
-	}`
-	sig := "sha256=" + generateTestSignature([]byte(payload), "test-secret")
-
-	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(payload))
-	req.Header.Set("X-Hub-Signature-256", sig)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("Expected 200, got %d", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "credentials missing") {
-		t.Errorf("Expected 'credentials missing' message, got: %s", rec.Body.String())
-	}
-}
-
-func TestWebhookHandlerInvalidPayload(t *testing.T) {
-	config := Config{
-		WebhookSecret: "test-secret",
-	}
-	handler := webhookHandlerWithMocks(config, "", "")
-
-	payload := `{"repository": {"html_url": "test"}, "commits": []}`
-	sig := "sha256=" + generateTestSignature([]byte(payload), "test-secret")
-
-	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(payload))
-	req.Header.Set("X-Hub-Signature-256", sig)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("Expected 400, got %d", rec.Code)
-	}
-}
-
-func TestWebhookHandlerProcessingError(t *testing.T) {
-	openAIMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"error": "server error"}`))
-	}))
-	defer openAIMock.Close()
-
-	linkedInMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.Path, "/userinfo") {
-			json.NewEncoder(w).Encode(map[string]string{"sub": "urn:li:person:test"})
-		}
-	}))
-	defer linkedInMock.Close()
-
-	config := Config{
-		WebhookSecret:       "test-secret",
-		OpenAIAPIKey:        "test-key",
-		LinkedInAccessToken: "test-token",
-	}
-	handler := webhookHandlerWithMocks(config, openAIMock.URL, linkedInMock.URL)
-
-	payload := `{
-		"repository": {"html_url": "https://github.com/test/repo"},
-		"commits": [{"id": "abc", "message": "test", "author": {"name": "Dev"}}]
-	}`
-	sig := "sha256=" + generateTestSignature([]byte(payload), "test-secret")
-
-	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(payload))
-	req.Header.Set("X-Hub-Signature-256", sig)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusInternalServerError {
-		t.Errorf("Expected 500, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-// =============================================================================
 // Test loadConfig with all fields
 // =============================================================================
 
 func TestLoadConfigAllFields(t *testing.T) {
 	envVars := map[string]string{
-		"OPENAI_API_KEY":            "openai-key",
-		"OPENAI_CHAT_MODEL":        "gpt-4",
-		"OPENAI_IMAGE_MODEL":       "dall-e-3",
-		"LINKEDIN_ACCESS_TOKEN":    "linkedin-token",
-		"WEBHOOK_SECRET":           "webhook-secret",
-		"DB_SECRET_NAME":           "db-secret",
-		"WEBHOOK_BASE_URL":         "https://example.com",
+		"WEBHOOK_SECRET":            "webhook-secret",
+		"DB_SECRET_NAME":            "db-secret",
+		"WEBHOOK_BASE_URL":          "https://example.com",
 		"CREDENTIAL_ENCRYPTION_KEY": "enc-key",
-		"THREADS_CLIENT_ID":        "threads-id",
-		"THREADS_CLIENT_SECRET":    "threads-secret",
-		"OAUTH_CALLBACK_URL":       "https://callback.com",
+		"THREADS_CLIENT_ID":         "threads-id",
+		"THREADS_CLIENT_SECRET":     "threads-secret",
+		"OAUTH_CALLBACK_URL":        "https://callback.com",
+		"BEDROCK_MODEL_ID":          "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+		"BUFFER_ACCESS_TOKEN":       "buffer-token",
 	}
 
 	for k, v := range envVars {
@@ -352,15 +187,6 @@ func TestLoadConfigAllFields(t *testing.T) {
 
 	config := loadConfig()
 
-	if config.OpenAIAPIKey != "openai-key" {
-		t.Errorf("OpenAIAPIKey = %q, want %q", config.OpenAIAPIKey, "openai-key")
-	}
-	if config.OpenAIChatModel != "gpt-4" {
-		t.Errorf("OpenAIChatModel = %q, want %q", config.OpenAIChatModel, "gpt-4")
-	}
-	if config.OpenAIImageModel != "dall-e-3" {
-		t.Errorf("OpenAIImageModel = %q, want %q", config.OpenAIImageModel, "dall-e-3")
-	}
 	if config.DBSecretName != "db-secret" {
 		t.Errorf("DBSecretName = %q, want %q", config.DBSecretName, "db-secret")
 	}
@@ -378,6 +204,12 @@ func TestLoadConfigAllFields(t *testing.T) {
 	}
 	if config.OAuthCallbackURL != "https://callback.com" {
 		t.Errorf("OAuthCallbackURL = %q, want %q", config.OAuthCallbackURL, "https://callback.com")
+	}
+	if config.BedrockModelID != "us.anthropic.claude-sonnet-4-5-20250929-v1:0" {
+		t.Errorf("BedrockModelID = %q, want %q", config.BedrockModelID, "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+	}
+	if config.BufferAccessToken != "buffer-token" {
+		t.Errorf("BufferAccessToken = %q, want %q", config.BufferAccessToken, "buffer-token")
 	}
 }
 
@@ -1029,8 +861,9 @@ func TestWebhookHandlerEmptyBody(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("Expected 400, got %d: %s", rec.Code, rec.Body.String())
+	// Legacy webhook handler just validates signature and returns 200
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

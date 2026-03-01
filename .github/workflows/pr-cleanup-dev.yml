@@ -172,8 +172,6 @@ jobs:
         if: always() && steps.check-workspace.outputs.exists == 'true'
         working-directory: terraform/service
         env:
-          TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          TF_VAR_linkedin_access_token: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
           TF_VAR_webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
           TF_VAR_function_name: roxas-webhook-handler-pr-${{ github.event.pull_request.number }}
           TF_VAR_environment: dev

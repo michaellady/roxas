@@ -50,18 +50,6 @@ variable "log_level" {
 }
 
 # Sensitive variables - must be provided via environment or tfvars
-variable "openai_api_key" {
-  description = "OpenAI API key for GPT-4 access"
-  type        = string
-  sensitive   = true
-}
-
-variable "linkedin_access_token" {
-  description = "LinkedIn OAuth access token"
-  type        = string
-  sensitive   = true
-}
-
 variable "webhook_secret" {
   description = "Webhook secret for HMAC validation"
   type        = string

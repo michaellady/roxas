@@ -19,9 +19,7 @@ log_level          = "debug"
 
 # Sensitive values - will be provided via GitHub secrets in CI/CD
 # For local testing, set these manually
-openai_api_key        = "REPLACE_WITH_DEV_KEY"
-linkedin_access_token = "REPLACE_WITH_DEV_TOKEN"
-webhook_secret        = "REPLACE_WITH_DEV_SECRET"
+webhook_secret = "REPLACE_WITH_DEV_SECRET"
 
 # Database configuration
 db_instance_class        = "db.t4g.micro"

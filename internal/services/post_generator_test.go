@@ -332,11 +332,11 @@ func TestPostGenerator_DifferentCommits_DifferentContent(t *testing.T) {
 }
 
 // =============================================================================
-// Test: OpenAI Error Bubbles Up
+// Test: AI Error Bubbles Up
 // =============================================================================
 
-func TestPostGenerator_OpenAIError_BubblesUp(t *testing.T) {
-	// Errors from OpenAI should bubble up without being wrapped generically
+func TestPostGenerator_AIError_BubblesUp(t *testing.T) {
+	// Errors from the AI client should bubble up without being wrapped generically
 
 	apiError := errors.New("API rate limit exceeded: too many requests")
 
@@ -360,7 +360,7 @@ func TestPostGenerator_OpenAIError_BubblesUp(t *testing.T) {
 	_, err := generator.Generate(ctx, PlatformLinkedIn, commit)
 
 	if err == nil {
-		t.Fatal("Expected error when OpenAI fails, got nil")
+		t.Fatal("Expected error when AI client fails, got nil")
 	}
 
 	// Error should contain the original error detail (not wrapped generically)

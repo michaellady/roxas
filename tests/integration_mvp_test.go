@@ -3,6 +3,9 @@ package tests
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -17,6 +20,13 @@ import (
 	"github.com/mikelady/roxas/internal/handlers"
 	"github.com/mikelady/roxas/internal/services"
 )
+
+// generateHMAC creates a GitHub-style HMAC signature for webhook validation
+func generateHMAC(payload []byte, secret string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(payload)
+	return hex.EncodeToString(mac.Sum(nil))
+}
 
 // =============================================================================
 // Unified Integration Commit Store
