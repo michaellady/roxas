@@ -808,6 +808,15 @@ func (r *Router) handleHome(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// If user has a valid session, redirect to dashboard
+	cookie, err := req.Cookie(auth.CookieName)
+	if err == nil && cookie.Value != "" {
+		if _, err := auth.ValidateToken(cookie.Value); err == nil {
+			http.Redirect(w, req, "/dashboard", http.StatusSeeOther)
+			return
+		}
+	}
+
 	r.renderPage(w, "home.html", PageData{
 		Title: "Home",
 	})
