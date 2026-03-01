@@ -50,6 +50,8 @@ type Config struct {
 	GitHubAppWebhookSecret string // GH_APP_WEBHOOK_SECRET (app-level secret)
 	GitHubAppPrivateKey    string // GH_APP_PRIVATE_KEY (PEM-encoded private key, base64)
 	GitHubAppURL           string // GH_APP_URL (install URL, e.g. https://github.com/apps/roxas/installations/new)
+	BedrockModelID         string // BEDROCK_MODEL_ID (defaults to Claude Sonnet 4.5)
+	BufferAccessToken      string // BUFFER_ACCESS_TOKEN for Buffer API posting
 }
 
 // loadConfig loads configuration from environment variables
@@ -70,6 +72,8 @@ func loadConfig() Config {
 		GitHubAppWebhookSecret: os.Getenv("GH_APP_WEBHOOK_SECRET"),
 		GitHubAppPrivateKey:    os.Getenv("GH_APP_PRIVATE_KEY"),
 		GitHubAppURL:           os.Getenv("GH_APP_URL"),
+		BedrockModelID:         os.Getenv("BEDROCK_MODEL_ID"),        // defaults to Claude Sonnet 4.5 if empty
+		BufferAccessToken:      os.Getenv("BUFFER_ACCESS_TOKEN"),
 	}
 }
 
@@ -325,7 +329,7 @@ func (a *draftListerAdapter) ListDraftsByUser(ctx context.Context, userID string
 			ID:          d.ID,
 			RepoName:    repoName,
 			PreviewText: previewText,
-			Platform:    "threads", // Default platform for now
+			Platform:    "buffer", // Cross-posts to all platforms via Buffer
 			CreatedAt:   d.CreatedAt,
 		})
 	}
@@ -377,8 +381,8 @@ func (a *aiGeneratorAdapter) TriggerGeneration(ctx context.Context, draftID stri
 	}
 
 	// Generate content using PostGenerator
-	// Use "threads" as the platform (could be made configurable)
-	generated, err := a.postGenerator.Generate(ctx, "linkedin", commit)
+	// Use "buffer" platform (280 char limit for cross-platform posting via Buffer)
+	generated, err := a.postGenerator.Generate(ctx, "buffer", commit)
 	if err != nil {
 		// Update draft status to error
 		_ = a.draftStore.UpdateDraftStatus(ctx, draftID, database.DraftStatusError)
@@ -421,7 +425,7 @@ func (a *draftStoreAdapter) GetDraftByID(ctx context.Context, draftID string) (*
 		RepositoryID: draft.RepositoryID,
 		Content:      content,
 		Status:       draft.Status,
-		CharLimit:    500, // Threads character limit
+		CharLimit:    280, // Buffer cross-platform limit (X/Twitter is the smallest)
 		CreatedAt:    draft.CreatedAt,
 	}, nil
 }
@@ -455,10 +459,11 @@ func (a *aiRegeneratorAdapter) RegenerateDraft(ctx context.Context, draftID stri
 	return a.generator.TriggerGeneration(ctx, draftID)
 }
 
-// socialPosterAdapter implements web.SocialPoster for posting to Threads
+// socialPosterAdapter implements web.SocialPoster for posting via Buffer or direct platforms
 type socialPosterAdapter struct {
 	draftStore      *database.DraftStore
 	credentialStore services.CredentialStore
+	bufferClient    *clients.BufferClient // nil if Buffer not configured
 }
 
 func (a *socialPosterAdapter) PostDraft(ctx context.Context, userID, draftID string) (string, error) {
@@ -474,10 +479,19 @@ func (a *socialPosterAdapter) PostDraft(ctx context.Context, userID, draftID str
 		content = *draft.EditedContent
 	}
 
-	// Try Bluesky first, then fall back to Threads
+	// Try Buffer first (cross-posts to all connected platforms)
+	if a.bufferClient != nil {
+		result, err := a.bufferClient.Post(ctx, clients.BufferPostContent{Text: content})
+		if err != nil {
+			log.Printf("Buffer posting failed, falling back to direct platforms: %v", err)
+		} else {
+			return fmt.Sprintf("Posted to %d platforms via Buffer (ID: %s)", len(result.Updates), result.PostID), nil
+		}
+	}
+
+	// Fall back to direct platform posting: try Bluesky first, then Threads
 	bluskyCreds, bskyErr := a.credentialStore.GetCredentials(ctx, userID, "bluesky")
 	if bskyErr == nil && bluskyCreds != nil {
-		// Bluesky: AccessToken = app password, RefreshToken = handle
 		handle := bluskyCreds.RefreshToken
 		appPassword := bluskyCreds.AccessToken
 		bskyClient := clients.NewBlueskyClient(handle, appPassword, "")
@@ -488,7 +502,6 @@ func (a *socialPosterAdapter) PostDraft(ctx context.Context, userID, draftID str
 		return result.PostURL, nil
 	}
 
-	// Fall back to Threads
 	threadsCreds, threadsErr := a.credentialStore.GetCredentials(ctx, userID, "threads")
 	if threadsErr == nil && threadsCreds != nil {
 		threadsClient := clients.NewThreadsClient(threadsCreds.AccessToken, "")
@@ -499,7 +512,7 @@ func (a *socialPosterAdapter) PostDraft(ctx context.Context, userID, draftID str
 		return result.PostURL, nil
 	}
 
-	return "", fmt.Errorf("no social platform connected - please connect Bluesky or Threads first")
+	return "", fmt.Errorf("no social platform connected - configure Buffer or connect Bluesky/Threads")
 }
 
 // threadsOAuthAdapter implements web.ThreadsOAuthConnector
@@ -847,29 +860,25 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 		idempotencyStore := &idempotencyStoreAdapter{store: deliveryStore}
 		activityStoreForWebhook := &activityStoreAdapter{store: activityStore}
 
-		// Create AI generator if OpenAI API key is configured
+		// Create AI generator: prefer Bedrock (Claude), fall back to OpenAI
 		var aiGenerator *aiGeneratorAdapter
+		bedrockClient := clients.NewBedrockClient(os.Getenv("AWS_REGION"), config.BedrockModelID, "")
+		postGenerator := services.NewPostGenerator(bedrockClient)
+		aiGenerator = &aiGeneratorAdapter{
+			draftStore:    draftStore,
+			repoStore:     repoStore,
+			postGenerator: postGenerator,
+		}
+		log.Printf("AI content generation enabled (Bedrock Claude, model: %s)", bedrockClient.ModelID())
 		if config.OpenAIAPIKey != "" {
-			openaiClient := clients.NewOpenAIClient(config.OpenAIAPIKey, "", config.OpenAIChatModel, config.OpenAIImageModel)
-			postGenerator := services.NewPostGenerator(openaiClient)
-			aiGenerator = &aiGeneratorAdapter{
-				draftStore:    draftStore,
-				repoStore:     repoStore,
-				postGenerator: postGenerator,
-			}
-			log.Println("AI content generation enabled")
-		} else {
-			log.Println("AI content generation disabled (no OPENAI_API_KEY)")
+			log.Println("OpenAI API key also configured (available for image generation)")
 		}
 
 		// Use DraftCreatingWebhookHandler which creates drafts on push events
 		draftHandler := handlers.NewDraftCreatingWebhookHandler(repoStore, draftWebhookStore, idempotencyStore).
 			WithActivityStore(activityStoreForWebhook)
 
-		// Add AI generator if configured
-		if aiGenerator != nil {
-			draftHandler = draftHandler.WithAIGenerator(aiGenerator)
-		}
+		draftHandler = draftHandler.WithAIGenerator(aiGenerator)
 
 		mux.Handle("/webhooks/github/", draftHandler)
 
@@ -890,9 +899,7 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 				idempotencyStore,
 			).WithActivityStore(activityStoreForWebhook)
 
-			if aiGenerator != nil {
-				appWebhookHandler = appWebhookHandler.WithAIGenerator(aiGenerator)
-			}
+			appWebhookHandler = appWebhookHandler.WithAIGenerator(aiGenerator)
 
 			mux.Handle("/webhooks/github-app", appWebhookHandler)
 			log.Println("GitHub App webhook handler enabled")
@@ -932,13 +939,19 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 				if err != nil {
 					log.Printf("Warning: Failed to create credential store: %v", err)
 				} else {
-					// Add social poster
+					// Add social poster (Buffer preferred, with Bluesky/Threads fallback)
+					var bufferClient *clients.BufferClient
+					if config.BufferAccessToken != "" {
+						bufferClient = clients.NewBufferClient(config.BufferAccessToken, "")
+						log.Println("Buffer API posting enabled")
+					}
 					socialPoster := &socialPosterAdapter{
 						draftStore:      draftStore,
 						credentialStore: credentialStore,
+						bufferClient:    bufferClient,
 					}
 					router = router.WithSocialPoster(socialPoster)
-					log.Println("Social posting enabled (Bluesky, Threads)")
+					log.Println("Social posting enabled (Buffer, Bluesky, Threads)")
 
 					// Add Threads OAuth if configured
 					if config.ThreadsClientID != "" && config.ThreadsClientSecret != "" {
@@ -982,14 +995,14 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 			log.Println("Social posting disabled (no CREDENTIAL_ENCRYPTION_KEY)")
 		}
 
-		// Add AI regenerator if OpenAI is configured
-		if config.OpenAIAPIKey != "" {
-			openaiClient := clients.NewOpenAIClient(config.OpenAIAPIKey, "", config.OpenAIChatModel, config.OpenAIImageModel)
-			postGenerator := services.NewPostGenerator(openaiClient)
+		// Add AI regenerator using Bedrock (Claude)
+		{
+			bedrockForRegen := clients.NewBedrockClient(os.Getenv("AWS_REGION"), config.BedrockModelID, "")
+			regenPostGenerator := services.NewPostGenerator(bedrockForRegen)
 			aiGen := &aiGeneratorAdapter{
 				draftStore:    draftStore,
 				repoStore:     repoStore,
-				postGenerator: postGenerator,
+				postGenerator: regenPostGenerator,
 			}
 			router = router.WithAIRegenerator(&aiRegeneratorAdapter{generator: aiGen})
 		}

@@ -318,8 +318,8 @@ func TestDraftStoreAdapter_GetDraftByID(t *testing.T) {
 	if result.Content != "edited content" {
 		t.Errorf("Content = %q, want %q (should use edited content)", result.Content, "edited content")
 	}
-	if result.CharLimit != 500 {
-		t.Errorf("CharLimit = %d, want 500", result.CharLimit)
+	if result.CharLimit != 280 {
+		t.Errorf("CharLimit = %d, want 280", result.CharLimit)
 	}
 }
 
@@ -561,8 +561,8 @@ func TestDraftListerAdapter_ListDraftsByUser(t *testing.T) {
 	if items[0].PreviewText != "Short edited" {
 		t.Errorf("PreviewText = %q, want %q", items[0].PreviewText, "Short edited")
 	}
-	if items[0].Platform != "threads" {
-		t.Errorf("Platform = %q, want %q", items[0].Platform, "threads")
+	if items[0].Platform != "buffer" {
+		t.Errorf("Platform = %q, want %q", items[0].Platform, "buffer")
 	}
 }
 
