@@ -17,6 +17,7 @@ const (
 	PlatformTwitter   = "twitter"
 	PlatformInstagram = "instagram"
 	PlatformYouTube   = "youtube"
+	PlatformBuffer    = "buffer"
 	// PlatformBluesky is defined in credential_store.go
 )
 
@@ -33,7 +34,7 @@ type PostGeneratorService interface {
 	Generate(ctx context.Context, platform string, commit *Commit) (*GeneratedPost, error)
 }
 
-// ChatClient interface for OpenAI-like chat completions
+// ChatClient interface for AI chat completions (e.g., AWS Bedrock Claude)
 type ChatClient interface {
 	CreateChatCompletion(prompt string) (string, error)
 }
@@ -90,6 +91,12 @@ var platformConfigs = map[string]platformConfig{
 		Tone:       "concise, engaging, focused on what was built/shipped",
 		HashtagReq: false,
 	},
+	PlatformBuffer: {
+		Name:       "Buffer",
+		MaxLength:  280, // X/Twitter is the smallest platform Buffer posts to
+		Tone:       "concise, engaging, punchy - works across all social platforms",
+		HashtagReq: false,
+	},
 }
 
 // Generate creates a social media post for the given platform and commit
@@ -127,10 +134,13 @@ func buildPrompt(config platformConfig, commit *Commit) string {
 
 	var sb strings.Builder
 
-	// Bluesky uses commit-focused phrasing instead of generic "software development update"
-	if config.Name == "Bluesky" {
+	// Bluesky and Buffer use commit-focused phrasing instead of generic "software development update"
+	switch config.Name {
+	case "Bluesky":
 		sb.WriteString("Generate a Bluesky post about what this commit enables.\n\n")
-	} else {
+	case "Buffer":
+		sb.WriteString("Generate a short post about what this commit enables. This will be cross-posted to all social platforms via Buffer.\n\n")
+	default:
 		sb.WriteString(fmt.Sprintf("Generate a %s post about this software development update.\n\n", config.Name))
 	}
 
@@ -182,6 +192,15 @@ func buildPrompt(config platformConfig, commit *Commit) string {
 		sb.WriteString("\nExample guidance:\n")
 		sb.WriteString("BAD: 'We updated our webhook handler to support Bluesky authentication...'\n")
 		sb.WriteString("GOOD: 'Bluesky support is live! Connect your account and auto-post dev updates.'\n")
+	case "Buffer":
+		sb.WriteString("\nRequirements for Buffer (cross-posted to all platforms):\n")
+		sb.WriteString("- MUST be 280 characters or less (X/Twitter is the smallest platform)\n")
+		sb.WriteString("- This will be cross-posted to all connected social platforms via Buffer\n")
+		sb.WriteString("- Be concise and punchy\n")
+		sb.WriteString("- Focus on what THIS commit enables or fixes\n")
+		sb.WriteString("- Lead with the action/outcome: Added X, Fixed Y, Now supports Z\n")
+		sb.WriteString("- No hashtags needed\n")
+		sb.WriteString("- One clear point per post\n")
 	}
 
 	sb.WriteString("\nGenerate only the post content, nothing else.")

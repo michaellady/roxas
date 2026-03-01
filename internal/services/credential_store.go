@@ -37,6 +37,7 @@ var SupportedPlatforms = map[string]bool{
 	PlatformThreads:   true,
 	PlatformTikTok:    true,
 	PlatformGitHub:    true,
+	PlatformBuffer:    true,
 }
 
 // PlatformCredentials represents OAuth credentials for a platform

@@ -105,8 +105,6 @@ resource "aws_lambda_function" "roxas" {
 
   environment {
     variables = {
-      OPENAI_API_KEY            = var.openai_api_key
-      LINKEDIN_ACCESS_TOKEN     = var.linkedin_access_token
       WEBHOOK_SECRET            = var.webhook_secret
       LOG_LEVEL                 = var.log_level
       DB_SECRET_NAME            = aws_secretsmanager_secret.database.name
@@ -116,6 +114,8 @@ resource "aws_lambda_function" "roxas" {
       GH_APP_WEBHOOK_SECRET  = var.github_app_webhook_secret
       GH_APP_PRIVATE_KEY     = var.github_app_private_key
       GH_APP_URL             = var.github_app_url
+      BEDROCK_MODEL_ID       = var.bedrock_model_id
+      BUFFER_ACCESS_TOKEN    = var.buffer_access_token
     }
   }
 

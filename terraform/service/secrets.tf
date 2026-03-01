@@ -65,3 +65,23 @@ resource "aws_iam_role_policy" "lambda_secrets" {
     ]
   })
 }
+
+# Inline IAM Policy for Lambda to invoke AWS Bedrock (Claude)
+resource "aws_iam_role_policy" "lambda_bedrock" {
+  name_prefix = "bedrock-access-"
+  role        = aws_iam_role.lambda_exec.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream"
+        ]
+        Resource = "arn:aws:bedrock:*::foundation-model/anthropic.*"
+      }
+    ]
+  })
+}

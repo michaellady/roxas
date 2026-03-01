@@ -99,8 +99,6 @@ jobs:
       - name: Terraform Plan
         working-directory: terraform/service
         env:
-          TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          TF_VAR_linkedin_access_token: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
           TF_VAR_webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
           TF_VAR_credential_encryption_key: ${{ secrets.CREDENTIAL_ENCRYPTION_KEY }}
           TF_VAR_github_app_id: ${{ secrets.GH_APP_ID }}
@@ -115,8 +113,6 @@ jobs:
       - name: Terraform Apply
         working-directory: terraform/service
         env:
-          TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          TF_VAR_linkedin_access_token: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
           TF_VAR_webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
           TF_VAR_credential_encryption_key: ${{ secrets.CREDENTIAL_ENCRYPTION_KEY }}
           TF_VAR_github_app_id: ${{ secrets.GH_APP_ID }}
@@ -227,8 +223,6 @@ jobs:
       - name: Terraform Plan
         working-directory: terraform/service
         env:
-          TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          TF_VAR_linkedin_access_token: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
           TF_VAR_webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
           TF_VAR_credential_encryption_key: ${{ secrets.CREDENTIAL_ENCRYPTION_KEY }}
           TF_VAR_github_app_id: ${{ secrets.GH_APP_ID }}
@@ -243,8 +237,6 @@ jobs:
       - name: Terraform Apply
         working-directory: terraform/service
         env:
-          TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          TF_VAR_linkedin_access_token: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
           TF_VAR_webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
           TF_VAR_credential_encryption_key: ${{ secrets.CREDENTIAL_ENCRYPTION_KEY }}
           TF_VAR_github_app_id: ${{ secrets.GH_APP_ID }}

@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -23,9 +22,7 @@ import (
 	"github.com/mikelady/roxas/internal/clients"
 	"github.com/mikelady/roxas/internal/database"
 	"github.com/mikelady/roxas/internal/handlers"
-	"github.com/mikelady/roxas/internal/models"
 	"github.com/mikelady/roxas/internal/oauth"
-	"github.com/mikelady/roxas/internal/orchestrator"
 	"github.com/mikelady/roxas/internal/services"
 	"github.com/mikelady/roxas/internal/web"
 )
@@ -35,10 +32,6 @@ var dbPool *database.Pool
 
 // Config holds application configuration from environment variables
 type Config struct {
-	OpenAIAPIKey        string
-	OpenAIChatModel     string
-	OpenAIImageModel    string
-	LinkedInAccessToken string
 	WebhookSecret       string
 	DBSecretName        string
 	WebhookBaseURL      string
@@ -50,15 +43,13 @@ type Config struct {
 	GitHubAppWebhookSecret string // GH_APP_WEBHOOK_SECRET (app-level secret)
 	GitHubAppPrivateKey    string // GH_APP_PRIVATE_KEY (PEM-encoded private key, base64)
 	GitHubAppURL           string // GH_APP_URL (install URL, e.g. https://github.com/apps/roxas/installations/new)
+	BedrockModelID         string // BEDROCK_MODEL_ID (defaults to Claude Sonnet 4.5)
+	BufferAccessToken      string // BUFFER_ACCESS_TOKEN for Buffer API posting
 }
 
 // loadConfig loads configuration from environment variables
 func loadConfig() Config {
 	return Config{
-		OpenAIAPIKey:        os.Getenv("OPENAI_API_KEY"),
-		OpenAIChatModel:     os.Getenv("OPENAI_CHAT_MODEL"),  // defaults to gpt-4o-mini if empty
-		OpenAIImageModel:    os.Getenv("OPENAI_IMAGE_MODEL"), // defaults to dall-e-2 if empty
-		LinkedInAccessToken: os.Getenv("LINKEDIN_ACCESS_TOKEN"),
 		WebhookSecret:       os.Getenv("WEBHOOK_SECRET"),
 		DBSecretName:        os.Getenv("DB_SECRET_NAME"),
 		WebhookBaseURL:      os.Getenv("WEBHOOK_BASE_URL"),
@@ -70,6 +61,8 @@ func loadConfig() Config {
 		GitHubAppWebhookSecret: os.Getenv("GH_APP_WEBHOOK_SECRET"),
 		GitHubAppPrivateKey:    os.Getenv("GH_APP_PRIVATE_KEY"),
 		GitHubAppURL:           os.Getenv("GH_APP_URL"),
+		BedrockModelID:         os.Getenv("BEDROCK_MODEL_ID"),        // defaults to Claude Sonnet 4.5 if empty
+		BufferAccessToken:      os.Getenv("BUFFER_ACCESS_TOKEN"),
 	}
 }
 
@@ -78,22 +71,16 @@ func validateConfig(config Config) error {
 	if config.WebhookSecret == "" {
 		return fmt.Errorf("WEBHOOK_SECRET is required")
 	}
-	// OpenAI and LinkedIn tokens are optional for signature validation
-	// but required for processing
+	// Other tokens are optional - only webhook secret is required for validation
 	return nil
 }
 
-// webhookHandler handles GitHub webhook requests at /webhook
+// webhookHandler handles legacy GitHub webhook requests at /webhook
+// Now just validates signature and returns 200 (processing moved to multi-tenant handlers)
 func webhookHandler(config Config) http.HandlerFunc {
-	return webhookHandlerWithMocks(config, "", "")
-}
-
-// webhookHandlerWithMocks handles GitHub webhook requests with optional mock API URLs for testing
-func webhookHandlerWithMocks(config Config, openAIBaseURL, linkedInBaseURL string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Received webhook request: %s %s", r.Method, r.URL.Path)
 
-		// Read request body
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			log.Printf("Failed to read request body: %v", err)
@@ -101,7 +88,6 @@ func webhookHandlerWithMocks(config Config, openAIBaseURL, linkedInBaseURL strin
 			return
 		}
 
-		// Validate webhook signature
 		signature := r.Header.Get("X-Hub-Signature-256")
 		if signature == "" {
 			log.Println("Missing signature header")
@@ -109,57 +95,16 @@ func webhookHandlerWithMocks(config Config, openAIBaseURL, linkedInBaseURL strin
 			return
 		}
 
-		// Validate signature
 		if !validateSignature(body, signature, config.WebhookSecret) {
 			log.Println("Invalid signature")
 			http.Error(w, "Invalid signature", http.StatusUnauthorized)
 			return
 		}
 
-		// Parse webhook payload
-		commit, err := extractCommitFromWebhook(body)
-		if err != nil {
-			log.Printf("Failed to parse webhook: %v", err)
-			http.Error(w, fmt.Sprintf("Invalid webhook payload: %v", err), http.StatusBadRequest)
-			return
-		}
-
-		// Check if we have API credentials for processing
-		if config.OpenAIAPIKey == "" || config.LinkedInAccessToken == "" {
-			log.Println("Missing API credentials - webhook accepted but not processed")
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("Webhook received (credentials missing for processing)"))
-			return
-		}
-
-		// Initialize API clients (use mock URLs if provided, otherwise use defaults)
-		openAIClient := clients.NewOpenAIClient(config.OpenAIAPIKey, openAIBaseURL, config.OpenAIChatModel, config.OpenAIImageModel)
-		linkedInClient := clients.NewLinkedInClient(config.LinkedInAccessToken, linkedInBaseURL)
-
-		// Initialize services
-		summarizer := services.NewSummarizer(openAIClient)
-		imageGenerator := services.NewImageGenerator(openAIClient)
-		linkedInPoster := services.NewLinkedInPoster(linkedInClient, config.LinkedInAccessToken)
-
-		// Initialize orchestrator
-		orch := orchestrator.NewOrchestrator(summarizer, imageGenerator, linkedInPoster)
-
-		// Process commit synchronously (Lambda freezes goroutines when handler returns)
-		postURL, err := orch.ProcessCommit(*commit)
-		if err != nil {
-			log.Printf("Error processing commit: %v", err)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(fmt.Sprintf(`{"error": "Failed to process commit: %v"}`, err)))
-			return
-		}
-
-		log.Printf("Successfully posted to LinkedIn: %s", postURL)
-
-		// Return 200 with success
-		w.Header().Set("Content-Type", "application/json")
+		// Legacy endpoint - just acknowledge receipt
+		// Active processing happens via /webhooks/github/ and /webhooks/github-app
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(fmt.Sprintf(`{"message": "Webhook processed successfully", "linkedin_url": "%s"}`, postURL)))
+		w.Write([]byte("Webhook received (use /webhooks/github-app for active processing)"))
 	}
 }
 
@@ -325,7 +270,7 @@ func (a *draftListerAdapter) ListDraftsByUser(ctx context.Context, userID string
 			ID:          d.ID,
 			RepoName:    repoName,
 			PreviewText: previewText,
-			Platform:    "threads", // Default platform for now
+			Platform:    "buffer", // Cross-posts to all platforms via Buffer
 			CreatedAt:   d.CreatedAt,
 		})
 	}
@@ -377,8 +322,8 @@ func (a *aiGeneratorAdapter) TriggerGeneration(ctx context.Context, draftID stri
 	}
 
 	// Generate content using PostGenerator
-	// Use "threads" as the platform (could be made configurable)
-	generated, err := a.postGenerator.Generate(ctx, "linkedin", commit)
+	// Use "buffer" platform (280 char limit for cross-platform posting via Buffer)
+	generated, err := a.postGenerator.Generate(ctx, "buffer", commit)
 	if err != nil {
 		// Update draft status to error
 		_ = a.draftStore.UpdateDraftStatus(ctx, draftID, database.DraftStatusError)
@@ -421,7 +366,7 @@ func (a *draftStoreAdapter) GetDraftByID(ctx context.Context, draftID string) (*
 		RepositoryID: draft.RepositoryID,
 		Content:      content,
 		Status:       draft.Status,
-		CharLimit:    500, // Threads character limit
+		CharLimit:    280, // Buffer cross-platform limit (X/Twitter is the smallest)
 		CreatedAt:    draft.CreatedAt,
 	}, nil
 }
@@ -455,10 +400,11 @@ func (a *aiRegeneratorAdapter) RegenerateDraft(ctx context.Context, draftID stri
 	return a.generator.TriggerGeneration(ctx, draftID)
 }
 
-// socialPosterAdapter implements web.SocialPoster for posting to Threads
+// socialPosterAdapter implements web.SocialPoster for posting via Buffer or direct platforms
 type socialPosterAdapter struct {
 	draftStore      *database.DraftStore
 	credentialStore services.CredentialStore
+	bufferClient    *clients.BufferClient // nil if Buffer not configured
 }
 
 func (a *socialPosterAdapter) PostDraft(ctx context.Context, userID, draftID string) (string, error) {
@@ -474,10 +420,19 @@ func (a *socialPosterAdapter) PostDraft(ctx context.Context, userID, draftID str
 		content = *draft.EditedContent
 	}
 
-	// Try Bluesky first, then fall back to Threads
+	// Try Buffer first (cross-posts to all connected platforms)
+	if a.bufferClient != nil {
+		result, err := a.bufferClient.Post(ctx, clients.BufferPostContent{Text: content})
+		if err != nil {
+			log.Printf("Buffer posting failed, falling back to direct platforms: %v", err)
+		} else {
+			return fmt.Sprintf("Posted to %d platforms via Buffer (ID: %s)", len(result.Updates), result.PostID), nil
+		}
+	}
+
+	// Fall back to direct platform posting: try Bluesky first, then Threads
 	bluskyCreds, bskyErr := a.credentialStore.GetCredentials(ctx, userID, "bluesky")
 	if bskyErr == nil && bluskyCreds != nil {
-		// Bluesky: AccessToken = app password, RefreshToken = handle
 		handle := bluskyCreds.RefreshToken
 		appPassword := bluskyCreds.AccessToken
 		bskyClient := clients.NewBlueskyClient(handle, appPassword, "")
@@ -488,7 +443,6 @@ func (a *socialPosterAdapter) PostDraft(ctx context.Context, userID, draftID str
 		return result.PostURL, nil
 	}
 
-	// Fall back to Threads
 	threadsCreds, threadsErr := a.credentialStore.GetCredentials(ctx, userID, "threads")
 	if threadsErr == nil && threadsCreds != nil {
 		threadsClient := clients.NewThreadsClient(threadsCreds.AccessToken, "")
@@ -499,7 +453,7 @@ func (a *socialPosterAdapter) PostDraft(ctx context.Context, userID, draftID str
 		return result.PostURL, nil
 	}
 
-	return "", fmt.Errorf("no social platform connected - please connect Bluesky or Threads first")
+	return "", fmt.Errorf("no social platform connected - configure Buffer or connect Bluesky/Threads")
 }
 
 // threadsOAuthAdapter implements web.ThreadsOAuthConnector
@@ -847,29 +801,22 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 		idempotencyStore := &idempotencyStoreAdapter{store: deliveryStore}
 		activityStoreForWebhook := &activityStoreAdapter{store: activityStore}
 
-		// Create AI generator if OpenAI API key is configured
+		// Create AI generator using Bedrock (Claude)
 		var aiGenerator *aiGeneratorAdapter
-		if config.OpenAIAPIKey != "" {
-			openaiClient := clients.NewOpenAIClient(config.OpenAIAPIKey, "", config.OpenAIChatModel, config.OpenAIImageModel)
-			postGenerator := services.NewPostGenerator(openaiClient)
-			aiGenerator = &aiGeneratorAdapter{
-				draftStore:    draftStore,
-				repoStore:     repoStore,
-				postGenerator: postGenerator,
-			}
-			log.Println("AI content generation enabled")
-		} else {
-			log.Println("AI content generation disabled (no OPENAI_API_KEY)")
+		bedrockClient := clients.NewBedrockClient(os.Getenv("AWS_REGION"), config.BedrockModelID, "")
+		postGenerator := services.NewPostGenerator(bedrockClient)
+		aiGenerator = &aiGeneratorAdapter{
+			draftStore:    draftStore,
+			repoStore:     repoStore,
+			postGenerator: postGenerator,
 		}
+		log.Printf("AI content generation enabled (Bedrock Claude, model: %s)", bedrockClient.ModelID())
 
 		// Use DraftCreatingWebhookHandler which creates drafts on push events
 		draftHandler := handlers.NewDraftCreatingWebhookHandler(repoStore, draftWebhookStore, idempotencyStore).
 			WithActivityStore(activityStoreForWebhook)
 
-		// Add AI generator if configured
-		if aiGenerator != nil {
-			draftHandler = draftHandler.WithAIGenerator(aiGenerator)
-		}
+		draftHandler = draftHandler.WithAIGenerator(aiGenerator)
 
 		mux.Handle("/webhooks/github/", draftHandler)
 
@@ -890,9 +837,7 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 				idempotencyStore,
 			).WithActivityStore(activityStoreForWebhook)
 
-			if aiGenerator != nil {
-				appWebhookHandler = appWebhookHandler.WithAIGenerator(aiGenerator)
-			}
+			appWebhookHandler = appWebhookHandler.WithAIGenerator(aiGenerator)
 
 			mux.Handle("/webhooks/github-app", appWebhookHandler)
 			log.Println("GitHub App webhook handler enabled")
@@ -932,13 +877,19 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 				if err != nil {
 					log.Printf("Warning: Failed to create credential store: %v", err)
 				} else {
-					// Add social poster
+					// Add social poster (Buffer preferred, with Bluesky/Threads fallback)
+					var bufferClient *clients.BufferClient
+					if config.BufferAccessToken != "" {
+						bufferClient = clients.NewBufferClient(config.BufferAccessToken, "")
+						log.Println("Buffer API posting enabled")
+					}
 					socialPoster := &socialPosterAdapter{
 						draftStore:      draftStore,
 						credentialStore: credentialStore,
+						bufferClient:    bufferClient,
 					}
 					router = router.WithSocialPoster(socialPoster)
-					log.Println("Social posting enabled (Bluesky, Threads)")
+					log.Println("Social posting enabled (Buffer, Bluesky, Threads)")
 
 					// Add Threads OAuth if configured
 					if config.ThreadsClientID != "" && config.ThreadsClientSecret != "" {
@@ -982,14 +933,14 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 			log.Println("Social posting disabled (no CREDENTIAL_ENCRYPTION_KEY)")
 		}
 
-		// Add AI regenerator if OpenAI is configured
-		if config.OpenAIAPIKey != "" {
-			openaiClient := clients.NewOpenAIClient(config.OpenAIAPIKey, "", config.OpenAIChatModel, config.OpenAIImageModel)
-			postGenerator := services.NewPostGenerator(openaiClient)
+		// Add AI regenerator using Bedrock (Claude)
+		{
+			bedrockForRegen := clients.NewBedrockClient(os.Getenv("AWS_REGION"), config.BedrockModelID, "")
+			regenPostGenerator := services.NewPostGenerator(bedrockForRegen)
 			aiGen := &aiGeneratorAdapter{
 				draftStore:    draftStore,
 				repoStore:     repoStore,
-				postGenerator: postGenerator,
+				postGenerator: regenPostGenerator,
 			}
 			router = router.WithAIRegenerator(&aiRegeneratorAdapter{generator: aiGen})
 		}
@@ -1058,46 +1009,6 @@ func validateSignature(payload []byte, signature string, secret string) bool {
 
 	// Compare
 	return hmac.Equal([]byte(signature), []byte(expectedMAC))
-}
-
-// GitHubWebhookPayload represents the GitHub webhook JSON structure
-type GitHubWebhookPayload struct {
-	Repository struct {
-		HTMLURL string `json:"html_url"`
-	} `json:"repository"`
-	Commits []struct {
-		ID      string `json:"id"`
-		Message string `json:"message"`
-		Author  struct {
-			Name string `json:"name"`
-		} `json:"author"`
-	} `json:"commits"`
-}
-
-// extractCommitFromWebhook parses GitHub webhook payload and extracts commit info
-func extractCommitFromWebhook(payload []byte) (*models.Commit, error) {
-	var webhook GitHubWebhookPayload
-
-	err := json.Unmarshal(payload, &webhook)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse JSON: %w", err)
-	}
-
-	if len(webhook.Commits) == 0 {
-		return nil, fmt.Errorf("no commits in webhook payload")
-	}
-
-	// Get the first commit (most recent)
-	firstCommit := webhook.Commits[0]
-
-	commit := &models.Commit{
-		Message: firstCommit.Message,
-		Author:  firstCommit.Author.Name,
-		RepoURL: webhook.Repository.HTMLURL,
-		Diff:    "", // Not fetching diff for MVP
-	}
-
-	return commit, nil
 }
 
 func main() {

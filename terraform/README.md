@@ -36,9 +36,7 @@ cp example.tfvars terraform.tfvars
 
 Edit `terraform.tfvars` and set your actual values:
 ```hcl
-openai_api_key        = "sk-..."
-linkedin_access_token = "your-token"
-github_webhook_secret = "your-secret"
+webhook_secret = "your-secret"
 ```
 
 ### 3. Initialize Terraform

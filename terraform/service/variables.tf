@@ -50,18 +50,6 @@ variable "log_level" {
 }
 
 # Sensitive variables - must be provided via environment or tfvars
-variable "openai_api_key" {
-  description = "OpenAI API key for GPT-4 access"
-  type        = string
-  sensitive   = true
-}
-
-variable "linkedin_access_token" {
-  description = "LinkedIn OAuth access token"
-  type        = string
-  sensitive   = true
-}
-
 variable "webhook_secret" {
   description = "Webhook secret for HMAC validation"
   type        = string
@@ -98,6 +86,19 @@ variable "github_app_private_key" {
 variable "github_app_url" {
   description = "URL for installing the GitHub App (e.g. https://github.com/apps/roxas/installations/new)"
   type        = string
+  default     = ""
+}
+
+variable "bedrock_model_id" {
+  description = "AWS Bedrock model ID for Claude (defaults to Sonnet 4.5)"
+  type        = string
+  default     = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+}
+
+variable "buffer_access_token" {
+  description = "Buffer personal access token for cross-platform social posting"
+  type        = string
+  sensitive   = true
   default     = ""
 }
 

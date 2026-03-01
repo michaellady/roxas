@@ -332,11 +332,11 @@ func TestPostGenerator_DifferentCommits_DifferentContent(t *testing.T) {
 }
 
 // =============================================================================
-// Test: OpenAI Error Bubbles Up
+// Test: AI Error Bubbles Up
 // =============================================================================
 
-func TestPostGenerator_OpenAIError_BubblesUp(t *testing.T) {
-	// Errors from OpenAI should bubble up without being wrapped generically
+func TestPostGenerator_AIError_BubblesUp(t *testing.T) {
+	// Errors from the AI client should bubble up without being wrapped generically
 
 	apiError := errors.New("API rate limit exceeded: too many requests")
 
@@ -360,7 +360,7 @@ func TestPostGenerator_OpenAIError_BubblesUp(t *testing.T) {
 	_, err := generator.Generate(ctx, PlatformLinkedIn, commit)
 
 	if err == nil {
-		t.Fatal("Expected error when OpenAI fails, got nil")
+		t.Fatal("Expected error when AI client fails, got nil")
 	}
 
 	// Error should contain the original error detail (not wrapped generically)
@@ -741,5 +741,172 @@ func TestPostGenerator_Bluesky_PromptSpecifiesConstraints(t *testing.T) {
 	// Verify prompt specified Bluesky constraints
 	if !strings.Contains(mockClient.RecordedPrompt, "300") || !strings.Contains(mockClient.RecordedPrompt, "Bluesky") {
 		t.Error("Prompt should specify Bluesky 300 character limit")
+	}
+}
+
+// =============================================================================
+// Test: Buffer Platform Configuration (TDD - RED → GREEN)
+// Buffer targets 280 chars (X/Twitter is the smallest cross-posted platform)
+// =============================================================================
+
+func TestPlatformBuffer_ConstantExists(t *testing.T) {
+	if PlatformBuffer != "buffer" {
+		t.Errorf("Expected PlatformBuffer to be 'buffer', got '%s'", PlatformBuffer)
+	}
+}
+
+func TestPlatformBuffer_ConfigExists(t *testing.T) {
+	config, ok := platformConfigs[PlatformBuffer]
+	if !ok {
+		t.Fatal("Expected platformConfigs to contain Buffer entry")
+	}
+
+	if config.Name != "Buffer" {
+		t.Errorf("Expected Buffer config Name to be 'Buffer', got '%s'", config.Name)
+	}
+}
+
+func TestPlatformBuffer_MaxLength280(t *testing.T) {
+	// X/Twitter is 280 chars - the smallest platform Buffer posts to
+	config, ok := platformConfigs[PlatformBuffer]
+	if !ok {
+		t.Fatal("Expected platformConfigs to contain Buffer entry")
+	}
+
+	if config.MaxLength != 280 {
+		t.Errorf("Expected Buffer MaxLength to be 280, got %d", config.MaxLength)
+	}
+}
+
+func TestPostGenerator_Buffer_AcceptsPlatform(t *testing.T) {
+	mockClient := &MockChatClient{
+		Response: "Shipped faster API responses! 40% improvement.",
+	}
+
+	generator := NewPostGenerator(mockClient)
+
+	commit := &Commit{
+		ID:           "commit-123",
+		RepositoryID: "repo-456",
+		CommitSHA:    "abc123def456",
+		GitHubURL:    "https://github.com/test/repo/commit/abc123",
+		Message:      "perf: optimize database queries for 40% faster response",
+		Author:       "Jane Developer",
+		Timestamp:    time.Now(),
+	}
+
+	ctx := context.Background()
+	post, err := generator.Generate(ctx, PlatformBuffer, commit)
+
+	if err != nil {
+		t.Fatalf("Expected no error for Buffer platform, got: %v", err)
+	}
+
+	if post == nil {
+		t.Fatal("Expected post, got nil")
+	}
+
+	if post.Platform != PlatformBuffer {
+		t.Errorf("Expected platform %s, got %s", PlatformBuffer, post.Platform)
+	}
+}
+
+func TestPostGenerator_Buffer_Enforces280CharLimit(t *testing.T) {
+	longContent := strings.Repeat("x", 350)
+
+	mockClient := &MockChatClient{
+		Response: longContent,
+	}
+
+	generator := NewPostGenerator(mockClient)
+
+	commit := &Commit{
+		ID:           "commit-123",
+		RepositoryID: "repo-456",
+		CommitSHA:    "abc123def456",
+		GitHubURL:    "https://github.com/test/repo/commit/abc123",
+		Message:      "feat: add new feature",
+		Author:       "Jane Developer",
+		Timestamp:    time.Now(),
+	}
+
+	ctx := context.Background()
+	post, err := generator.Generate(ctx, PlatformBuffer, commit)
+
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	if len(post.Content) > 280 {
+		t.Errorf("Buffer post too long: %d chars (max 280)", len(post.Content))
+	}
+}
+
+func TestPostGenerator_Buffer_PromptSpecifiesConstraints(t *testing.T) {
+	mockClient := &MockChatClient{
+		Response: "Shipped: faster API responses! 🚀",
+	}
+
+	generator := NewPostGenerator(mockClient)
+
+	commit := &Commit{
+		ID:           "commit-123",
+		RepositoryID: "repo-456",
+		CommitSHA:    "abc123def456",
+		GitHubURL:    "https://github.com/test/repo/commit/abc123",
+		Message:      "perf: optimize queries",
+		Author:       "Jane Developer",
+		Timestamp:    time.Now(),
+	}
+
+	ctx := context.Background()
+	_, err := generator.Generate(ctx, PlatformBuffer, commit)
+
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	prompt := mockClient.RecordedPrompt
+
+	// Should mention 280 character limit and cross-platform context
+	if !strings.Contains(prompt, "280") {
+		t.Error("Buffer prompt should specify 280 character limit")
+	}
+	if !strings.Contains(prompt, "Buffer") {
+		t.Error("Buffer prompt should mention Buffer")
+	}
+}
+
+func TestPostGenerator_Buffer_PromptMentionsCrossPosting(t *testing.T) {
+	mockClient := &MockChatClient{
+		Response: "Cross-posted test content",
+	}
+
+	generator := NewPostGenerator(mockClient)
+
+	commit := &Commit{
+		ID:           "commit-123",
+		RepositoryID: "repo-456",
+		CommitSHA:    "abc123def456",
+		GitHubURL:    "https://github.com/test/repo/commit/abc123",
+		Message:      "feat: add feature",
+		Author:       "Jane Developer",
+		Timestamp:    time.Now(),
+	}
+
+	ctx := context.Background()
+	_, err := generator.Generate(ctx, PlatformBuffer, commit)
+
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	prompt := mockClient.RecordedPrompt
+
+	// Should mention cross-posting context since Buffer distributes to all platforms
+	if !strings.Contains(strings.ToLower(prompt), "cross-post") &&
+		!strings.Contains(strings.ToLower(prompt), "all social") &&
+		!strings.Contains(strings.ToLower(prompt), "all platform") {
+		t.Error("Buffer prompt should mention cross-posting to all platforms")
 	}
 }

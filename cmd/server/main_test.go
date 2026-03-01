@@ -4,108 +4,12 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 )
-
-// TestWebhookHandlerValidWebhook tests successful webhook processing with mock APIs
-func TestWebhookHandlerValidWebhook(t *testing.T) {
-	// Create mock OpenAI server
-	openAIMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.Path, "/chat/completions") {
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"choices": []map[string]interface{}{
-					{"message": map[string]string{"content": "Mock LinkedIn summary for test commit"}},
-				},
-			})
-		} else if strings.Contains(r.URL.Path, "/images/generations") {
-			// Use fake.openai.com which is recognized by the image downloader mock
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"data": []map[string]string{
-					{"url": "https://fake.openai.com/image.png"},
-				},
-			})
-		}
-	}))
-	defer openAIMock.Close()
-
-	// Create mock LinkedIn server
-	var linkedInMock *httptest.Server
-	linkedInMock = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.Path, "/userinfo") {
-			// Return person URN for authentication
-			json.NewEncoder(w).Encode(map[string]string{"sub": "urn:li:person:test-user"})
-		} else if strings.Contains(r.URL.Path, "/images") && r.Method == "POST" {
-			// Initialize upload response - must match linkedin.go struct
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"value": map[string]interface{}{
-					"uploadUrl":          linkedInMock.URL + "/upload",
-					"image":              "urn:li:image:mock123",
-					"uploadUrlExpiresAt": 9999999999999,
-				},
-			})
-		} else if strings.Contains(r.URL.Path, "/upload") {
-			// Image binary upload endpoint
-			w.WriteHeader(http.StatusCreated)
-		} else if strings.Contains(r.URL.Path, "/posts") {
-			// Create post response - return ID in header like real API
-			w.Header().Set("x-restli-id", "urn:li:share:mock-post-123")
-			w.WriteHeader(http.StatusCreated)
-		}
-	}))
-	defer linkedInMock.Close()
-
-	// Set required environment variables with mock server URLs
-	os.Setenv("OPENAI_API_KEY", "test-openai-key")
-	os.Setenv("LINKEDIN_ACCESS_TOKEN", "test-linkedin-token")
-	os.Setenv("WEBHOOK_SECRET", "test-secret")
-	defer func() {
-		os.Unsetenv("OPENAI_API_KEY")
-		os.Unsetenv("LINKEDIN_ACCESS_TOKEN")
-		os.Unsetenv("WEBHOOK_SECRET")
-	}()
-
-	// Create config with mock URLs injected via custom handler
-	config := loadConfig()
-	handler := webhookHandlerWithMocks(config, openAIMock.URL, linkedInMock.URL)
-
-	// Create valid GitHub webhook payload
-	payload := `{
-		"repository": {"html_url": "https://github.com/test/repo"},
-		"commits": [{
-			"id": "abc123",
-			"message": "feat: test commit",
-			"author": {"name": "Test Author"}
-		}]
-	}`
-
-	// Generate valid signature
-	signature := "sha256=" + generateTestSignature([]byte(payload), "test-secret")
-
-	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(payload))
-	req.Header.Set("X-Hub-Signature-256", signature)
-	req.Header.Set("Content-Type", "application/json")
-
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", rec.Code)
-		t.Logf("Response body: %s", rec.Body.String())
-	}
-
-	// Verify the response contains success message
-	body := rec.Body.String()
-	if !strings.Contains(body, "processed successfully") {
-		t.Errorf("Expected success message, got: %s", body)
-	}
-}
 
 // TestWebhookHandlerInvalidSignature tests rejection of invalid signatures
 func TestWebhookHandlerInvalidSignature(t *testing.T) {
@@ -136,9 +40,7 @@ func TestWebhookHandlerInvalidSignature(t *testing.T) {
 // TestValidateConfigMissingWebhookSecret tests that validateConfig catches missing WEBHOOK_SECRET
 func TestValidateConfigMissingWebhookSecret(t *testing.T) {
 	config := Config{
-		OpenAIAPIKey:        "test-key",
-		LinkedInAccessToken: "test-token",
-		WebhookSecret:       "", // Missing
+		WebhookSecret: "", // Missing
 	}
 
 	err := validateConfig(config)
@@ -151,7 +53,6 @@ func TestValidateConfigMissingWebhookSecret(t *testing.T) {
 func TestValidateConfigValid(t *testing.T) {
 	config := Config{
 		WebhookSecret: "test-secret",
-		// OpenAI and LinkedIn are optional for validation
 	}
 
 	err := validateConfig(config)
@@ -163,27 +64,27 @@ func TestValidateConfigValid(t *testing.T) {
 // TestConfigLoadsFromEnv tests environment variable loading
 func TestConfigLoadsFromEnv(t *testing.T) {
 	// Set specific env var values
-	os.Setenv("OPENAI_API_KEY", "sk-test-key-123")
-	os.Setenv("LINKEDIN_ACCESS_TOKEN", "linkedin-token-456")
 	os.Setenv("WEBHOOK_SECRET", "webhook-secret-789")
+	os.Setenv("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+	os.Setenv("BUFFER_ACCESS_TOKEN", "buffer-token-123")
 	defer func() {
-		os.Unsetenv("OPENAI_API_KEY")
-		os.Unsetenv("LINKEDIN_ACCESS_TOKEN")
 		os.Unsetenv("WEBHOOK_SECRET")
+		os.Unsetenv("BEDROCK_MODEL_ID")
+		os.Unsetenv("BUFFER_ACCESS_TOKEN")
 	}()
 
 	config := loadConfig()
 
-	if config.OpenAIAPIKey != "sk-test-key-123" {
-		t.Errorf("Expected OpenAI key 'sk-test-key-123', got '%s'", config.OpenAIAPIKey)
-	}
-
-	if config.LinkedInAccessToken != "linkedin-token-456" {
-		t.Errorf("Expected LinkedIn token 'linkedin-token-456', got '%s'", config.LinkedInAccessToken)
-	}
-
 	if config.WebhookSecret != "webhook-secret-789" {
 		t.Errorf("Expected webhook secret 'webhook-secret-789', got '%s'", config.WebhookSecret)
+	}
+
+	if config.BedrockModelID != "us.anthropic.claude-sonnet-4-5-20250929-v1:0" {
+		t.Errorf("Expected Bedrock model ID, got '%s'", config.BedrockModelID)
+	}
+
+	if config.BufferAccessToken != "buffer-token-123" {
+		t.Errorf("Expected Buffer token 'buffer-token-123', got '%s'", config.BufferAccessToken)
 	}
 }
 
@@ -214,7 +115,7 @@ func TestWebhookHandlerParsesWebhookPayload(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	// Should accept the webhook (200 for missing API keys)
+	// Should accept the webhook (200)
 	if rec.Code != http.StatusOK {
 		t.Errorf("Expected status 200, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -262,7 +163,7 @@ func TestCombinedRouterServesWebhook(t *testing.T) {
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
-	// Should return 200 (webhook accepted, processing skipped due to missing API keys)
+	// Should return 200 (webhook accepted)
 	if rec.Code != http.StatusOK {
 		t.Errorf("Expected status 200, got %d: %s", rec.Code, rec.Body.String())
 	}
