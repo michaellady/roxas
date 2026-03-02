@@ -1,0 +1,86 @@
+name: Deploy Claude Code VM
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'terraform/claude-vm/**'
+      - 'terraform/backend-claude-vm-dev.hcl'
+      - '.github/workflows/claude-vm.yml'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'apply'
+        type: choice
+        options:
+          - apply
+          - destroy
+
+jobs:
+  deploy:
+    name: Deploy Claude VM (Dev)
+    runs-on: ubuntu-latest
+    environment: dev
+
+    permissions:
+      contents: read
+
+    concurrency:
+      group: deploy-claude-vm
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: terraform/claude-vm
+        run: terraform init -backend-config=../backend-claude-vm-dev.hcl
+
+      - name: Terraform Plan
+        working-directory: terraform/claude-vm
+        env:
+          TF_VAR_key_pair_name: ${{ secrets.CLAUDE_VM_KEY_PAIR_NAME }}
+          TF_VAR_allowed_ssh_cidrs: ${{ secrets.CLAUDE_VM_SSH_CIDRS }}
+        run: |
+          if [ "${{ github.event.inputs.action }}" = "destroy" ]; then
+            terraform plan -destroy -out=tfplan
+          else
+            terraform plan -out=tfplan
+          fi
+
+      - name: Terraform Apply
+        working-directory: terraform/claude-vm
+        env:
+          TF_VAR_key_pair_name: ${{ secrets.CLAUDE_VM_KEY_PAIR_NAME }}
+          TF_VAR_allowed_ssh_cidrs: ${{ secrets.CLAUDE_VM_SSH_CIDRS }}
+        run: terraform apply -auto-approve tfplan
+
+      - name: Output Connection Info
+        if: github.event.inputs.action != 'destroy'
+        working-directory: terraform/claude-vm
+        run: |
+          echo "### Claude Code VM Deployed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Public IP:** $(terraform output -raw public_ip)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**SSH:** \`$(terraform output -raw ssh_command)\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Instance ID:** $(terraform output -raw instance_id)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**SSM:** \`$(terraform output -raw ssm_command)\`" >> $GITHUB_STEP_SUMMARY
