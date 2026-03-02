@@ -9,8 +9,8 @@ output "instance_id" {
 }
 
 output "ssh_command" {
-  description = "SSH command to connect as claude-user"
-  value       = "ssh -i ${var.key_pair_name}.pem claude-user@${aws_eip.claude_vm.public_ip}"
+  description = "SSH command to connect as claude-user (only useful if key_pair_name was set)"
+  value       = var.key_pair_name != null ? "ssh -i ${var.key_pair_name}.pem claude-user@${aws_eip.claude_vm.public_ip}" : "N/A — no key pair configured, use SSM Session Manager"
 }
 
 output "ssm_command" {

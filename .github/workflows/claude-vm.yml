@@ -55,7 +55,6 @@ jobs:
       - name: Terraform Plan
         working-directory: terraform/claude-vm
         env:
-          TF_VAR_key_pair_name: ${{ secrets.CLAUDE_VM_KEY_PAIR_NAME }}
           TF_VAR_allowed_ssh_cidrs: ${{ secrets.CLAUDE_VM_SSH_CIDRS }}
         run: |
           if [ "${{ github.event.inputs.action }}" = "destroy" ]; then
@@ -67,7 +66,6 @@ jobs:
       - name: Terraform Apply
         working-directory: terraform/claude-vm
         env:
-          TF_VAR_key_pair_name: ${{ secrets.CLAUDE_VM_KEY_PAIR_NAME }}
           TF_VAR_allowed_ssh_cidrs: ${{ secrets.CLAUDE_VM_SSH_CIDRS }}
         run: terraform apply -auto-approve tfplan
 

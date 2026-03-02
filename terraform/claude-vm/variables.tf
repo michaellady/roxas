@@ -11,8 +11,9 @@ variable "instance_type" {
 }
 
 variable "key_pair_name" {
-  description = "Name of an existing EC2 key pair for SSH access"
+  description = "Name of an existing EC2 key pair for SSH access (optional — use SSM Session Manager instead)"
   type        = string
+  default     = null
 }
 
 variable "allowed_ssh_cidrs" {
