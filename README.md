@@ -1,8 +1,8 @@
 # Roxas
 
-**Transform git commits into professional LinkedIn posts**
+**Transform git commits into professional social media posts via Buffer**
 
-Roxas is an open-source automation service that helps OSS projects reach decision-makers and secure funding by automatically converting git commits into engaging LinkedIn posts with AI-generated summaries and professional images.
+Roxas is an open-source automation service that helps OSS projects reach decision-makers and secure funding by automatically converting git commits into engaging social media posts via Buffer with AI-generated summaries and professional images.
 
 ## 🚀 Status
 
@@ -23,10 +23,10 @@ flowchart LR
     B --> C[Lambda Function]
     C --> D[Webhook Handler]
     D --> E[Orchestrator]
-    E --> F[GPT-4 Summarizer]
-    F --> G[DALL-E Image Generator]
-    G --> H[LinkedIn Poster]
-    H --> I[LinkedIn Post Published]
+    E --> F[Claude Summarizer]
+    F --> G[Titan Image Generator]
+    G --> H[Buffer Poster]
+    H --> I[Posts Scheduled/Published]
 
     style A fill:#24292e,color:#fff
     style I fill:#0077b5,color:#fff
@@ -45,37 +45,39 @@ graph TB
     end
 
     subgraph "Services"
-        Summarizer[GPT-4 Summarizer<br/>Commit Analysis]
-        ImageGen[DALL-E Image Generator<br/>Visual Content]
-        LinkedIn[LinkedIn Poster<br/>Social Publishing]
+        Summarizer[Claude Summarizer<br/>Commit Analysis]
+        ImageGen[Titan Image Generator<br/>Visual Content]
+        Buffer[Buffer Poster<br/>Social Scheduling]
 
         Orch --> Summarizer
         Orch --> ImageGen
-        Orch --> LinkedIn
+        Orch --> Buffer
     end
 
     subgraph "External APIs"
-        OpenAI[OpenAI API<br/>GPT-4 + DALL-E]
-        LI[LinkedIn API<br/>Posts & Media]
+        Bedrock[AWS Bedrock<br/>Claude + Titan]
+        S3[AWS S3<br/>Image Storage]
+        BufAPI[Buffer API<br/>Social Scheduling]
 
-        Summarizer --> OpenAI
-        ImageGen --> OpenAI
-        LinkedIn --> LI
+        Summarizer --> Bedrock
+        ImageGen --> Bedrock
+        ImageGen --> S3
+        Buffer --> BufAPI
     end
 
     subgraph "Clients"
-        OAIClient[OpenAI Client]
-        LIClient[LinkedIn Client]
+        BRClient[Bedrock Client]
+        BufClient[Buffer Client]
 
-        Summarizer --> OAIClient
-        ImageGen --> OAIClient
-        LinkedIn --> LIClient
+        Summarizer --> BRClient
+        ImageGen --> BRClient
+        Buffer --> BufClient
     end
 
     style Handler fill:#3498db,color:#fff
     style Orch fill:#9b59b6,color:#fff
-    style OpenAI fill:#10a37f,color:#fff
-    style LI fill:#0077b5,color:#fff
+    style Bedrock fill:#ff9900,color:#000
+    style BufAPI fill:#0077b5,color:#fff
 ```
 
 ### Infrastructure
@@ -140,8 +142,8 @@ graph TB
     end
 
     subgraph "External Services"
-        OpenAI[OpenAI API<br/>GPT-4 + DALL-E]
-        LinkedIn[LinkedIn API<br/>Social Posts]
+        Bedrock[AWS Bedrock<br/>Claude + Titan]
+        BufferAPI[Buffer API<br/>Social Scheduling]
     end
 
     Repo -->|Webhook| APIGW_Prod
@@ -149,10 +151,10 @@ graph TB
     Actions -->|Deploy Dev| Lambda_Dev
     Actions -->|Deploy Prod| Lambda_Prod
 
-    Lambda_Dev -->|via NAT| OpenAI
-    Lambda_Dev -->|via NAT| LinkedIn
-    Lambda_Prod -->|via NAT| OpenAI
-    Lambda_Prod -->|via NAT| LinkedIn
+    Lambda_Dev -->|via NAT| Bedrock
+    Lambda_Dev -->|via NAT| BufferAPI
+    Lambda_Prod -->|via NAT| Bedrock
+    Lambda_Prod -->|via NAT| BufferAPI
 
     style Repo fill:#24292e,color:#fff
     style Actions fill:#2088ff,color:#fff
@@ -162,8 +164,8 @@ graph TB
     style RDS_Prod fill:#527fff,color:#fff
     style NAT_Dev fill:#ec7211,color:#fff
     style NAT_Prod fill:#ec7211,color:#fff
-    style OpenAI fill:#10a37f,color:#fff
-    style LinkedIn fill:#0077b5,color:#fff
+    style Bedrock fill:#ff9900,color:#000
+    style BufferAPI fill:#0077b5,color:#fff
 ```
 
 ### Shared RDS for PR Deployments
@@ -361,9 +363,9 @@ All PR deployments use the shared `roxas-dev-rds` instance by default. For PRs r
 - **Go 1.25.3+**
 - **AWS Account** (for deployment)
 - **API Keys**:
-  - OpenAI API key (GPT-4 + DALL-E access)
-  - LinkedIn API credentials (OAuth access token)
+  - AWS credentials with Bedrock access (Claude + Titan models)
   - GitHub webhook secret
+  - Buffer credentials (configured per-user via the settings page)
 
 ### Installation
 
@@ -423,7 +425,8 @@ psql ${DATABASE_URL} -c "\dt"
 - `users` - User accounts with authentication
 - `repositories` - GitHub repositories tracked per user
 - `commits` - Commit metadata (lightweight storage)
-- `posts` - Generated social media content per platform
+- `posts` - Generated social media content per platform (includes `buffer_post_id`, `buffer_status`, `scheduled_at` columns for Buffer integration)
+- `buffer_connections` - Per-user Buffer OAuth credentials and channel selections (access tokens, refresh tokens, selected profiles/channels)
 
 See `db/migrations/` for complete schema definitions.
 
@@ -455,10 +458,10 @@ roxas/
 │       └── main_test.go     # Lambda handler tests
 ├── internal/
 │   ├── clients/             # External API clients
-│   │   ├── openai.go        # OpenAI API client (GPT-4 + DALL-E)
-│   │   ├── openai_test.go
-│   │   ├── linkedin.go      # LinkedIn API client
-│   │   └── linkedin_test.go
+│   │   ├── bedrock.go       # AWS Bedrock client (Claude + Titan)
+│   │   ├── bedrock_test.go
+│   │   ├── buffer.go         # Buffer API client
+│   │   └── buffer_test.go
 │   ├── handlers/            # HTTP request handlers
 │   │   ├── webhook.go       # GitHub webhook handler
 │   │   └── webhook_test.go
@@ -467,13 +470,28 @@ roxas/
 │   │   └── commit_test.go
 │   ├── orchestrator/        # Workflow coordination
 │   │   └── orchestrator.go  # End-to-end flow orchestration
+│   ├── web/                  # Web UI
+│   │   ├── router.go         # HTTP route definitions
+│   │   ├── router_test.go
+│   │   ├── templates/
+│   │   │   ├── layouts/
+│   │   │   │   └── base.html
+│   │   │   └── pages/
+│   │   │       ├── home.html
+│   │   │       ├── dashboard.html
+│   │   │       ├── login.html
+│   │   │       ├── signup.html
+│   │   │       └── settings.html  # Buffer connection configuration
+│   │   └── static/
+│   │       └── css/style.css
 │   └── services/            # Business logic
-│       ├── summarizer.go    # GPT-4 commit summarization
+│       ├── summarizer.go    # AI commit summarization via Bedrock
 │       ├── summarizer_test.go
-│       ├── imagegen.go      # DALL-E image generation
+│       ├── imagegen.go      # AI image generation via Bedrock
 │       ├── imagegen_test.go
-│       ├── linkedin.go      # LinkedIn posting logic
-│       └── linkedin_test.go
+│       ├── buffer.go         # Buffer posting/scheduling logic
+│       ├── buffer_test.go
+│       └── buffer_store.go   # Buffer connection persistence
 ├── tests/
 │   └── integration_test.go  # End-to-end integration tests
 ├── terraform/               # Infrastructure as Code
@@ -627,9 +645,13 @@ For detailed Terraform documentation, see [`terraform/README.md`](terraform/READ
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `OPENAI_API_KEY` | OpenAI API key for GPT-4 and DALL-E | `sk-proj-...` |
-| `LINKEDIN_ACCESS_TOKEN` | LinkedIn OAuth access token | `AQV...` |
 | `WEBHOOK_SECRET` | GitHub webhook secret for signature validation | Random 32+ char string |
+
+> **Note:** AI features use AWS Bedrock (Claude + Titan) with IAM authentication. No API keys needed — just ensure the Lambda role has `bedrock:InvokeModel` permission.
+
+> **Note:** Buffer credentials are stored per-user in the database (in the `buffer_connections` table), not as environment variables. Users configure their Buffer connection via the settings page.
+
+> **Note:** `BEDROCK_CHAT_MODEL` and `BEDROCK_IMAGE_MODEL` are optional. Defaults: `anthropic.claude-sonnet-4-20250514-v1:0` and `amazon.titan-image-generator-v1`.
 
 ### Optional Variables
 
@@ -652,9 +674,7 @@ cp .env.example .env
 2. Add secrets to appropriate environment (`dev` or `prod`):
    - `AWS_ACCESS_KEY_ID`
    - `AWS_SECRET_ACCESS_KEY`
-   - `OPENAI_API_KEY`
-   - `LINKEDIN_ACCESS_TOKEN`
-   - `GITHUB_WEBHOOK_SECRET`
+   - `WEBHOOK_SECRET`
 
 **AWS Lambda:**
 - Environment variables are set via Terraform (`terraform/variables.tf`)
@@ -722,8 +742,8 @@ curl -X POST https://your-api-gateway-url/webhook \
 ### Common Issues
 
 **1. Tests failing with API errors**
-- **Cause**: Missing or invalid API keys
-- **Solution**: Verify `.env` file has correct `OPENAI_API_KEY` and `LINKEDIN_ACCESS_TOKEN`
+- **Cause**: Missing or invalid AWS credentials
+- **Solution**: Verify AWS credentials are configured and Bedrock model access is enabled. Check that Buffer credentials are configured in the database via the settings page
 
 **2. Webhook signature validation fails**
 - **Cause**: Mismatched `WEBHOOK_SECRET` between GitHub and Lambda
@@ -733,13 +753,13 @@ curl -X POST https://your-api-gateway-url/webhook \
 - **Cause**: Missing AWS credentials or insufficient IAM permissions
 - **Solution**: Verify GitHub Secrets are set and IAM policies are attached
 
-**4. LinkedIn post not appearing**
-- **Cause**: Invalid access token or token expired
-- **Solution**: Regenerate LinkedIn access token (90-day expiration)
+**4. Buffer post not appearing**
+- **Cause**: Invalid or expired Buffer access token, or no Buffer connection configured
+- **Solution**: Re-authenticate with Buffer via the settings page to refresh your connection and verify your selected channels
 
-**5. DALL-E image generation fails**
-- **Cause**: OpenAI API quota exceeded or invalid prompt
-- **Solution**: Check CloudWatch logs for error details, verify OpenAI billing
+**5. Image generation fails**
+- **Cause**: Bedrock model access not enabled, IAM permissions missing, or S3 bucket misconfigured
+- **Solution**: Check CloudWatch logs for error details, verify Bedrock model access in AWS console, and ensure Lambda IAM role has `bedrock:InvokeModel` and `s3:PutObject`/`s3:GetObject` permissions
 
 ### Debugging
 
@@ -812,7 +832,7 @@ TBD
 
 ---
 
-**Built with Go, AWS Lambda, OpenAI GPT-4 & DALL-E, and LinkedIn API**
+**Built with Go, AWS Lambda, AWS Bedrock (Claude + Titan), and Buffer API**
 
 For questions or issues, please open a GitHub issue.
 
