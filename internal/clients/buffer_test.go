@@ -22,7 +22,7 @@ func TestBufferListProfiles(t *testing.T) {
 			t.Errorf("Expected Bearer test-token, got %s", auth)
 		}
 
-		profiles := []bufferProfile{
+		profiles := []BufferProfile{
 			{ID: "prof-1", Service: "twitter", Formatted: "Twitter @testuser"},
 			{ID: "prof-2", Service: "linkedin", Formatted: "LinkedIn TestCo"},
 			{ID: "prof-3", Service: "facebook", Formatted: "Facebook TestPage"},
@@ -129,7 +129,7 @@ func TestBufferPost_SocialClientInterface(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/1/profiles.json":
-			profiles := []bufferProfile{
+			profiles := []BufferProfile{
 				{ID: "prof-1", Service: "twitter", Formatted: "Twitter @user"},
 			}
 			json.NewEncoder(w).Encode(profiles)
@@ -229,7 +229,7 @@ func TestBufferListProfiles_InvalidJSON(t *testing.T) {
 func TestBufferPost_NoProfiles(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Return empty profiles
-		json.NewEncoder(w).Encode([]bufferProfile{})
+		json.NewEncoder(w).Encode([]BufferProfile{})
 	}))
 	defer server.Close()
 

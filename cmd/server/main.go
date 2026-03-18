@@ -14,7 +14,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/awslabs/aws-lambda-go-api-proxy/httpadapter"
@@ -22,7 +21,6 @@ import (
 	"github.com/mikelady/roxas/internal/clients"
 	"github.com/mikelady/roxas/internal/database"
 	"github.com/mikelady/roxas/internal/handlers"
-	"github.com/mikelady/roxas/internal/oauth"
 	"github.com/mikelady/roxas/internal/services"
 	"github.com/mikelady/roxas/internal/web"
 )
@@ -36,15 +34,12 @@ type Config struct {
 	DBSecretName        string
 	WebhookBaseURL      string
 	EncryptionKey       string // 32 bytes (base64 encoded or hex) for credential encryption
-	ThreadsClientID        string
-	ThreadsClientSecret    string
 	OAuthCallbackURL       string // Base URL for OAuth callbacks
 	GitHubAppID            string // GH_APP_ID
 	GitHubAppWebhookSecret string // GH_APP_WEBHOOK_SECRET (app-level secret)
 	GitHubAppPrivateKey    string // GH_APP_PRIVATE_KEY (PEM-encoded private key, base64)
 	GitHubAppURL           string // GH_APP_URL (install URL, e.g. https://github.com/apps/roxas/installations/new)
 	BedrockModelID         string // BEDROCK_MODEL_ID (defaults to Claude Sonnet 4.5)
-	BufferAccessToken      string // BUFFER_ACCESS_TOKEN for Buffer API posting
 }
 
 // loadConfig loads configuration from environment variables
@@ -54,15 +49,12 @@ func loadConfig() Config {
 		DBSecretName:        os.Getenv("DB_SECRET_NAME"),
 		WebhookBaseURL:      os.Getenv("WEBHOOK_BASE_URL"),
 		EncryptionKey:       os.Getenv("CREDENTIAL_ENCRYPTION_KEY"), // 32-byte key for AES-256
-		ThreadsClientID:        os.Getenv("THREADS_CLIENT_ID"),
-		ThreadsClientSecret:    os.Getenv("THREADS_CLIENT_SECRET"),
 		OAuthCallbackURL:       os.Getenv("OAUTH_CALLBACK_URL"), // e.g., https://app.example.com
 		GitHubAppID:            os.Getenv("GH_APP_ID"),
 		GitHubAppWebhookSecret: os.Getenv("GH_APP_WEBHOOK_SECRET"),
 		GitHubAppPrivateKey:    os.Getenv("GH_APP_PRIVATE_KEY"),
 		GitHubAppURL:           os.Getenv("GH_APP_URL"),
 		BedrockModelID:         os.Getenv("BEDROCK_MODEL_ID"),        // defaults to Claude Sonnet 4.5 if empty
-		BufferAccessToken:      os.Getenv("BUFFER_ACCESS_TOKEN"),
 	}
 }
 
@@ -400,11 +392,10 @@ func (a *aiRegeneratorAdapter) RegenerateDraft(ctx context.Context, draftID stri
 	return a.generator.TriggerGeneration(ctx, draftID)
 }
 
-// socialPosterAdapter implements web.SocialPoster for posting via Buffer or direct platforms
+// socialPosterAdapter implements web.SocialPoster for posting via per-user Buffer credentials
 type socialPosterAdapter struct {
 	draftStore      *database.DraftStore
 	credentialStore services.CredentialStore
-	bufferClient    *clients.BufferClient // nil if Buffer not configured
 }
 
 func (a *socialPosterAdapter) PostDraft(ctx context.Context, userID, draftID string) (string, error) {
@@ -420,148 +411,80 @@ func (a *socialPosterAdapter) PostDraft(ctx context.Context, userID, draftID str
 		content = *draft.EditedContent
 	}
 
-	// Try Buffer first (cross-posts to all connected platforms)
-	if a.bufferClient != nil {
-		result, err := a.bufferClient.Post(ctx, clients.BufferPostContent{Text: content})
-		if err != nil {
-			log.Printf("Buffer posting failed, falling back to direct platforms: %v", err)
-		} else {
-			return fmt.Sprintf("Posted to %d platforms via Buffer (ID: %s)", len(result.Updates), result.PostID), nil
-		}
+	// Look up per-user Buffer credentials
+	bufferCreds, err := a.credentialStore.GetCredentials(ctx, userID, "buffer")
+	if err != nil || bufferCreds == nil {
+		return "", fmt.Errorf("no Buffer connection found - connect Buffer from the Connections page")
 	}
 
-	// Fall back to direct platform posting: try Bluesky first, then Threads
-	bluskyCreds, bskyErr := a.credentialStore.GetCredentials(ctx, userID, "bluesky")
-	if bskyErr == nil && bluskyCreds != nil {
-		handle := bluskyCreds.RefreshToken
-		appPassword := bluskyCreds.AccessToken
-		bskyClient := clients.NewBlueskyClient(handle, appPassword, "")
-		result, err := bskyClient.Post(ctx, services.PostContent{Text: content})
-		if err != nil {
-			return "", fmt.Errorf("failed to post to Bluesky: %w", err)
-		}
-		return result.PostURL, nil
+	bufferClient := clients.NewBufferClient(bufferCreds.AccessToken, "")
+	result, err := bufferClient.Post(ctx, clients.BufferPostContent{Text: content})
+	if err != nil {
+		return "", fmt.Errorf("failed to post via Buffer: %w", err)
 	}
 
-	threadsCreds, threadsErr := a.credentialStore.GetCredentials(ctx, userID, "threads")
-	if threadsErr == nil && threadsCreds != nil {
-		threadsClient := clients.NewThreadsClient(threadsCreds.AccessToken, "")
-		result, err := threadsClient.Post(ctx, services.PostContent{Text: content})
-		if err != nil {
-			return "", fmt.Errorf("failed to post to Threads: %w", err)
-		}
-		return result.PostURL, nil
-	}
-
-	return "", fmt.Errorf("no social platform connected - configure Buffer or connect Bluesky/Threads")
+	return fmt.Sprintf("Posted to %d platforms via Buffer (ID: %s)", len(result.Updates), result.PostID), nil
 }
 
-// threadsOAuthAdapter implements web.ThreadsOAuthConnector
-type threadsOAuthAdapter struct {
-	provider        *oauth.ThreadsOAuthProvider
+// bufferConnectorAdapter implements web.BufferConnector for personal access token auth
+type bufferConnectorAdapter struct {
 	credentialStore services.CredentialStore
 }
 
-func (a *threadsOAuthAdapter) GetAuthURL(state, redirectURL string) string {
-	return a.provider.GetAuthURL(state, redirectURL)
+func (a *bufferConnectorAdapter) Connect(ctx context.Context, userID, accessToken string) (*web.BufferConnectResult, error) {
+	return a.connectWithBaseURL(ctx, userID, accessToken, "")
 }
 
-func (a *threadsOAuthAdapter) ExchangeCode(ctx context.Context, userID, code, redirectURL string) (string, error) {
-	// Exchange code for tokens
-	tokens, err := a.provider.ExchangeCode(ctx, code, redirectURL)
+func (a *bufferConnectorAdapter) connectWithBaseURL(ctx context.Context, userID, accessToken, baseURL string) (*web.BufferConnectResult, error) {
+	// Validate token by listing profiles
+	bufferClient := clients.NewBufferClient(accessToken, baseURL)
+	profiles, err := bufferClient.ListProfiles(ctx)
 	if err != nil {
-		return "", fmt.Errorf("failed to exchange code: %w", err)
+		return &web.BufferConnectResult{
+			Success: false,
+			Error:   fmt.Sprintf("Invalid token or Buffer API error: %v", err),
+		}, nil
+	}
+
+	if len(profiles) == 0 {
+		return &web.BufferConnectResult{
+			Success: false,
+			Error:   "No profiles found in your Buffer account. Please connect at least one social account in Buffer first.",
+		}, nil
+	}
+
+	// Build profile names for display (stored in PlatformUserID)
+	profileNames := make([]string, 0, len(profiles))
+	profileInfos := make([]web.BufferProfileInfo, 0, len(profiles))
+	for _, p := range profiles {
+		name := p.Formatted
+		if name == "" {
+			name = p.Service
+		}
+		profileNames = append(profileNames, p.Service+":"+name)
+		profileInfos = append(profileInfos, web.BufferProfileInfo{
+			Service:       p.Service,
+			FormattedName: name,
+		})
 	}
 
 	// Store credentials
 	creds := &services.PlatformCredentials{
 		UserID:         userID,
-		Platform:       "threads",
-		AccessToken:    tokens.AccessToken,
-		RefreshToken:   tokens.RefreshToken,
-		TokenExpiresAt: tokens.ExpiresAt,
-		PlatformUserID: tokens.PlatformUserID,
-		Scopes:         tokens.Scopes,
-	}
-
-	if err := a.credentialStore.SaveCredentials(ctx, creds); err != nil {
-		return "", fmt.Errorf("failed to save credentials: %w", err)
-	}
-
-	// Return platform username (or user ID if username not available)
-	username := tokens.PlatformUserID
-	if username == "" {
-		username = "connected"
-	}
-	return username, nil
-}
-
-func (a *threadsOAuthAdapter) RefreshTokens(ctx context.Context, refreshToken string) (*web.OAuthTokens, error) {
-	tokens, err := a.provider.RefreshTokens(ctx, refreshToken)
-	if err != nil {
-		return nil, err
-	}
-	return &web.OAuthTokens{
-		AccessToken:    tokens.AccessToken,
-		RefreshToken:   tokens.RefreshToken,
-		ExpiresAt:      tokens.ExpiresAt,
-		PlatformUserID: tokens.PlatformUserID,
-		Scopes:         tokens.Scopes,
-	}, nil
-}
-
-// blueskyConnectorAdapter implements web.BlueskyConnector for app password auth
-type blueskyConnectorAdapter struct {
-	credentialStore services.CredentialStore
-}
-
-func (a *blueskyConnectorAdapter) Connect(ctx context.Context, userID, handle, appPassword string) (*web.BlueskyConnectResult, error) {
-	// Normalize handle
-	handle = strings.TrimPrefix(handle, "@")
-	// Add default domain if no domain present
-	if !strings.Contains(handle, ".") {
-		handle = handle + ".bsky.social"
-	}
-
-	// Validate credentials by attempting to authenticate
-	log.Printf("Bluesky connect: attempting auth for handle %s", handle)
-	client := clients.NewBlueskyClient(handle, appPassword, "")
-	if err := client.Authenticate(ctx); err != nil {
-		log.Printf("Bluesky connect: auth failed for %s: %v", handle, err)
-		if client.IsAuthError(err) {
-			return &web.BlueskyConnectResult{
-				Success: false,
-				Error:   "Invalid handle or app password. Please check your credentials and try again.",
-			}, nil
-		}
-		// Network or other error - show more details
-		return &web.BlueskyConnectResult{
-			Success: false,
-			Error:   fmt.Sprintf("Failed to connect to Bluesky: %v", err),
-		}, nil
-	}
-	log.Printf("Bluesky connect: auth successful for %s (DID: %s)", handle, client.GetDID())
-
-	// Store credentials - use AccessToken for app password, RefreshToken for handle
-	// (App passwords don't expire, so no expiry time)
-	creds := &services.PlatformCredentials{
-		UserID:         userID,
-		Platform:       "bluesky",
-		AccessToken:    appPassword,  // The app password
-		RefreshToken:   handle,       // Store handle for later use
-		TokenExpiresAt: nil,          // App passwords don't expire
-		PlatformUserID: client.GetDID(),
-		Scopes:         "",
+		Platform:       "buffer",
+		AccessToken:    accessToken,
+		PlatformUserID: strings.Join(profileNames, ", "),
 	}
 
 	if err := a.credentialStore.SaveCredentials(ctx, creds); err != nil {
 		return nil, fmt.Errorf("failed to save credentials: %w", err)
 	}
 
-	return &web.BlueskyConnectResult{
-		Handle:  handle,
-		DID:     client.GetDID(),
-		Success: true,
+	log.Printf("Buffer connect: stored credentials for user %s with %d profiles", userID, len(profiles))
+
+	return &web.BufferConnectResult{
+		Profiles: profileInfos,
+		Success:  true,
 	}, nil
 }
 
@@ -585,8 +508,8 @@ func (a *connectionServiceAdapter) GetConnection(ctx context.Context, userID, pl
 	}
 
 	displayName := creds.PlatformUserID
-	if platform == "bluesky" {
-		displayName = creds.RefreshToken // Handle stored in RefreshToken for Bluesky
+	if displayName == "" {
+		displayName = "Connected"
 	}
 
 	return &web.Connection{
@@ -603,28 +526,17 @@ func (a *connectionServiceAdapter) Disconnect(ctx context.Context, userID, platf
 func (a *connectionListerAdapter) ListConnectionsWithRateLimits(ctx context.Context, userID string) ([]*web.ConnectionData, error) {
 	var connections []*web.ConnectionData
 
-	// Check for Bluesky connection
-	if creds, err := a.credentialStore.GetCredentials(ctx, userID, "bluesky"); err == nil && creds != nil {
-		connections = append(connections, &web.ConnectionData{
-			Platform:    "bluesky",
-			Status:      "connected",
-			DisplayName: creds.RefreshToken, // We store handle in RefreshToken
-			IsHealthy:   true,
-		})
-	}
-
-	// Check for Threads connection
-	if creds, err := a.credentialStore.GetCredentials(ctx, userID, "threads"); err == nil && creds != nil {
+	// Check for Buffer connection
+	if creds, err := a.credentialStore.GetCredentials(ctx, userID, "buffer"); err == nil && creds != nil {
 		displayName := creds.PlatformUserID
 		if displayName == "" {
 			displayName = "Connected"
 		}
 		connections = append(connections, &web.ConnectionData{
-			Platform:    "threads",
+			Platform:    "buffer",
 			Status:      "connected",
 			DisplayName: displayName,
-			IsHealthy:   creds.TokenExpiresAt == nil || creds.TokenExpiresAt.After(time.Now()),
-			ExpiresSoon: creds.TokenExpiresAt != nil && creds.TokenExpiresAt.Before(time.Now().Add(7*24*time.Hour)),
+			IsHealthy:   true,
 		})
 	}
 
@@ -865,7 +777,7 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 			WithDraftStore(webDraftStore).
 			WithWebhookTester(web.NewHTTPWebhookTester())
 
-		// Add social poster and Threads OAuth if encryption key is configured
+		// Add social poster and Buffer connector if encryption key is configured
 		if config.EncryptionKey != "" {
 			encKey, err := hex.DecodeString(config.EncryptionKey)
 			if err != nil {
@@ -877,43 +789,20 @@ func createRouter(config Config, dbPool *database.Pool) http.Handler {
 				if err != nil {
 					log.Printf("Warning: Failed to create credential store: %v", err)
 				} else {
-					// Add social poster (Buffer preferred, with Bluesky/Threads fallback)
-					var bufferClient *clients.BufferClient
-					if config.BufferAccessToken != "" {
-						bufferClient = clients.NewBufferClient(config.BufferAccessToken, "")
-						log.Println("Buffer API posting enabled")
-					}
+					// Add social poster (uses per-user Buffer credentials)
 					socialPoster := &socialPosterAdapter{
 						draftStore:      draftStore,
 						credentialStore: credentialStore,
-						bufferClient:    bufferClient,
 					}
 					router = router.WithSocialPoster(socialPoster)
-					log.Println("Social posting enabled (Buffer, Bluesky, Threads)")
+					log.Println("Social posting enabled (per-user Buffer)")
 
-					// Add Threads OAuth if configured
-					if config.ThreadsClientID != "" && config.ThreadsClientSecret != "" {
-						threadsProvider := oauth.NewThreadsOAuthProvider(config.ThreadsClientID, config.ThreadsClientSecret)
-						threadsOAuth := &threadsOAuthAdapter{
-							provider:        threadsProvider,
-							credentialStore: credentialStore,
-						}
-						callbackURL := config.OAuthCallbackURL
-						if callbackURL == "" {
-							callbackURL = config.WebhookBaseURL // Fallback to webhook base URL
-						}
-						router = router.WithThreadsOAuth(threadsOAuth, callbackURL)
-						log.Println("Threads OAuth enabled")
-					} else {
-						log.Println("Threads OAuth disabled (no THREADS_CLIENT_ID/THREADS_CLIENT_SECRET)")
-					}
-
-					// Add Bluesky connector (always enabled with credential store)
-					blueskyConnector := &blueskyConnectorAdapter{
+					// Add Buffer connector
+					bufferConnector := &bufferConnectorAdapter{
 						credentialStore: credentialStore,
 					}
-					router = router.WithBlueskyConnector(blueskyConnector)
-					log.Println("Bluesky connection enabled")
+					router = router.WithBufferConnector(bufferConnector)
+					log.Println("Buffer connection enabled")
 
 					// Add connection lister to show user's connections
 					connectionLister := &connectionListerAdapter{

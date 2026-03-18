@@ -36,8 +36,8 @@ type BufferPostResult struct {
 	Platform string
 }
 
-// bufferProfile represents a Buffer profile/channel (internal API response type).
-type bufferProfile struct {
+// BufferProfile represents a Buffer profile/channel.
+type BufferProfile struct {
 	ID        string `json:"id"`
 	Service   string `json:"service"`
 	Formatted string `json:"formatted_username"`
@@ -73,7 +73,7 @@ func NewBufferClient(accessToken, baseURL string) *BufferClient {
 }
 
 // ListProfiles returns all connected Buffer profiles/channels.
-func (c *BufferClient) ListProfiles(ctx context.Context) ([]bufferProfile, error) {
+func (c *BufferClient) ListProfiles(ctx context.Context) ([]BufferProfile, error) {
 	reqURL := c.baseURL + "/1/profiles.json"
 
 	req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
@@ -98,7 +98,7 @@ func (c *BufferClient) ListProfiles(ctx context.Context) ([]bufferProfile, error
 		return nil, fmt.Errorf("Buffer API error %d: %s", resp.StatusCode, string(body))
 	}
 
-	var profiles []bufferProfile
+	var profiles []BufferProfile
 	if err := json.Unmarshal(body, &profiles); err != nil {
 		return nil, fmt.Errorf("failed to parse profiles: %w", err)
 	}

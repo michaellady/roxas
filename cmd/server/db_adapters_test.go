@@ -693,7 +693,7 @@ func TestCommitStoreAdapter_StoreCommit(t *testing.T) {
 // Test socialPosterAdapter with mock servers
 // =============================================================================
 
-func TestSocialPosterAdapter_PostDraft_WithBluesky(t *testing.T) {
+func TestSocialPosterAdapter_PostDraft_WithBuffer(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
@@ -703,13 +703,12 @@ func TestSocialPosterAdapter_PostDraft_WithBluesky(t *testing.T) {
 	draftStore := database.NewDraftStoreWithDB(mock)
 	credStore := newMockCredentialStore()
 
-	// Set up Bluesky credentials
-	credStore.credentials["user-1:bluesky"] = &services.PlatformCredentials{
+	// Set up Buffer credentials
+	credStore.credentials["user-1:buffer"] = &services.PlatformCredentials{
 		UserID:         "user-1",
-		Platform:       "bluesky",
-		AccessToken:    "app-password",
-		RefreshToken:   "handle.bsky.social",
-		PlatformUserID: "did:plc:123",
+		Platform:       "buffer",
+		AccessToken:    "buffer-token",
+		PlatformUserID: "twitter:@testuser",
 	}
 
 	adapter := &socialPosterAdapter{
@@ -725,56 +724,14 @@ func TestSocialPosterAdapter_PostDraft_WithBluesky(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"id", "user_id", "repository_id", "ref", "before_sha", "after_sha", "commit_shas", "generated_content", "edited_content", "status", "created_at", "updated_at"}).
 			AddRow("draft-1", "user-1", "repo-1", "refs/heads/main", "aaa", "bbb", jsonBytes([]string{"sha1"}), "Post content", nil, "draft", now, now))
 
-	// This will fail because it tries to contact the real Bluesky PDS
+	// This will fail because it tries to contact the real Buffer API
 	// But we can verify the flow reaches the posting step
 	_, err = adapter.PostDraft(context.Background(), "user-1", "draft-1")
 	if err == nil {
-		t.Error("Expected error when posting to real Bluesky")
+		t.Error("Expected error when posting to real Buffer API")
 	}
-	// The error should be about posting to Bluesky (auth fails)
-	if !strings.Contains(err.Error(), "Bluesky") {
-		t.Errorf("Expected Bluesky-related error, got: %v", err)
-	}
-}
-
-func TestSocialPosterAdapter_PostDraft_WithThreads(t *testing.T) {
-	mock, err := pgxmock.NewPool()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mock.Close()
-
-	draftStore := database.NewDraftStoreWithDB(mock)
-	credStore := newMockCredentialStore()
-
-	// Set up Threads credentials (no Bluesky)
-	credStore.credentials["user-1:threads"] = &services.PlatformCredentials{
-		UserID:         "user-1",
-		Platform:       "threads",
-		AccessToken:    "threads-token",
-		PlatformUserID: "threads-user",
-	}
-
-	adapter := &socialPosterAdapter{
-		draftStore:      draftStore,
-		credentialStore: credStore,
-	}
-
-	now := time.Now()
-	edited := "Edited post content"
-
-	mock.ExpectQuery(`SELECT .+ FROM drafts WHERE id`).
-		WithArgs("draft-1").
-		WillReturnRows(pgxmock.NewRows([]string{"id", "user_id", "repository_id", "ref", "before_sha", "after_sha", "commit_shas", "generated_content", "edited_content", "status", "created_at", "updated_at"}).
-			AddRow("draft-1", "user-1", "repo-1", "refs/heads/main", "aaa", "bbb", jsonBytes([]string{"sha1"}), "Generated", &edited, "draft", now, now))
-
-	// This will fail because it contacts the real Threads API
-	_, err = adapter.PostDraft(context.Background(), "user-1", "draft-1")
-	if err == nil {
-		t.Error("Expected error when posting to real Threads")
-	}
-	if !strings.Contains(err.Error(), "Threads") {
-		t.Errorf("Expected Threads-related error, got: %v", err)
+	if !strings.Contains(err.Error(), "Buffer") {
+		t.Errorf("Expected Buffer-related error, got: %v", err)
 	}
 }
 
@@ -804,8 +761,8 @@ func TestSocialPosterAdapter_PostDraft_NoCredentials(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error when no credentials")
 	}
-	if !strings.Contains(err.Error(), "no social platform connected") {
-		t.Errorf("Expected 'no social platform connected' error, got: %v", err)
+	if !strings.Contains(err.Error(), "no Buffer connection") {
+		t.Errorf("Expected 'no Buffer connection' error, got: %v", err)
 	}
 }
 
@@ -1259,8 +1216,6 @@ func TestCreateRouterWithDBPool(t *testing.T) {
 	config := Config{
 		WebhookSecret:       "test-secret",
 		EncryptionKey:       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", // 64 hex chars = 32 bytes
-		ThreadsClientID:     "threads-id",
-		ThreadsClientSecret: "threads-secret",
 		OAuthCallbackURL:    "https://callback.example.com",
 		WebhookBaseURL:      "https://webhook.example.com",
 	}
@@ -1366,10 +1321,7 @@ func TestCreateRouterWithDBPool_WithOAuthCallbackFallback(t *testing.T) {
 	config := Config{
 		WebhookSecret:       "test-secret",
 		EncryptionKey:       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		ThreadsClientID:     "threads-id",
-		ThreadsClientSecret: "threads-secret",
 		WebhookBaseURL:      "https://webhook.example.com",
-		// OAuthCallbackURL is empty, should fallback to WebhookBaseURL
 	}
 
 	router := createRouter(config, pool)

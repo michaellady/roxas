@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/mikelady/roxas/internal/database"
-	"github.com/mikelady/roxas/internal/oauth"
 	"github.com/mikelady/roxas/internal/services"
 	"github.com/mikelady/roxas/internal/web"
 )
@@ -174,11 +173,8 @@ func TestLoadConfigAllFields(t *testing.T) {
 		"DB_SECRET_NAME":            "db-secret",
 		"WEBHOOK_BASE_URL":          "https://example.com",
 		"CREDENTIAL_ENCRYPTION_KEY": "enc-key",
-		"THREADS_CLIENT_ID":         "threads-id",
-		"THREADS_CLIENT_SECRET":     "threads-secret",
 		"OAUTH_CALLBACK_URL":        "https://callback.com",
 		"BEDROCK_MODEL_ID":          "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-		"BUFFER_ACCESS_TOKEN":       "buffer-token",
 	}
 
 	for k, v := range envVars {
@@ -196,20 +192,11 @@ func TestLoadConfigAllFields(t *testing.T) {
 	if config.EncryptionKey != "enc-key" {
 		t.Errorf("EncryptionKey = %q, want %q", config.EncryptionKey, "enc-key")
 	}
-	if config.ThreadsClientID != "threads-id" {
-		t.Errorf("ThreadsClientID = %q, want %q", config.ThreadsClientID, "threads-id")
-	}
-	if config.ThreadsClientSecret != "threads-secret" {
-		t.Errorf("ThreadsClientSecret = %q, want %q", config.ThreadsClientSecret, "threads-secret")
-	}
 	if config.OAuthCallbackURL != "https://callback.com" {
 		t.Errorf("OAuthCallbackURL = %q, want %q", config.OAuthCallbackURL, "https://callback.com")
 	}
 	if config.BedrockModelID != "us.anthropic.claude-sonnet-4-5-20250929-v1:0" {
 		t.Errorf("BedrockModelID = %q, want %q", config.BedrockModelID, "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
-	}
-	if config.BufferAccessToken != "buffer-token" {
-		t.Errorf("BufferAccessToken = %q, want %q", config.BufferAccessToken, "buffer-token")
 	}
 }
 
@@ -302,13 +289,13 @@ func TestConnectionListerAdapter_ListConnectionsWithRateLimits(t *testing.T) {
 		}
 	})
 
-	t.Run("bluesky connection", func(t *testing.T) {
+	t.Run("buffer connection", func(t *testing.T) {
 		store := newMockCredentialStore()
-		store.credentials["user-1:bluesky"] = &services.PlatformCredentials{
-			UserID:       "user-1",
-			Platform:     "bluesky",
-			AccessToken:  "app-password",
-			RefreshToken: "handle.bsky.social",
+		store.credentials["user-1:buffer"] = &services.PlatformCredentials{
+			UserID:         "user-1",
+			Platform:       "buffer",
+			AccessToken:    "buffer-token",
+			PlatformUserID: "twitter:@testuser, linkedin:Test Co",
 		}
 		adapter := &connectionListerAdapter{credentialStore: store}
 
@@ -319,80 +306,23 @@ func TestConnectionListerAdapter_ListConnectionsWithRateLimits(t *testing.T) {
 		if len(connections) != 1 {
 			t.Fatalf("Expected 1 connection, got %d", len(connections))
 		}
-		if connections[0].Platform != "bluesky" {
-			t.Errorf("Platform = %q, want %q", connections[0].Platform, "bluesky")
+		if connections[0].Platform != "buffer" {
+			t.Errorf("Platform = %q, want %q", connections[0].Platform, "buffer")
 		}
-		if connections[0].DisplayName != "handle.bsky.social" {
-			t.Errorf("DisplayName = %q, want %q", connections[0].DisplayName, "handle.bsky.social")
+		if connections[0].DisplayName != "twitter:@testuser, linkedin:Test Co" {
+			t.Errorf("DisplayName = %q, want %q", connections[0].DisplayName, "twitter:@testuser, linkedin:Test Co")
 		}
 		if !connections[0].IsHealthy {
-			t.Error("Expected IsHealthy to be true for bluesky (no expiry)")
+			t.Error("Expected IsHealthy to be true for buffer")
 		}
 	})
 
-	t.Run("threads connection with expiry", func(t *testing.T) {
+	t.Run("buffer connection with empty display name", func(t *testing.T) {
 		store := newMockCredentialStore()
-		futureTime := time.Now().Add(30 * 24 * time.Hour)
-		store.credentials["user-1:threads"] = &services.PlatformCredentials{
+		store.credentials["user-1:buffer"] = &services.PlatformCredentials{
 			UserID:         "user-1",
-			Platform:       "threads",
-			AccessToken:    "access-token",
-			PlatformUserID: "threads-user",
-			TokenExpiresAt: &futureTime,
-		}
-		adapter := &connectionListerAdapter{credentialStore: store}
-
-		connections, err := adapter.ListConnectionsWithRateLimits(context.Background(), "user-1")
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		if len(connections) != 1 {
-			t.Fatalf("Expected 1 connection, got %d", len(connections))
-		}
-		if connections[0].Platform != "threads" {
-			t.Errorf("Platform = %q, want %q", connections[0].Platform, "threads")
-		}
-		if connections[0].DisplayName != "threads-user" {
-			t.Errorf("DisplayName = %q, want %q", connections[0].DisplayName, "threads-user")
-		}
-		if !connections[0].IsHealthy {
-			t.Error("Expected IsHealthy to be true")
-		}
-		if connections[0].ExpiresSoon {
-			t.Error("Expected ExpiresSoon to be false for token 30 days out")
-		}
-	})
-
-	t.Run("threads connection expiring soon", func(t *testing.T) {
-		store := newMockCredentialStore()
-		soonTime := time.Now().Add(3 * 24 * time.Hour)
-		store.credentials["user-1:threads"] = &services.PlatformCredentials{
-			UserID:         "user-1",
-			Platform:       "threads",
-			AccessToken:    "access-token",
-			PlatformUserID: "threads-user",
-			TokenExpiresAt: &soonTime,
-		}
-		adapter := &connectionListerAdapter{credentialStore: store}
-
-		connections, err := adapter.ListConnectionsWithRateLimits(context.Background(), "user-1")
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		if len(connections) != 1 {
-			t.Fatalf("Expected 1 connection, got %d", len(connections))
-		}
-		if !connections[0].ExpiresSoon {
-			t.Error("Expected ExpiresSoon to be true for token 3 days out")
-		}
-	})
-
-	t.Run("threads connection with empty display name", func(t *testing.T) {
-		store := newMockCredentialStore()
-		store.credentials["user-1:threads"] = &services.PlatformCredentials{
-			UserID:         "user-1",
-			Platform:       "threads",
-			AccessToken:    "access-token",
+			Platform:       "buffer",
+			AccessToken:    "buffer-token",
 			PlatformUserID: "",
 		}
 		adapter := &connectionListerAdapter{credentialStore: store}
@@ -408,53 +338,6 @@ func TestConnectionListerAdapter_ListConnectionsWithRateLimits(t *testing.T) {
 			t.Errorf("DisplayName = %q, want %q", connections[0].DisplayName, "Connected")
 		}
 	})
-
-	t.Run("both connections", func(t *testing.T) {
-		store := newMockCredentialStore()
-		store.credentials["user-1:bluesky"] = &services.PlatformCredentials{
-			UserID:       "user-1",
-			Platform:     "bluesky",
-			RefreshToken: "handle.bsky.social",
-		}
-		store.credentials["user-1:threads"] = &services.PlatformCredentials{
-			UserID:         "user-1",
-			Platform:       "threads",
-			PlatformUserID: "threads-user",
-		}
-		adapter := &connectionListerAdapter{credentialStore: store}
-
-		connections, err := adapter.ListConnectionsWithRateLimits(context.Background(), "user-1")
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		if len(connections) != 2 {
-			t.Errorf("Expected 2 connections, got %d", len(connections))
-		}
-	})
-
-	t.Run("threads expired token", func(t *testing.T) {
-		store := newMockCredentialStore()
-		pastTime := time.Now().Add(-1 * time.Hour)
-		store.credentials["user-1:threads"] = &services.PlatformCredentials{
-			UserID:         "user-1",
-			Platform:       "threads",
-			AccessToken:    "expired-token",
-			PlatformUserID: "threads-user",
-			TokenExpiresAt: &pastTime,
-		}
-		adapter := &connectionListerAdapter{credentialStore: store}
-
-		connections, err := adapter.ListConnectionsWithRateLimits(context.Background(), "user-1")
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		if len(connections) != 1 {
-			t.Fatalf("Expected 1 connection, got %d", len(connections))
-		}
-		if connections[0].IsHealthy {
-			t.Error("Expected IsHealthy to be false for expired token")
-		}
-	})
 }
 
 // =============================================================================
@@ -462,46 +345,27 @@ func TestConnectionListerAdapter_ListConnectionsWithRateLimits(t *testing.T) {
 // =============================================================================
 
 func TestConnectionServiceAdapter_GetConnection(t *testing.T) {
-	t.Run("found bluesky connection", func(t *testing.T) {
+	t.Run("found buffer connection", func(t *testing.T) {
 		store := newMockCredentialStore()
-		store.credentials["user-1:bluesky"] = &services.PlatformCredentials{
+		store.credentials["user-1:buffer"] = &services.PlatformCredentials{
 			UserID:         "user-1",
-			Platform:       "bluesky",
-			PlatformUserID: "did:plc:123",
-			RefreshToken:   "handle.bsky.social",
+			Platform:       "buffer",
+			PlatformUserID: "twitter:@testuser, linkedin:Test Co",
 		}
 		adapter := &connectionServiceAdapter{credentialStore: store}
 
-		conn, err := adapter.GetConnection(context.Background(), "user-1", "bluesky")
+		conn, err := adapter.GetConnection(context.Background(), "user-1", "buffer")
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
-		if conn.DisplayName != "handle.bsky.social" {
-			t.Errorf("DisplayName = %q, want %q", conn.DisplayName, "handle.bsky.social")
+		if conn.DisplayName != "twitter:@testuser, linkedin:Test Co" {
+			t.Errorf("DisplayName = %q, want %q", conn.DisplayName, "twitter:@testuser, linkedin:Test Co")
 		}
-		if conn.Platform != "bluesky" {
-			t.Errorf("Platform = %q, want %q", conn.Platform, "bluesky")
+		if conn.Platform != "buffer" {
+			t.Errorf("Platform = %q, want %q", conn.Platform, "buffer")
 		}
 		if conn.Status != "connected" {
 			t.Errorf("Status = %q, want %q", conn.Status, "connected")
-		}
-	})
-
-	t.Run("found threads connection", func(t *testing.T) {
-		store := newMockCredentialStore()
-		store.credentials["user-1:threads"] = &services.PlatformCredentials{
-			UserID:         "user-1",
-			Platform:       "threads",
-			PlatformUserID: "threads-user",
-		}
-		adapter := &connectionServiceAdapter{credentialStore: store}
-
-		conn, err := adapter.GetConnection(context.Background(), "user-1", "threads")
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		if conn.DisplayName != "threads-user" {
-			t.Errorf("DisplayName = %q, want %q", conn.DisplayName, "threads-user")
 		}
 	})
 
@@ -509,7 +373,7 @@ func TestConnectionServiceAdapter_GetConnection(t *testing.T) {
 		store := newMockCredentialStore()
 		adapter := &connectionServiceAdapter{credentialStore: store}
 
-		_, err := adapter.GetConnection(context.Background(), "user-1", "bluesky")
+		_, err := adapter.GetConnection(context.Background(), "user-1", "buffer")
 		if err == nil {
 			t.Error("Expected error for missing connection")
 		}
@@ -523,7 +387,7 @@ func TestConnectionServiceAdapter_GetConnection(t *testing.T) {
 		store.getErr = fmt.Errorf("db error")
 		adapter := &connectionServiceAdapter{credentialStore: store}
 
-		_, err := adapter.GetConnection(context.Background(), "user-1", "bluesky")
+		_, err := adapter.GetConnection(context.Background(), "user-1", "buffer")
 		if err == nil {
 			t.Error("Expected error from store")
 		}
@@ -533,13 +397,13 @@ func TestConnectionServiceAdapter_GetConnection(t *testing.T) {
 func TestConnectionServiceAdapter_Disconnect(t *testing.T) {
 	t.Run("successful disconnect", func(t *testing.T) {
 		store := newMockCredentialStore()
-		store.credentials["user-1:bluesky"] = &services.PlatformCredentials{
+		store.credentials["user-1:buffer"] = &services.PlatformCredentials{
 			UserID:   "user-1",
-			Platform: "bluesky",
+			Platform: "buffer",
 		}
 		adapter := &connectionServiceAdapter{credentialStore: store}
 
-		err := adapter.Disconnect(context.Background(), "user-1", "bluesky")
+		err := adapter.Disconnect(context.Background(), "user-1", "buffer")
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -550,7 +414,7 @@ func TestConnectionServiceAdapter_Disconnect(t *testing.T) {
 		store.deleteErr = fmt.Errorf("db error")
 		adapter := &connectionServiceAdapter{credentialStore: store}
 
-		err := adapter.Disconnect(context.Background(), "user-1", "bluesky")
+		err := adapter.Disconnect(context.Background(), "user-1", "buffer")
 		if err == nil {
 			t.Error("Expected error from store")
 		}
@@ -558,254 +422,105 @@ func TestConnectionServiceAdapter_Disconnect(t *testing.T) {
 }
 
 // =============================================================================
-// Test blueskyConnectorAdapter
+// Test bufferConnectorAdapter
 // =============================================================================
 
-func TestBlueskyConnectorAdapter_Connect(t *testing.T) {
-	t.Run("handle normalization - adds domain and removes @", func(t *testing.T) {
-		store := newMockCredentialStore()
-		adapter := &blueskyConnectorAdapter{credentialStore: store}
+func TestBufferConnectorAdapter_Connect(t *testing.T) {
+	t.Run("valid token stores credentials", func(t *testing.T) {
+		mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]map[string]string{
+				{"id": "prof-1", "service": "twitter", "formatted_username": "@testuser"},
+				{"id": "prof-2", "service": "linkedin", "formatted_username": "Test Co"},
+			})
+		}))
+		defer mockServer.Close()
 
-		// Auth will fail because it contacts the real Bluesky PDS, but the adapter
-		// returns a result with Success=false rather than an error.
-		result, err := adapter.Connect(context.Background(), "user-1", "@testhandle", "bad-password")
+		store := newMockCredentialStore()
+		adapter := &bufferConnectorAdapter{credentialStore: store}
+
+		// We need to create a client that uses the mock server
+		// The adapter creates its own client, so we test the full flow
+		// by setting the BUFFER API to return profiles
+		result, err := adapter.connectWithBaseURL(context.Background(), "user-1", "test-token", mockServer.URL)
 		if err != nil {
-			t.Fatalf("Expected no error (auth failure returned in result), got: %v", err)
+			t.Fatalf("Unexpected error: %v", err)
 		}
-		if result.Success {
-			t.Error("Expected failure for auth against real Bluesky with bad credentials")
+		if !result.Success {
+			t.Errorf("Expected success, got error: %s", result.Error)
 		}
-		if result.Error == "" {
-			t.Error("Expected non-empty error message in result")
+		if len(result.Profiles) != 2 {
+			t.Errorf("Expected 2 profiles, got %d", len(result.Profiles))
+		}
+
+		creds, _ := store.GetCredentials(context.Background(), "user-1", "buffer")
+		if creds == nil {
+			t.Fatal("Expected credentials to be saved")
+		}
+		if creds.AccessToken != "test-token" {
+			t.Errorf("AccessToken = %q, want %q", creds.AccessToken, "test-token")
 		}
 	})
 
-	t.Run("handle with domain not modified", func(t *testing.T) {
-		store := newMockCredentialStore()
-		adapter := &blueskyConnectorAdapter{credentialStore: store}
+	t.Run("no profiles returns error", func(t *testing.T) {
+		mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]map[string]string{})
+		}))
+		defer mockServer.Close()
 
-		result, err := adapter.Connect(context.Background(), "user-1", "user.custom.domain", "bad-password")
+		store := newMockCredentialStore()
+		adapter := &bufferConnectorAdapter{credentialStore: store}
+
+		result, err := adapter.connectWithBaseURL(context.Background(), "user-1", "test-token", mockServer.URL)
 		if err != nil {
-			t.Fatalf("Expected no error, got: %v", err)
+			t.Fatalf("Unexpected error: %v", err)
 		}
 		if result.Success {
-			t.Error("Expected failure")
+			t.Error("Expected failure for no profiles")
+		}
+		if !strings.Contains(result.Error, "No profiles") {
+			t.Errorf("Expected 'No profiles' error, got: %s", result.Error)
 		}
 	})
-}
 
-// =============================================================================
-// Test threadsOAuthAdapter
-// =============================================================================
+	t.Run("invalid token returns error", func(t *testing.T) {
+		mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error": "Unauthorized"}`))
+		}))
+		defer mockServer.Close()
 
-func TestThreadsOAuthAdapter_GetAuthURL(t *testing.T) {
-	provider := oauth.NewThreadsOAuthProvider("client-id", "client-secret")
-	adapter := &threadsOAuthAdapter{
-		provider:        provider,
-		credentialStore: newMockCredentialStore(),
-	}
+		store := newMockCredentialStore()
+		adapter := &bufferConnectorAdapter{credentialStore: store}
 
-	authURL := adapter.GetAuthURL("test-state", "https://callback.com/auth")
-	if authURL == "" {
-		t.Error("Expected non-empty auth URL")
-	}
-	if !strings.Contains(authURL, "client_id=client-id") {
-		t.Errorf("Expected auth URL to contain client_id, got: %s", authURL)
-	}
-	if !strings.Contains(authURL, "state=test-state") {
-		t.Errorf("Expected auth URL to contain state, got: %s", authURL)
-	}
-}
-
-func TestThreadsOAuthAdapter_ExchangeCode(t *testing.T) {
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.Path, "/oauth/access_token") {
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"access_token": "short-lived-token",
-				"user_id":      "12345",
-			})
-		} else if strings.Contains(r.URL.Path, "/access_token") {
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"access_token": "long-lived-token",
-				"expires_in":   5184000,
-			})
+		result, err := adapter.connectWithBaseURL(context.Background(), "user-1", "bad-token", mockServer.URL)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
 		}
-	}))
-	defer mockServer.Close()
-
-	provider := oauth.NewThreadsOAuthProvider("client-id", "client-secret")
-	provider.BaseURL = mockServer.URL
-
-	store := newMockCredentialStore()
-	adapter := &threadsOAuthAdapter{
-		provider:        provider,
-		credentialStore: store,
-	}
-
-	username, err := adapter.ExchangeCode(context.Background(), "user-1", "auth-code", "https://callback.com")
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-
-	creds, _ := store.GetCredentials(context.Background(), "user-1", "threads")
-	if creds == nil {
-		t.Fatal("Expected credentials to be saved")
-	}
-	if creds.Platform != "threads" {
-		t.Errorf("Platform = %q, want %q", creds.Platform, "threads")
-	}
-
-	if username == "" {
-		t.Error("Expected non-empty username")
-	}
-}
-
-func TestThreadsOAuthAdapter_ExchangeCode_SaveError(t *testing.T) {
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.Path, "/oauth/access_token") {
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"access_token": "short-lived-token",
-				"user_id":      "12345",
-			})
-		} else if strings.Contains(r.URL.Path, "/access_token") {
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"access_token": "long-lived-token",
-				"expires_in":   5184000,
-			})
+		if result.Success {
+			t.Error("Expected failure for bad token")
 		}
-	}))
-	defer mockServer.Close()
+	})
 
-	provider := oauth.NewThreadsOAuthProvider("client-id", "client-secret")
-	provider.BaseURL = mockServer.URL
-
-	store := newMockCredentialStore()
-	store.saveErr = fmt.Errorf("save failed")
-
-	adapter := &threadsOAuthAdapter{
-		provider:        provider,
-		credentialStore: store,
-	}
-
-	_, err := adapter.ExchangeCode(context.Background(), "user-1", "auth-code", "https://callback.com")
-	if err == nil {
-		t.Error("Expected error when save fails")
-	}
-	if !strings.Contains(err.Error(), "failed to save credentials") {
-		t.Errorf("Expected 'failed to save credentials' error, got: %v", err)
-	}
-}
-
-func TestThreadsOAuthAdapter_ExchangeCode_EmptyPlatformUserID(t *testing.T) {
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.Path, "/oauth/access_token") {
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"access_token": "short-lived-token",
-				// No user_id
+	t.Run("save error", func(t *testing.T) {
+		mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]map[string]string{
+				{"id": "prof-1", "service": "twitter", "formatted_username": "@testuser"},
 			})
-		} else if strings.Contains(r.URL.Path, "/access_token") {
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"access_token": "long-lived-token",
-				"expires_in":   5184000,
-			})
+		}))
+		defer mockServer.Close()
+
+		store := newMockCredentialStore()
+		store.saveErr = fmt.Errorf("save failed")
+		adapter := &bufferConnectorAdapter{credentialStore: store}
+
+		_, err := adapter.connectWithBaseURL(context.Background(), "user-1", "test-token", mockServer.URL)
+		if err == nil {
+			t.Error("Expected error when save fails")
 		}
-	}))
-	defer mockServer.Close()
-
-	provider := oauth.NewThreadsOAuthProvider("client-id", "client-secret")
-	provider.BaseURL = mockServer.URL
-
-	store := newMockCredentialStore()
-	adapter := &threadsOAuthAdapter{
-		provider:        provider,
-		credentialStore: store,
-	}
-
-	username, err := adapter.ExchangeCode(context.Background(), "user-1", "auth-code", "https://callback.com")
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if username != "connected" {
-		t.Errorf("Expected 'connected' as fallback username, got: %q", username)
-	}
-}
-
-func TestThreadsOAuthAdapter_ExchangeCode_ProviderError(t *testing.T) {
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`{"error": "invalid_grant", "error_description": "Code expired"}`))
-	}))
-	defer mockServer.Close()
-
-	provider := oauth.NewThreadsOAuthProvider("client-id", "client-secret")
-	provider.BaseURL = mockServer.URL
-
-	adapter := &threadsOAuthAdapter{
-		provider:        provider,
-		credentialStore: newMockCredentialStore(),
-	}
-
-	_, err := adapter.ExchangeCode(context.Background(), "user-1", "bad-code", "https://callback.com")
-	if err == nil {
-		t.Error("Expected error for bad code")
-	}
-	if !strings.Contains(err.Error(), "failed to exchange code") {
-		t.Errorf("Expected 'failed to exchange code' error, got: %v", err)
-	}
-}
-
-func TestThreadsOAuthAdapter_RefreshTokens(t *testing.T) {
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"access_token": "refreshed-token",
-			"expires_in":   5184000,
-		})
-	}))
-	defer mockServer.Close()
-
-	provider := oauth.NewThreadsOAuthProvider("client-id", "client-secret")
-	provider.BaseURL = mockServer.URL
-
-	adapter := &threadsOAuthAdapter{
-		provider:        provider,
-		credentialStore: newMockCredentialStore(),
-	}
-
-	tokens, err := adapter.RefreshTokens(context.Background(), "old-refresh-token")
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if tokens == nil {
-		t.Fatal("Expected non-nil tokens")
-	}
-	if tokens.AccessToken != "refreshed-token" {
-		t.Errorf("AccessToken = %q, want %q", tokens.AccessToken, "refreshed-token")
-	}
-}
-
-func TestThreadsOAuthAdapter_RefreshTokens_Error(t *testing.T) {
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`{"error": "invalid_token"}`))
-	}))
-	defer mockServer.Close()
-
-	provider := oauth.NewThreadsOAuthProvider("client-id", "client-secret")
-	provider.BaseURL = mockServer.URL
-
-	adapter := &threadsOAuthAdapter{
-		provider:        provider,
-		credentialStore: newMockCredentialStore(),
-	}
-
-	_, err := adapter.RefreshTokens(context.Background(), "bad-token")
-	if err == nil {
-		t.Error("Expected error for bad refresh token")
-	}
+	})
 }
 
 // =============================================================================

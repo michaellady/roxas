@@ -1,38 +1,32 @@
 {{define "content"}}
-<div class="bluesky-connect-container">
+<div class="buffer-connect-container">
     <div class="connect-card">
         <div class="platform-header">
-            <div class="platform-icon platform-bluesky">
+            <div class="platform-icon platform-buffer">
                 <svg viewBox="0 0 24 24" width="48" height="48" fill="currentColor">
-                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
+                    <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
                 </svg>
             </div>
-            <h1>Connect Bluesky</h1>
+            <h1>Connect Buffer</h1>
         </div>
 
         <p class="description">
-            Connect your Bluesky account using an App Password. This allows Roxas to post on your behalf
-            without sharing your main password.
+            Connect your Buffer account to post to all your social media platforms at once.
+            Buffer supports X/Twitter, Bluesky, Threads, LinkedIn, Instagram, and more.
         </p>
 
         {{if .Error}}
         <div class="alert alert-error">{{.Error}}</div>
         {{end}}
 
-        <form method="POST" action="/connections/bluesky/connect" class="connect-form">
+        <form method="POST" action="/connections/buffer/connect" class="connect-form">
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
             <div class="form-group">
-                <label for="handle">Bluesky Handle</label>
-                <input type="text" id="handle" name="handle" placeholder="yourname.bsky.social or @yourname" required>
-                <span class="help-text">Your Bluesky username (with or without @)</span>
-            </div>
-
-            <div class="form-group">
-                <label for="app_password">App Password</label>
-                <input type="password" id="app_password" name="app_password" placeholder="xxxx-xxxx-xxxx-xxxx" required>
+                <label for="access_token">Personal Access Token</label>
+                <input type="password" id="access_token" name="access_token" placeholder="1/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" required>
                 <span class="help-text">
-                    Create an App Password at
-                    <a href="https://bsky.app/settings/app-passwords" target="_blank" rel="noopener">bsky.app/settings/app-passwords</a>
+                    Generate a token at
+                    <a href="https://account.buffer.com/access-token" target="_blank" rel="noopener">account.buffer.com/access-token</a>
                 </span>
             </div>
 
@@ -43,14 +37,13 @@
         </form>
 
         <div class="security-note">
-            <strong>Security Note:</strong> App Passwords are separate from your main password and can be revoked at any time.
-            We recommend creating a dedicated App Password for Roxas.
+            <strong>Security Note:</strong> Your token is encrypted before storage and can be revoked at any time from your Buffer account settings.
         </div>
     </div>
 </div>
 
 <style>
-.bluesky-connect-container {
+.buffer-connect-container {
     max-width: 500px;
     margin: 40px auto;
     padding: 0 20px;
@@ -78,9 +71,9 @@
     border-radius: 50%;
 }
 
-.platform-icon.platform-bluesky {
-    background: #e8f4fd;
-    color: #0085ff;
+.platform-icon.platform-buffer {
+    background: #f0f0f0;
+    color: #231f20;
 }
 
 .platform-header h1 {
@@ -120,8 +113,8 @@
 
 .form-group input:focus {
     outline: none;
-    border-color: #0085ff;
-    box-shadow: 0 0 0 3px rgba(0, 133, 255, 0.1);
+    border-color: #231f20;
+    box-shadow: 0 0 0 3px rgba(35, 31, 32, 0.1);
 }
 
 .help-text {
@@ -132,7 +125,7 @@
 }
 
 .help-text a {
-    color: #0085ff;
+    color: #231f20;
 }
 
 .form-actions {

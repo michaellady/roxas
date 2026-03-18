@@ -115,7 +115,6 @@ resource "aws_lambda_function" "roxas" {
       GH_APP_PRIVATE_KEY     = var.github_app_private_key
       GH_APP_URL             = var.github_app_url
       BEDROCK_MODEL_ID       = var.bedrock_model_id
-      BUFFER_ACCESS_TOKEN    = var.buffer_access_token
     }
   }
 
