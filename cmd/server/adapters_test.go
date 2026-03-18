@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -429,10 +430,28 @@ func TestBufferConnectorAdapter_Connect(t *testing.T) {
 	t.Run("valid token stores credentials", func(t *testing.T) {
 		mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode([]map[string]string{
-				{"id": "prof-1", "service": "twitter", "formatted_username": "@testuser"},
-				{"id": "prof-2", "service": "linkedin", "formatted_username": "Test Co"},
-			})
+			body, _ := io.ReadAll(r.Body)
+			query := string(body)
+			if strings.Contains(query, "account") {
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"data": map[string]interface{}{
+						"account": map[string]interface{}{
+							"organizations": []map[string]interface{}{
+								{"id": "org-1"},
+							},
+						},
+					},
+				})
+			} else if strings.Contains(query, "channels") {
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"data": map[string]interface{}{
+						"channels": []map[string]interface{}{
+							{"id": "prof-1", "service": "twitter", "formattedUsername": "@testuser"},
+							{"id": "prof-2", "service": "linkedin", "formattedUsername": "Test Co"},
+						},
+					},
+				})
+			}
 		}))
 		defer mockServer.Close()
 
@@ -465,7 +484,25 @@ func TestBufferConnectorAdapter_Connect(t *testing.T) {
 	t.Run("no profiles returns error", func(t *testing.T) {
 		mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode([]map[string]string{})
+			body, _ := io.ReadAll(r.Body)
+			query := string(body)
+			if strings.Contains(query, "account") {
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"data": map[string]interface{}{
+						"account": map[string]interface{}{
+							"organizations": []map[string]interface{}{
+								{"id": "org-1"},
+							},
+						},
+					},
+				})
+			} else if strings.Contains(query, "channels") {
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"data": map[string]interface{}{
+						"channels": []map[string]interface{}{},
+					},
+				})
+			}
 		}))
 		defer mockServer.Close()
 
@@ -506,9 +543,27 @@ func TestBufferConnectorAdapter_Connect(t *testing.T) {
 	t.Run("save error", func(t *testing.T) {
 		mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode([]map[string]string{
-				{"id": "prof-1", "service": "twitter", "formatted_username": "@testuser"},
-			})
+			body, _ := io.ReadAll(r.Body)
+			query := string(body)
+			if strings.Contains(query, "account") {
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"data": map[string]interface{}{
+						"account": map[string]interface{}{
+							"organizations": []map[string]interface{}{
+								{"id": "org-1"},
+							},
+						},
+					},
+				})
+			} else if strings.Contains(query, "channels") {
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"data": map[string]interface{}{
+						"channels": []map[string]interface{}{
+							{"id": "prof-1", "service": "twitter", "formattedUsername": "@testuser"},
+						},
+					},
+				})
+			}
 		}))
 		defer mockServer.Close()
 

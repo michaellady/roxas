@@ -3,32 +3,64 @@ package clients
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
 
-// TestBufferListProfiles tests listing Buffer profiles/channels
-func TestBufferListProfiles(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/1/profiles.json" {
-			t.Errorf("Expected /1/profiles.json, got %s", r.URL.Path)
+// parseGraphQLQuery reads the request body and extracts the query and variables.
+func parseGraphQLQuery(r *http.Request) (string, map[string]interface{}) {
+	body, _ := io.ReadAll(r.Body)
+	var req map[string]interface{}
+	json.Unmarshal(body, &req)
+	query, _ := req["query"].(string)
+	vars, _ := req["variables"].(map[string]interface{})
+	return query, vars
+}
+
+// newGraphQLTestServer creates a test server that handles organizations and channels queries.
+func newGraphQLTestServer(t *testing.T, channels []map[string]interface{}) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Errorf("Expected POST, got %s", r.Method)
+		}
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer test-token" {
+			t.Errorf("Expected Bearer test-token, got %s", auth)
 		}
 
-		// Verify access_token query parameter
-		token := r.URL.Query().Get("access_token")
-		if token != "test-token" {
-			t.Errorf("Expected access_token=test-token, got %s", token)
-		}
+		query, _ := parseGraphQLQuery(r)
 
-		profiles := []BufferProfile{
-			{ID: "prof-1", Service: "twitter", Formatted: "Twitter @testuser"},
-			{ID: "prof-2", Service: "linkedin", Formatted: "LinkedIn TestCo"},
-			{ID: "prof-3", Service: "facebook", Formatted: "Facebook TestPage"},
+		if strings.Contains(query, "account") {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]interface{}{
+					"account": map[string]interface{}{
+						"organizations": []map[string]interface{}{
+							{"id": "org-1"},
+						},
+					},
+				},
+			})
+		} else if strings.Contains(query, "channels") {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]interface{}{
+					"channels": channels,
+				},
+			})
 		}
-		json.NewEncoder(w).Encode(profiles)
 	}))
+}
+
+// TestBufferListProfiles tests listing Buffer channels via GraphQL
+func TestBufferListProfiles(t *testing.T) {
+	channels := []map[string]interface{}{
+		{"id": "ch-1", "service": "twitter", "formattedUsername": "Twitter @testuser"},
+		{"id": "ch-2", "service": "linkedin", "formattedUsername": "LinkedIn TestCo"},
+		{"id": "ch-3", "service": "facebook", "formattedUsername": "Facebook TestPage"},
+	}
+	server := newGraphQLTestServer(t, channels)
 	defer server.Close()
 
 	client := NewBufferClient("test-token", server.URL)
@@ -42,61 +74,117 @@ func TestBufferListProfiles(t *testing.T) {
 		t.Fatalf("Expected 3 profiles, got %d", len(profiles))
 	}
 
-	if profiles[0].ID != "prof-1" || profiles[0].Service != "twitter" {
-		t.Errorf("Expected prof-1/twitter, got %s/%s", profiles[0].ID, profiles[0].Service)
+	if profiles[0].ID != "ch-1" || profiles[0].Service != "twitter" {
+		t.Errorf("Expected ch-1/twitter, got %s/%s", profiles[0].ID, profiles[0].Service)
+	}
+	if profiles[0].Formatted != "Twitter @testuser" {
+		t.Errorf("Expected 'Twitter @testuser', got %s", profiles[0].Formatted)
 	}
 }
 
-// TestBufferCreatePost tests creating a post via Buffer
-func TestBufferCreatePost(t *testing.T) {
+// TestBufferGetOrganizations tests fetching organizations via GraphQL
+func TestBufferGetOrganizations(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/1/updates/create.json" {
-			t.Errorf("Expected /1/updates/create.json, got %s", r.URL.Path)
-		}
-
 		if r.Method != "POST" {
 			t.Errorf("Expected POST, got %s", r.Method)
 		}
-
-		// Parse form body
-		if err := r.ParseForm(); err != nil {
-			t.Fatalf("Failed to parse form: %v", err)
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer test-token" {
+			t.Errorf("Expected Bearer test-token, got %s", auth)
 		}
 
-		// Verify access_token in form body
-		accessToken := r.FormValue("access_token")
-		if accessToken != "test-token" {
-			t.Errorf("Expected access_token=test-token, got %s", accessToken)
-		}
-
-		text := r.FormValue("text")
-		if text != "Hello from Roxas!" {
-			t.Errorf("Expected 'Hello from Roxas!', got %s", text)
-		}
-
-		profileIDs := r.Form["profile_ids[]"]
-		if len(profileIDs) != 2 {
-			t.Fatalf("Expected 2 profile IDs, got %d", len(profileIDs))
-		}
-
-		now := r.FormValue("now")
-		if now != "true" {
-			t.Errorf("Expected now=true, got %s", now)
-		}
-
-		response := bufferCreateResponse{
-			Success: true,
-			Updates: []bufferUpdate{
-				{ID: "upd-1", Status: "sent", ProfileID: "prof-1"},
-				{ID: "upd-2", Status: "sent", ProfileID: "prof-2"},
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{
+				"account": map[string]interface{}{
+					"organizations": []map[string]interface{}{
+						{"id": "org-123"},
+						{"id": "org-456"},
+					},
+				},
 			},
-		}
-		json.NewEncoder(w).Encode(response)
+		})
 	}))
 	defer server.Close()
 
 	client := NewBufferClient("test-token", server.URL)
-	result, err := client.CreatePost(context.Background(), []string{"prof-1", "prof-2"}, "Hello from Roxas!", true)
+	orgID, err := client.getOrganizationID(context.Background())
+
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if orgID != "org-123" {
+		t.Errorf("Expected org-123, got %s", orgID)
+	}
+}
+
+// TestBufferGetOrganizations_Empty tests error when no organizations exist
+func TestBufferGetOrganizations_Empty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{
+				"account": map[string]interface{}{
+					"organizations": []map[string]interface{}{},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewBufferClient("test-token", server.URL)
+	_, err := client.getOrganizationID(context.Background())
+
+	if err == nil {
+		t.Error("Expected error for empty organizations")
+	}
+	if !strings.Contains(err.Error(), "no organizations") {
+		t.Errorf("Expected 'no organizations' error, got: %v", err)
+	}
+}
+
+// TestBufferCreatePost tests creating a post via GraphQL mutation
+func TestBufferCreatePost(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Errorf("Expected POST, got %s", r.Method)
+		}
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer test-token" {
+			t.Errorf("Expected Bearer test-token, got %s", auth)
+		}
+
+		query, vars := parseGraphQLQuery(r)
+		if !strings.Contains(query, "createPost") {
+			t.Errorf("Expected createPost mutation, got: %s", query)
+		}
+
+		// Verify input variables
+		input, ok := vars["input"].(map[string]interface{})
+		if !ok {
+			t.Fatal("Expected input variable")
+		}
+		if input["text"] != "Hello from Roxas!" {
+			t.Errorf("Expected 'Hello from Roxas!', got %v", input["text"])
+		}
+
+		callCount++
+		postID := "post-" + input["channelId"].(string)
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{
+				"createPost": map[string]interface{}{
+					"post": map[string]interface{}{
+						"id":   postID,
+						"text": "Hello from Roxas!",
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewBufferClient("test-token", server.URL)
+	result, err := client.CreatePost(context.Background(), []string{"ch-1", "ch-2"}, "Hello from Roxas!", true)
 
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
@@ -109,9 +197,44 @@ func TestBufferCreatePost(t *testing.T) {
 	if len(result.Updates) != 2 {
 		t.Fatalf("Expected 2 updates, got %d", len(result.Updates))
 	}
+
+	if callCount != 2 {
+		t.Errorf("Expected 2 mutation calls (one per channel), got %d", callCount)
+	}
+
+	if result.Updates[0].ID != "post-ch-1" {
+		t.Errorf("Expected post-ch-1, got %s", result.Updates[0].ID)
+	}
 }
 
-// TestBufferCreatePost_Failure tests handling of Buffer API failure
+// TestBufferCreatePost_MutationError tests handling of GraphQL MutationError
+func TestBufferCreatePost_MutationError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{
+				"createPost": map[string]interface{}{
+					"message": "Insufficient permissions to post to this channel",
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewBufferClient("test-token", server.URL)
+	result, err := client.CreatePost(context.Background(), []string{"ch-1"}, "test", true)
+
+	if err != nil {
+		t.Fatalf("Expected no error (MutationError is in result), got %v", err)
+	}
+	if result.Success {
+		t.Error("Expected success=false for MutationError")
+	}
+	if !strings.Contains(result.Message, "Insufficient permissions") {
+		t.Errorf("Expected error message, got: %s", result.Message)
+	}
+}
+
+// TestBufferCreatePost_Failure tests handling of HTTP-level failure
 func TestBufferCreatePost_Failure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
@@ -120,7 +243,7 @@ func TestBufferCreatePost_Failure(t *testing.T) {
 	defer server.Close()
 
 	client := NewBufferClient("bad-token", server.URL)
-	_, err := client.CreatePost(context.Background(), []string{"prof-1"}, "test", true)
+	_, err := client.CreatePost(context.Background(), []string{"ch-1"}, "test", true)
 
 	if err == nil {
 		t.Error("Expected error for forbidden response, got nil")
@@ -130,32 +253,70 @@ func TestBufferCreatePost_Failure(t *testing.T) {
 	}
 }
 
+// TestBufferCreatePost_GraphQLError tests handling of GraphQL-level errors
+func TestBufferCreatePost_GraphQLError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"errors": []map[string]interface{}{
+				{"message": "Invalid query syntax"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewBufferClient("test-token", server.URL)
+	_, err := client.CreatePost(context.Background(), []string{"ch-1"}, "test", true)
+
+	if err == nil {
+		t.Error("Expected error for GraphQL error response, got nil")
+	}
+	if !strings.Contains(err.Error(), "Invalid query syntax") {
+		t.Errorf("Expected GraphQL error message, got: %v", err)
+	}
+}
+
 // TestBufferPost_SocialClientInterface tests the SocialClient interface implementation
 func TestBufferPost_SocialClientInterface(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/1/profiles.json":
-			profiles := []BufferProfile{
-				{ID: "prof-1", Service: "twitter", Formatted: "Twitter @user"},
-			}
-			json.NewEncoder(w).Encode(profiles)
-		case "/1/updates/create.json":
-			response := bufferCreateResponse{
-				Success: true,
-				Updates: []bufferUpdate{
-					{ID: "upd-1", Status: "sent", ProfileID: "prof-1"},
+		query, _ := parseGraphQLQuery(r)
+
+		if strings.Contains(query, "account") {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]interface{}{
+					"account": map[string]interface{}{
+						"organizations": []map[string]interface{}{
+							{"id": "org-1"},
+						},
+					},
 				},
-			}
-			json.NewEncoder(w).Encode(response)
-		default:
-			t.Errorf("Unexpected path: %s", r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
+			})
+		} else if strings.Contains(query, "channels") {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]interface{}{
+					"channels": []map[string]interface{}{
+						{"id": "ch-1", "service": "twitter", "formattedUsername": "Twitter @user"},
+					},
+				},
+			})
+		} else if strings.Contains(query, "createPost") {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]interface{}{
+					"createPost": map[string]interface{}{
+						"post": map[string]interface{}{
+							"id":   "post-1",
+							"text": "Test post",
+						},
+					},
+				},
+			})
+		} else {
+			t.Errorf("Unexpected query: %s", query)
+			w.WriteHeader(http.StatusBadRequest)
 		}
 	}))
 	defer server.Close()
 
 	client := NewBufferClient("test-token", server.URL)
-	// Use Post() which is the SocialClient interface method
 	result, err := client.Post(context.Background(), BufferPostContent{Text: "Test post"})
 
 	if err != nil {
@@ -164,6 +325,9 @@ func TestBufferPost_SocialClientInterface(t *testing.T) {
 
 	if result.PostID == "" {
 		t.Error("Expected non-empty PostID")
+	}
+	if result.PostID != "post-1" {
+		t.Errorf("Expected post-1, got %s", result.PostID)
 	}
 }
 
@@ -231,15 +395,12 @@ func TestBufferListProfiles_InvalidJSON(t *testing.T) {
 	}
 }
 
-// TestBufferPost_NoProfiles tests Post when no profiles are available
+// TestBufferPost_NoProfiles tests Post when no channels are available
 func TestBufferPost_NoProfiles(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Return empty profiles
-		json.NewEncoder(w).Encode([]BufferProfile{})
-	}))
+	server := newGraphQLTestServer(t, []map[string]interface{}{})
 	defer server.Close()
 
-	client := NewBufferClient("token", server.URL)
+	client := NewBufferClient("test-token", server.URL)
 	_, err := client.Post(context.Background(), BufferPostContent{Text: "test"})
 
 	if err == nil {
