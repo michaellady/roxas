@@ -16,10 +16,10 @@ func TestBufferListProfiles(t *testing.T) {
 			t.Errorf("Expected /1/profiles.json, got %s", r.URL.Path)
 		}
 
-		// Verify auth header
-		auth := r.Header.Get("Authorization")
-		if auth != "Bearer test-token" {
-			t.Errorf("Expected Bearer test-token, got %s", auth)
+		// Verify access_token query parameter
+		token := r.URL.Query().Get("access_token")
+		if token != "test-token" {
+			t.Errorf("Expected access_token=test-token, got %s", token)
 		}
 
 		profiles := []BufferProfile{
@@ -61,6 +61,12 @@ func TestBufferCreatePost(t *testing.T) {
 		// Parse form body
 		if err := r.ParseForm(); err != nil {
 			t.Fatalf("Failed to parse form: %v", err)
+		}
+
+		// Verify access_token in form body
+		accessToken := r.FormValue("access_token")
+		if accessToken != "test-token" {
+			t.Errorf("Expected access_token=test-token, got %s", accessToken)
 		}
 
 		text := r.FormValue("text")

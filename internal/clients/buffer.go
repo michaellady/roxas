@@ -74,14 +74,12 @@ func NewBufferClient(accessToken, baseURL string) *BufferClient {
 
 // ListProfiles returns all connected Buffer profiles/channels.
 func (c *BufferClient) ListProfiles(ctx context.Context) ([]BufferProfile, error) {
-	reqURL := c.baseURL + "/1/profiles.json"
+	reqURL := c.baseURL + "/1/profiles.json?access_token=" + url.QueryEscape(c.accessToken)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-
-	req.Header.Set("Authorization", "Bearer "+c.accessToken)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -115,6 +113,7 @@ func (c *BufferClient) CreatePost(ctx context.Context, profileIDs []string, text
 
 	// Build form data
 	form := url.Values{}
+	form.Set("access_token", c.accessToken)
 	form.Set("text", text)
 	for _, id := range profileIDs {
 		form.Add("profile_ids[]", id)
@@ -128,7 +127,6 @@ func (c *BufferClient) CreatePost(ctx context.Context, profileIDs []string, text
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+c.accessToken)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := c.client.Do(req)
