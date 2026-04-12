@@ -4,14 +4,19 @@ name: Destroy All Infrastructure
 # dev, prod, service + shared), then deletes the state backends. Leaves one
 # manual step: deleting the github-actions-ci IAM user (can't self-delete).
 # See: /Users/mikelady/.claude/plans/ticklish-popping-bunny.md
+#
+# Split into dev/prod jobs because AWS credentials live in GitHub Environment
+# secrets (each env has its own github-actions-ci-style IAM user with policies
+# scoped to its own state bucket / DynamoDB table).
 
 on:
   workflow_dispatch:
 
 jobs:
-  destroy:
-    name: Destroy Roxas AWS Infrastructure
+  destroy-dev:
+    name: Destroy Dev (per-PR + dev service + dev shared + dev state)
     runs-on: ubuntu-latest
+    environment: dev
 
     permissions:
       contents: read
@@ -64,8 +69,6 @@ jobs:
             -o terraform/shared/lambda/bootstrap ./cmd/circuit-breaker
           (cd terraform/shared/lambda && zip -j circuit_breaker.zip bootstrap && rm bootstrap)
 
-      # ---------- SERVICE TIER (dev backend, includes per-PR workspaces) ----------
-
       - name: Terraform init (service, dev backend)
         working-directory: terraform/service
         run: terraform init -backend-config=../backend-dev.hcl
@@ -110,32 +113,6 @@ jobs:
             echo "Workspace 'dev' not present in service state; skipping."
           fi
 
-      - name: Terraform init (service, prod backend)
-        working-directory: terraform/service
-        run: |
-          rm -rf .terraform
-          terraform init -backend-config=../backend-prod.hcl
-
-      - name: Destroy prod service (workspace=prod)
-        working-directory: terraform/service
-        env:
-          TF_VAR_environment: prod
-          TF_VAR_function_name: roxas-webhook-handler-prod
-        run: |
-          set -euo pipefail
-          if terraform workspace list | grep -qE '^\s*\*?\s*prod\s*$'; then
-            terraform workspace select prod
-            terraform destroy -auto-approve
-            terraform workspace select default
-            terraform workspace delete prod || true
-          else
-            echo "Workspace 'prod' not present in service state; skipping."
-          fi
-
-      # ---------- SHARED TIER (VPC, RDS, NAT, cleanup/circuit-breaker Lambdas) ----------
-      # ENIs from service Lambdas can linger for ~60s after destroy; a single
-      # retry on shared destroy clears that race.
-
       - name: Terraform init (shared, dev backend)
         working-directory: terraform/shared
         run: terraform init -backend-config=../backend-shared-dev.hcl
@@ -159,11 +136,119 @@ jobs:
           terraform workspace select default
           terraform workspace delete dev || true
 
+      - name: Delete dev Terraform state backend (S3 + DynamoDB)
+        run: |
+          set -euo pipefail
+          BUCKET="roxas-terraform-state-dev"
+          TABLE="roxas-terraform-locks-dev"
+
+          if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            echo "--- Emptying and deleting $BUCKET (versioned) ---"
+            aws s3api list-object-versions --bucket "$BUCKET" \
+              --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' \
+              --output json 2>/dev/null \
+              | jq 'if .Objects == null then empty else . end' > /tmp/versions.json || true
+            if [ -s /tmp/versions.json ]; then
+              aws s3api delete-objects --bucket "$BUCKET" --delete file:///tmp/versions.json || true
+            fi
+            aws s3api list-object-versions --bucket "$BUCKET" \
+              --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' \
+              --output json 2>/dev/null \
+              | jq 'if .Objects == null then empty else . end' > /tmp/markers.json || true
+            if [ -s /tmp/markers.json ]; then
+              aws s3api delete-objects --bucket "$BUCKET" --delete file:///tmp/markers.json || true
+            fi
+            aws s3api delete-bucket --bucket "$BUCKET"
+            echo "Deleted bucket: $BUCKET"
+          else
+            echo "Bucket $BUCKET not present; skipping."
+          fi
+
+          if aws dynamodb describe-table --table-name "$TABLE" >/dev/null 2>&1; then
+            aws dynamodb delete-table --table-name "$TABLE" >/dev/null
+            echo "Deleted DynamoDB table: $TABLE"
+          else
+            echo "Table $TABLE not present; skipping."
+          fi
+
+  destroy-prod:
+    name: Destroy Prod (prod service + prod shared + prod state)
+    runs-on: ubuntu-latest
+    environment: prod
+    needs: destroy-dev
+
+    permissions:
+      contents: read
+
+    concurrency:
+      group: destroy-all
+      cancel-in-progress: false
+
+    env:
+      TF_VAR_webhook_secret: ${{ secrets.WEBHOOK_SECRET }}
+      TF_VAR_credential_encryption_key: ${{ secrets.CREDENTIAL_ENCRYPTION_KEY }}
+      TF_VAR_github_app_id: ${{ secrets.GH_APP_ID }}
+      TF_VAR_github_app_webhook_secret: ${{ secrets.GH_APP_WEBHOOK_SECRET }}
+      TF_VAR_github_app_private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+      TF_VAR_github_app_url: ${{ secrets.GH_APP_URL }}
+      TF_VAR_custom_domain_enabled: "true"
+      TF_VAR_budget_alert_emails: '["${{ secrets.BUDGET_ALERT_EMAIL }}"]'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache-dependency-path: go.sum
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Build shared Lambda zips (required for terraform destroy)
+        run: |
+          mkdir -p terraform/shared/lambda
+          GOOS=linux GOARCH=arm64 go build -tags lambda.norpc \
+            -o terraform/shared/lambda/bootstrap ./cmd/pr-cleanup
+          (cd terraform/shared/lambda && zip -j pr_cleanup.zip bootstrap && rm bootstrap)
+          GOOS=linux GOARCH=arm64 go build -tags lambda.norpc \
+            -o terraform/shared/lambda/bootstrap ./cmd/circuit-breaker
+          (cd terraform/shared/lambda && zip -j circuit_breaker.zip bootstrap && rm bootstrap)
+
+      - name: Terraform init (service, prod backend)
+        working-directory: terraform/service
+        run: terraform init -backend-config=../backend-prod.hcl
+
+      - name: Destroy prod service (workspace=prod)
+        working-directory: terraform/service
+        env:
+          TF_VAR_environment: prod
+          TF_VAR_function_name: roxas-webhook-handler-prod
+        run: |
+          set -euo pipefail
+          if terraform workspace list | grep -qE '^\s*\*?\s*prod\s*$'; then
+            terraform workspace select prod
+            terraform destroy -auto-approve
+            terraform workspace select default
+            terraform workspace delete prod || true
+          else
+            echo "Workspace 'prod' not present in service state; skipping."
+          fi
+
       - name: Terraform init (shared, prod backend)
         working-directory: terraform/shared
-        run: |
-          rm -rf .terraform
-          terraform init -backend-config=../backend-shared-prod.hcl
+        run: terraform init -backend-config=../backend-shared-prod.hcl
 
       - name: Destroy prod shared (workspace=prod, retry once on ENI races)
         working-directory: terraform/shared
@@ -184,46 +269,40 @@ jobs:
           terraform workspace select default
           terraform workspace delete prod || true
 
-      # ---------- STATE BACKENDS ----------
-
-      - name: Delete Terraform state backends (S3 + DynamoDB, dev + prod)
+      - name: Delete prod Terraform state backend (S3 + DynamoDB)
         run: |
           set -euo pipefail
-          for env in dev prod; do
-            BUCKET="roxas-terraform-state-$env"
-            TABLE="roxas-terraform-locks-$env"
+          BUCKET="roxas-terraform-state-prod"
+          TABLE="roxas-terraform-locks-prod"
 
-            if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
-              echo "--- Emptying and deleting $BUCKET (versioned) ---"
-              # Delete all object versions
-              aws s3api list-object-versions --bucket "$BUCKET" \
-                --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' \
-                --output json 2>/dev/null \
-                | jq 'if .Objects == null then empty else . end' > /tmp/versions.json || true
-              if [ -s /tmp/versions.json ]; then
-                aws s3api delete-objects --bucket "$BUCKET" --delete file:///tmp/versions.json || true
-              fi
-              # Delete all delete markers
-              aws s3api list-object-versions --bucket "$BUCKET" \
-                --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' \
-                --output json 2>/dev/null \
-                | jq 'if .Objects == null then empty else . end' > /tmp/markers.json || true
-              if [ -s /tmp/markers.json ]; then
-                aws s3api delete-objects --bucket "$BUCKET" --delete file:///tmp/markers.json || true
-              fi
-              aws s3api delete-bucket --bucket "$BUCKET"
-              echo "Deleted bucket: $BUCKET"
-            else
-              echo "Bucket $BUCKET not present; skipping."
+          if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            echo "--- Emptying and deleting $BUCKET (versioned) ---"
+            aws s3api list-object-versions --bucket "$BUCKET" \
+              --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' \
+              --output json 2>/dev/null \
+              | jq 'if .Objects == null then empty else . end' > /tmp/versions.json || true
+            if [ -s /tmp/versions.json ]; then
+              aws s3api delete-objects --bucket "$BUCKET" --delete file:///tmp/versions.json || true
             fi
+            aws s3api list-object-versions --bucket "$BUCKET" \
+              --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' \
+              --output json 2>/dev/null \
+              | jq 'if .Objects == null then empty else . end' > /tmp/markers.json || true
+            if [ -s /tmp/markers.json ]; then
+              aws s3api delete-objects --bucket "$BUCKET" --delete file:///tmp/markers.json || true
+            fi
+            aws s3api delete-bucket --bucket "$BUCKET"
+            echo "Deleted bucket: $BUCKET"
+          else
+            echo "Bucket $BUCKET not present; skipping."
+          fi
 
-            if aws dynamodb describe-table --table-name "$TABLE" >/dev/null 2>&1; then
-              aws dynamodb delete-table --table-name "$TABLE" >/dev/null
-              echo "Deleted DynamoDB table: $TABLE"
-            else
-              echo "Table $TABLE not present; skipping."
-            fi
-          done
+          if aws dynamodb describe-table --table-name "$TABLE" >/dev/null 2>&1; then
+            aws dynamodb delete-table --table-name "$TABLE" >/dev/null
+            echo "Deleted DynamoDB table: $TABLE"
+          else
+            echo "Table $TABLE not present; skipping."
+          fi
 
       - name: Summary with remaining manual step
         if: always()
@@ -238,10 +317,11 @@ jobs:
           - Route53 hosted zones `roxasapp.com` and `roxas.ai` (records and ACM
             certs were destroyed by Terraform; zones themselves remain).
 
-          **One remaining manual step — delete the CI IAM user:**
+          **Remaining manual step — delete the CI IAM users:**
 
-          The workflow can't delete the IAM user whose access key is
-          authenticating it. Run this locally with an admin identity:
+          The workflow can't delete the IAM users whose access keys authenticate
+          it. Run this locally with an admin identity (repeat for any prod
+          equivalent, e.g. `github-actions-prod`):
 
           ```bash
           USER=github-actions-ci
@@ -260,5 +340,5 @@ jobs:
           aws iam delete-user --user-name $USER
           ```
 
-          Optional: remove GitHub secrets via repo Settings → Secrets.
+          Optional: remove GitHub Environment secrets (`dev` and `prod`).
           EOF
