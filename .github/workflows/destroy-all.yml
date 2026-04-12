@@ -136,41 +136,6 @@ jobs:
           terraform workspace select default
           terraform workspace delete dev || true
 
-      - name: Delete dev Terraform state backend (S3 + DynamoDB)
-        run: |
-          set -euo pipefail
-          BUCKET="roxas-terraform-state-dev"
-          TABLE="roxas-terraform-locks-dev"
-
-          if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
-            echo "--- Emptying and deleting $BUCKET (versioned) ---"
-            aws s3api list-object-versions --bucket "$BUCKET" \
-              --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' \
-              --output json 2>/dev/null \
-              | jq 'if .Objects == null then empty else . end' > /tmp/versions.json || true
-            if [ -s /tmp/versions.json ]; then
-              aws s3api delete-objects --bucket "$BUCKET" --delete file:///tmp/versions.json || true
-            fi
-            aws s3api list-object-versions --bucket "$BUCKET" \
-              --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' \
-              --output json 2>/dev/null \
-              | jq 'if .Objects == null then empty else . end' > /tmp/markers.json || true
-            if [ -s /tmp/markers.json ]; then
-              aws s3api delete-objects --bucket "$BUCKET" --delete file:///tmp/markers.json || true
-            fi
-            aws s3api delete-bucket --bucket "$BUCKET"
-            echo "Deleted bucket: $BUCKET"
-          else
-            echo "Bucket $BUCKET not present; skipping."
-          fi
-
-          if aws dynamodb describe-table --table-name "$TABLE" >/dev/null 2>&1; then
-            aws dynamodb delete-table --table-name "$TABLE" >/dev/null
-            echo "Deleted DynamoDB table: $TABLE"
-          else
-            echo "Table $TABLE not present; skipping."
-          fi
-
   destroy-prod:
     name: Destroy Prod (prod service + prod shared + prod state)
     runs-on: ubuntu-latest
@@ -250,6 +215,26 @@ jobs:
         working-directory: terraform/shared
         run: terraform init -backend-config=../backend-shared-prod.hcl
 
+      # Prod RDS has deletion_protection=true (via var.environment == "prod"
+      # in rds.tf). Disable it via AWS API before terraform destroy, which
+      # would otherwise fail with InvalidDBInstanceState.
+      - name: Disable prod RDS deletion protection
+        run: |
+          set -euo pipefail
+          DB="roxas-prod-rds"
+          if aws rds describe-db-instances --db-instance-identifier "$DB" >/dev/null 2>&1; then
+            echo "Disabling deletion protection on $DB..."
+            aws rds modify-db-instance \
+              --db-instance-identifier "$DB" \
+              --no-deletion-protection \
+              --apply-immediately >/dev/null
+            echo "Waiting for RDS to return to available state..."
+            aws rds wait db-instance-available --db-instance-identifier "$DB"
+            echo "Deletion protection disabled."
+          else
+            echo "RDS instance $DB not present; skipping."
+          fi
+
       - name: Destroy prod shared (workspace=prod, retry once on ENI races)
         working-directory: terraform/shared
         env:
@@ -269,75 +254,59 @@ jobs:
           terraform workspace select default
           terraform workspace delete prod || true
 
-      - name: Delete prod Terraform state backend (S3 + DynamoDB)
-        run: |
-          set -euo pipefail
-          BUCKET="roxas-terraform-state-prod"
-          TABLE="roxas-terraform-locks-prod"
-
-          if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
-            echo "--- Emptying and deleting $BUCKET (versioned) ---"
-            aws s3api list-object-versions --bucket "$BUCKET" \
-              --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' \
-              --output json 2>/dev/null \
-              | jq 'if .Objects == null then empty else . end' > /tmp/versions.json || true
-            if [ -s /tmp/versions.json ]; then
-              aws s3api delete-objects --bucket "$BUCKET" --delete file:///tmp/versions.json || true
-            fi
-            aws s3api list-object-versions --bucket "$BUCKET" \
-              --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' \
-              --output json 2>/dev/null \
-              | jq 'if .Objects == null then empty else . end' > /tmp/markers.json || true
-            if [ -s /tmp/markers.json ]; then
-              aws s3api delete-objects --bucket "$BUCKET" --delete file:///tmp/markers.json || true
-            fi
-            aws s3api delete-bucket --bucket "$BUCKET"
-            echo "Deleted bucket: $BUCKET"
-          else
-            echo "Bucket $BUCKET not present; skipping."
-          fi
-
-          if aws dynamodb describe-table --table-name "$TABLE" >/dev/null 2>&1; then
-            aws dynamodb delete-table --table-name "$TABLE" >/dev/null
-            echo "Deleted DynamoDB table: $TABLE"
-          else
-            echo "Table $TABLE not present; skipping."
-          fi
-
       - name: Summary with remaining manual step
         if: always()
         run: |
           cat >> $GITHUB_STEP_SUMMARY <<'EOF'
           ### Roxas Teardown Complete
 
-          All Terraform-managed resources and state backends have been destroyed
-          (or were already absent).
+          All Terraform-managed resources have been destroyed (or were already
+          absent).
 
           **Preserved on purpose:**
           - Route53 hosted zones `roxasapp.com` and `roxas.ai` (records and ACM
             certs were destroyed by Terraform; zones themselves remain).
+          - Prod RDS final snapshot `roxas-prod-final-snapshot` (kept by design).
 
-          **Remaining manual step — delete the CI IAM users:**
+          **Remaining manual steps — run locally with an admin identity:**
 
-          The workflow can't delete the IAM users whose access keys authenticate
-          it. Run this locally with an admin identity (repeat for any prod
-          equivalent, e.g. `github-actions-prod`):
+          The CI IAM users lack `s3:DeleteObjectVersion` / `s3:DeleteBucket`
+          and `dynamodb:DeleteTable`, so state backends must be deleted with
+          admin creds. Same for the CI users themselves.
 
           ```bash
-          USER=github-actions-ci
-          for k in $(aws iam list-access-keys --user-name $USER \
-              --query 'AccessKeyMetadata[].AccessKeyId' --output text); do
-            aws iam delete-access-key --user-name $USER --access-key-id $k
+          # 1. Delete Terraform state backends (both envs)
+          for env in dev prod; do
+            BUCKET=roxas-terraform-state-$env
+            aws s3api delete-objects --bucket $BUCKET \
+              --delete "$(aws s3api list-object-versions --bucket $BUCKET \
+                --query '{Objects:Versions[].{Key:Key,VersionId:VersionId}}' \
+                --max-items 1000)" 2>/dev/null || true
+            aws s3api delete-objects --bucket $BUCKET \
+              --delete "$(aws s3api list-object-versions --bucket $BUCKET \
+                --query '{Objects:DeleteMarkers[].{Key:Key,VersionId:VersionId}}' \
+                --max-items 1000)" 2>/dev/null || true
+            aws s3api delete-bucket --bucket $BUCKET
+            aws dynamodb delete-table --table-name roxas-terraform-locks-$env
           done
-          for p in $(aws iam list-attached-user-policies --user-name $USER \
-              --query 'AttachedPolicies[].PolicyArn' --output text); do
-            aws iam detach-user-policy --user-name $USER --policy-arn $p
+
+          # 2. Delete CI IAM users (repeat for each env's user)
+          for USER in github-actions-ci github-actions-prod; do
+            aws iam get-user --user-name $USER >/dev/null 2>&1 || continue
+            for k in $(aws iam list-access-keys --user-name $USER \
+                --query 'AccessKeyMetadata[].AccessKeyId' --output text); do
+              aws iam delete-access-key --user-name $USER --access-key-id $k
+            done
+            for p in $(aws iam list-attached-user-policies --user-name $USER \
+                --query 'AttachedPolicies[].PolicyArn' --output text); do
+              aws iam detach-user-policy --user-name $USER --policy-arn $p
+            done
+            for p in $(aws iam list-user-policies --user-name $USER \
+                --query 'PolicyNames' --output text); do
+              aws iam delete-user-policy --user-name $USER --policy-name $p
+            done
+            aws iam delete-user --user-name $USER
           done
-          for p in $(aws iam list-user-policies --user-name $USER \
-              --query 'PolicyNames' --output text); do
-            aws iam delete-user-policy --user-name $USER --policy-name $p
-          done
-          aws iam delete-user --user-name $USER
           ```
 
           Optional: remove GitHub Environment secrets (`dev` and `prod`).
