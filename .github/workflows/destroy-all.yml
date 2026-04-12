@@ -76,7 +76,7 @@ jobs:
       - name: Destroy all per-PR service workspaces
         working-directory: terraform/service
         run: |
-          set -euo pipefail
+          set -uo pipefail
           PR_WORKSPACES=$(terraform workspace list | tr -d '*' | awk '{$1=$1};1' | grep -E '^dev-pr-[0-9]+$' || true)
           if [ -z "$PR_WORKSPACES" ]; then
             echo "No dev-pr-* workspaces found."
@@ -84,17 +84,76 @@ jobs:
           fi
           echo "Found PR workspaces:"
           echo "$PR_WORKSPACES"
+          # If shared tier was already destroyed in a prior run, the service's
+          # data.aws_ssm_parameter lookups will fail. Fall back to force-
+          # deleting the workspace and cleaning up AWS orphans in a later step.
           echo "$PR_WORKSPACES" | while read -r ws; do
             [ -z "$ws" ] && continue
             PR_NUM="${ws#dev-pr-}"
-            echo "--- Destroying workspace: $ws (PR #$PR_NUM) ---"
+            echo "--- Processing workspace: $ws (PR #$PR_NUM) ---"
             terraform workspace select "$ws"
             TF_VAR_environment=dev \
             TF_VAR_pr_number="$PR_NUM" \
             TF_VAR_function_name="roxas-webhook-handler-pr-$PR_NUM" \
-              terraform destroy -auto-approve
+              terraform destroy -auto-approve -refresh=false \
+              || echo "Destroy failed for $ws; will force-delete workspace and sweep AWS orphans later."
             terraform workspace select default
-            terraform workspace delete "$ws"
+            terraform workspace delete -force "$ws" || true
+          done
+
+      # Catches resources from workspaces whose terraform destroy failed above
+      # (stale PR workspaces after shared tier was already destroyed).
+      - name: Sweep orphan per-PR AWS resources (Lambda, API GW, logs, IAM)
+        run: |
+          set -uo pipefail
+          echo "--- Orphan Lambdas ---"
+          for fn in $(aws lambda list-functions \
+              --query "Functions[?starts_with(FunctionName, 'roxas-webhook-handler-pr-') && ends_with(FunctionName, '-dev')].FunctionName" \
+              --output text); do
+            echo "Deleting Lambda: $fn"
+            aws lambda delete-function --function-name "$fn" || true
+          done
+
+          echo "--- Orphan HTTP APIs ---"
+          for api in $(aws apigatewayv2 get-apis \
+              --query "Items[?starts_with(Name, 'roxas-webhook-handler-pr-') && ends_with(Name, '-dev')].ApiId" \
+              --output text); do
+            echo "Deleting API Gateway: $api"
+            aws apigatewayv2 delete-api --api-id "$api" || true
+          done
+
+          echo "--- Orphan CloudWatch log groups (Lambda) ---"
+          for lg in $(aws logs describe-log-groups \
+              --log-group-name-prefix "/aws/lambda/roxas-webhook-handler-pr-" \
+              --query "logGroups[].logGroupName" \
+              --output text); do
+            echo "Deleting log group: $lg"
+            aws logs delete-log-group --log-group-name "$lg" || true
+          done
+
+          echo "--- Orphan CloudWatch log groups (API GW) ---"
+          for lg in $(aws logs describe-log-groups \
+              --log-group-name-prefix "/aws/apigateway/roxas-webhook-handler-pr-" \
+              --query "logGroups[].logGroupName" \
+              --output text); do
+            echo "Deleting log group: $lg"
+            aws logs delete-log-group --log-group-name "$lg" || true
+          done
+
+          echo "--- Orphan IAM roles (roxas-webhook-handler-pr-*-dev) ---"
+          for role in $(aws iam list-roles \
+              --query "Roles[?starts_with(RoleName, 'roxas-webhook-handler-pr-') && ends_with(RoleName, '-dev')].RoleName" \
+              --output text); do
+            echo "Deleting IAM role: $role"
+            for p in $(aws iam list-attached-role-policies --role-name "$role" \
+                --query 'AttachedPolicies[].PolicyArn' --output text); do
+              aws iam detach-role-policy --role-name "$role" --policy-arn "$p" || true
+            done
+            for p in $(aws iam list-role-policies --role-name "$role" \
+                --query 'PolicyNames' --output text); do
+              aws iam delete-role-policy --role-name "$role" --policy-name "$p" || true
+            done
+            aws iam delete-role --role-name "$role" || true
           done
 
       - name: Destroy dev service (workspace=dev)
