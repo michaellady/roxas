@@ -3108,7 +3108,7 @@ func TestRouter_GetConnections_ShowsRateLimits(t *testing.T) {
 	connLister := &MockConnectionLister{
 		connections: []*ConnectionData{
 			{
-				Platform:    "threads",
+				Platform:    "buffer",
 				Status:      "connected",
 				DisplayName: "@testuser",
 				IsHealthy:   true,
@@ -3148,7 +3148,7 @@ func TestRouter_GetConnections_ShowsLowRateLimitWarning(t *testing.T) {
 	connLister := &MockConnectionLister{
 		connections: []*ConnectionData{
 			{
-				Platform:    "threads",
+				Platform:    "buffer",
 				Status:      "connected",
 				DisplayName: "@testuser",
 				IsHealthy:   true,
@@ -3189,7 +3189,7 @@ func TestRouter_GetConnections_ShowsResetTime(t *testing.T) {
 	connLister := &MockConnectionLister{
 		connections: []*ConnectionData{
 			{
-				Platform:    "threads",
+				Platform:    "buffer",
 				Status:      "connected",
 				DisplayName: "@testuser",
 				IsHealthy:   true,
@@ -4236,14 +4236,14 @@ func TestRouter_GetDrafts_WithDrafts_DisplaysDraftList(t *testing.T) {
 		ID:          "draft-1",
 		RepoName:    "acme/awesome-project",
 		PreviewText: "Exciting update! We just shipped a new feature...",
-		Platform:    "threads",
+		Platform:    "buffer",
 		CreatedAt:   time.Now().Add(-1 * time.Hour),
 	})
 	draftLister.AddDraft(user.ID, &DraftItem{
 		ID:          "draft-2",
 		RepoName:    "acme/another-repo",
 		PreviewText: "Bug fix: resolved issue with authentication...",
-		Platform:    "threads",
+		Platform:    "buffer",
 		CreatedAt:   time.Now().Add(-2 * time.Hour),
 	})
 
@@ -4284,7 +4284,7 @@ func TestRouter_GetDrafts_ShowsRepoNamePreviewTime(t *testing.T) {
 		ID:          "draft-123",
 		RepoName:    "testorg/testrepo",
 		PreviewText: "This is a preview of the generated post content",
-		Platform:    "threads",
+		Platform:    "buffer",
 		CreatedAt:   time.Date(2026, 1, 20, 10, 30, 0, 0, time.UTC),
 	})
 
@@ -4334,7 +4334,7 @@ func TestRouter_GetDrafts_Pagination_FirstPage(t *testing.T) {
 			ID:          fmt.Sprintf("draft-%d", i),
 			RepoName:    fmt.Sprintf("repo/project-%d", i),
 			PreviewText: fmt.Sprintf("Draft content for item %d", i),
-			Platform:    "threads",
+			Platform:    "buffer",
 			CreatedAt:   time.Now().Add(-time.Duration(i) * time.Hour),
 		})
 	}
@@ -4379,7 +4379,7 @@ func TestRouter_GetDrafts_Pagination_SecondPage(t *testing.T) {
 			ID:          fmt.Sprintf("draft-%d", i),
 			RepoName:    fmt.Sprintf("repo/project-%d", i),
 			PreviewText: fmt.Sprintf("Draft content for item %d", i),
-			Platform:    "threads",
+			Platform:    "buffer",
 			CreatedAt:   time.Now().Add(-time.Duration(i) * time.Hour),
 		})
 	}
@@ -4418,21 +4418,21 @@ func TestRouter_GetDrafts_ShowsDraftStatus(t *testing.T) {
 		ID:          "draft-1",
 		RepoName:    "repo/pending",
 		PreviewText: "Pending draft",
-		Platform:    "threads",
+		Platform:    "buffer",
 		CreatedAt:   time.Now(),
 	})
 	draftLister.AddDraft(user.ID, &DraftItem{
 		ID:          "draft-2",
 		RepoName:    "repo/posted",
 		PreviewText: "Posted draft",
-		Platform:    "threads",
+		Platform:    "buffer",
 		CreatedAt:   time.Now(),
 	})
 	draftLister.AddDraft(user.ID, &DraftItem{
 		ID:          "draft-3",
 		RepoName:    "repo/failed",
 		PreviewText: "Failed draft",
-		Platform:    "threads",
+		Platform:    "buffer",
 		CreatedAt:   time.Now(),
 	})
 

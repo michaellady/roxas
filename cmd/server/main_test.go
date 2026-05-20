@@ -66,11 +66,9 @@ func TestConfigLoadsFromEnv(t *testing.T) {
 	// Set specific env var values
 	os.Setenv("WEBHOOK_SECRET", "webhook-secret-789")
 	os.Setenv("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
-	os.Setenv("BUFFER_ACCESS_TOKEN", "buffer-token-123")
 	defer func() {
 		os.Unsetenv("WEBHOOK_SECRET")
 		os.Unsetenv("BEDROCK_MODEL_ID")
-		os.Unsetenv("BUFFER_ACCESS_TOKEN")
 	}()
 
 	config := loadConfig()
@@ -81,10 +79,6 @@ func TestConfigLoadsFromEnv(t *testing.T) {
 
 	if config.BedrockModelID != "us.anthropic.claude-sonnet-4-5-20250929-v1:0" {
 		t.Errorf("Expected Bedrock model ID, got '%s'", config.BedrockModelID)
-	}
-
-	if config.BufferAccessToken != "buffer-token-123" {
-		t.Errorf("Expected Buffer token 'buffer-token-123', got '%s'", config.BufferAccessToken)
 	}
 }
 

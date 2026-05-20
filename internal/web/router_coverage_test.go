@@ -43,29 +43,29 @@ func (m *MockSocialPoster) PostDraft(ctx context.Context, userID, draftID string
 	return m.postURL, nil
 }
 
-// MockBlueskyConnectorForCoverage implements BlueskyConnector for testing
-type MockBlueskyConnectorForCoverage struct {
+// MockBufferConnectorForCoverage implements BufferConnector for testing
+type MockBufferConnectorForCoverage struct {
 	mu          sync.Mutex
 	shouldError bool
-	result      *BlueskyConnectResult
+	result      *BufferConnectResult
 }
 
-func NewMockBlueskyConnector() *MockBlueskyConnectorForCoverage {
-	return &MockBlueskyConnectorForCoverage{
-		result: &BlueskyConnectResult{
-			Handle:      "testuser.bsky.social",
-			DID:         "did:plc:test123",
-			DisplayName: "Test User",
-			Success:     true,
+func NewMockBufferConnector() *MockBufferConnectorForCoverage {
+	return &MockBufferConnectorForCoverage{
+		result: &BufferConnectResult{
+			Profiles: []BufferProfileInfo{
+				{Service: "twitter", FormattedName: "@testuser"},
+			},
+			Success: true,
 		},
 	}
 }
 
-func (m *MockBlueskyConnectorForCoverage) Connect(ctx context.Context, userID, handle, appPassword string) (*BlueskyConnectResult, error) {
+func (m *MockBufferConnectorForCoverage) Connect(ctx context.Context, userID, accessToken string) (*BufferConnectResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.shouldError {
-		return nil, fmt.Errorf("mock bluesky connection error")
+		return nil, fmt.Errorf("mock buffer connection error")
 	}
 	return m.result, nil
 }
@@ -303,26 +303,15 @@ func TestRouter_WithSocialPoster(t *testing.T) {
 	}
 }
 
-func TestRouter_WithThreadsOAuth(t *testing.T) {
+func TestRouter_WithBufferConnector(t *testing.T) {
 	r := NewRouter()
-	result := r.WithThreadsOAuth(nil, "https://example.com")
+	bc := NewMockBufferConnector()
+	result := r.WithBufferConnector(bc)
 	if result != r {
-		t.Error("WithThreadsOAuth should return the same router")
+		t.Error("WithBufferConnector should return the same router")
 	}
-	if r.oauthCallbackURL != "https://example.com" {
-		t.Error("WithThreadsOAuth should set oauthCallbackURL")
-	}
-}
-
-func TestRouter_WithBlueskyConnector(t *testing.T) {
-	r := NewRouter()
-	bc := NewMockBlueskyConnector()
-	result := r.WithBlueskyConnector(bc)
-	if result != r {
-		t.Error("WithBlueskyConnector should return the same router")
-	}
-	if r.blueskyConnector == nil {
-		t.Error("WithBlueskyConnector should set blueskyConnector")
+	if r.bufferConnector == nil {
+		t.Error("WithBufferConnector should set bufferConnector")
 	}
 }
 
@@ -533,27 +522,13 @@ func TestRouter_GetConnectionsNew_WithAuth_ReturnsHTML(t *testing.T) {
 	}
 }
 
-func TestRouter_GetConnectionsNew_WithThreadsOAuth_ShowsThreads(t *testing.T) {
-	userStore := NewMockUserStore()
-	router := NewRouterWithStores(userStore).WithThreadsOAuth(&MockThreadsOAuthProvider{}, "https://example.com")
-
-	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
-	token := makeAuthToken(t, user.ID, user.Email)
-
-	rr := authGet(t, router, "/connections/new", token)
-
-	if rr.Code != http.StatusOK {
-		t.Errorf("Expected 200, got %d", rr.Code)
-	}
-}
-
 // =============================================================================
-// handleBlueskyConnect and handleBlueskyConnectPost coverage
+// handleBufferConnect and handleBufferConnectPost coverage
 // =============================================================================
 
-func TestRouter_GetBlueskyConnect_WithoutAuth_RedirectsToLogin(t *testing.T) {
+func TestRouter_GetBufferConnect_WithoutAuth_RedirectsToLogin(t *testing.T) {
 	router := NewRouter()
-	req := httptest.NewRequest(http.MethodGet, "/connections/bluesky/connect", nil)
+	req := httptest.NewRequest(http.MethodGet, "/connections/buffer/connect", nil)
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
@@ -562,9 +537,9 @@ func TestRouter_GetBlueskyConnect_WithoutAuth_RedirectsToLogin(t *testing.T) {
 	}
 }
 
-func TestRouter_GetBlueskyConnect_InvalidToken_RedirectsToLogin(t *testing.T) {
+func TestRouter_GetBufferConnect_InvalidToken_RedirectsToLogin(t *testing.T) {
 	router := NewRouter()
-	req := httptest.NewRequest(http.MethodGet, "/connections/bluesky/connect", nil)
+	req := httptest.NewRequest(http.MethodGet, "/connections/buffer/connect", nil)
 	req.AddCookie(&http.Cookie{Name: "auth_token", Value: "invalid"})
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
@@ -574,14 +549,14 @@ func TestRouter_GetBlueskyConnect_InvalidToken_RedirectsToLogin(t *testing.T) {
 	}
 }
 
-func TestRouter_GetBlueskyConnect_WithAuth_ShowsForm(t *testing.T) {
+func TestRouter_GetBufferConnect_WithAuth_ShowsForm(t *testing.T) {
 	userStore := NewMockUserStore()
 	router := NewRouterWithStores(userStore)
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 	token := makeAuthToken(t, user.ID, user.Email)
 
-	rr := authGet(t, router, "/connections/bluesky/connect", token)
+	rr := authGet(t, router, "/connections/buffer/connect", token)
 
 	if rr.Code != http.StatusOK {
 		t.Errorf("Expected 200, got %d", rr.Code)
@@ -591,12 +566,11 @@ func TestRouter_GetBlueskyConnect_WithAuth_ShowsForm(t *testing.T) {
 	}
 }
 
-func TestRouter_PostBlueskyConnect_WithoutAuth_RedirectsToLogin(t *testing.T) {
+func TestRouter_PostBufferConnect_WithoutAuth_RedirectsToLogin(t *testing.T) {
 	router := NewRouter()
 	form := url.Values{}
-	form.Set("handle", "test.bsky.social")
-	form.Set("app_password", "test-password")
-	req := httptest.NewRequest(http.MethodPost, "/connections/bluesky/connect", strings.NewReader(form.Encode()))
+	form.Set("access_token", "test-token")
+	req := httptest.NewRequest(http.MethodPost, "/connections/buffer/connect", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
@@ -606,12 +580,11 @@ func TestRouter_PostBlueskyConnect_WithoutAuth_RedirectsToLogin(t *testing.T) {
 	}
 }
 
-func TestRouter_PostBlueskyConnect_InvalidToken_RedirectsToLogin(t *testing.T) {
+func TestRouter_PostBufferConnect_InvalidToken_RedirectsToLogin(t *testing.T) {
 	router := NewRouter()
 	form := url.Values{}
-	form.Set("handle", "test.bsky.social")
-	form.Set("app_password", "test-password")
-	req := httptest.NewRequest(http.MethodPost, "/connections/bluesky/connect", strings.NewReader(form.Encode()))
+	form.Set("access_token", "test-token")
+	req := httptest.NewRequest(http.MethodPost, "/connections/buffer/connect", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(&http.Cookie{Name: "auth_token", Value: "invalid"})
 	rr := httptest.NewRecorder()
@@ -622,7 +595,7 @@ func TestRouter_PostBlueskyConnect_InvalidToken_RedirectsToLogin(t *testing.T) {
 	}
 }
 
-func TestRouter_PostBlueskyConnect_EmptyFields_ShowsError(t *testing.T) {
+func TestRouter_PostBufferConnect_EmptyToken_ShowsError(t *testing.T) {
 	userStore := NewMockUserStore()
 	router := NewRouterWithStores(userStore)
 
@@ -630,9 +603,8 @@ func TestRouter_PostBlueskyConnect_EmptyFields_ShowsError(t *testing.T) {
 	token := makeAuthToken(t, user.ID, user.Email)
 
 	form := url.Values{}
-	form.Set("handle", "")
-	form.Set("app_password", "")
-	rr := authPost(t, router, "/connections/bluesky/connect", form, token)
+	form.Set("access_token", "")
+	rr := authPost(t, router, "/connections/buffer/connect", form, token)
 
 	if rr.Code != http.StatusOK {
 		t.Errorf("Expected 200, got %d", rr.Code)
@@ -642,17 +614,16 @@ func TestRouter_PostBlueskyConnect_EmptyFields_ShowsError(t *testing.T) {
 	}
 }
 
-func TestRouter_PostBlueskyConnect_NoConnector_ShowsError(t *testing.T) {
+func TestRouter_PostBufferConnect_NoConnector_ShowsError(t *testing.T) {
 	userStore := NewMockUserStore()
-	router := NewRouterWithStores(userStore) // no bluesky connector
+	router := NewRouterWithStores(userStore) // no buffer connector
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 	token := makeAuthToken(t, user.ID, user.Email)
 
 	form := url.Values{}
-	form.Set("handle", "test.bsky.social")
-	form.Set("app_password", "test-password")
-	rr := authPost(t, router, "/connections/bluesky/connect", form, token)
+	form.Set("access_token", "test-token")
+	rr := authPost(t, router, "/connections/buffer/connect", form, token)
 
 	if rr.Code != http.StatusOK {
 		t.Errorf("Expected 200, got %d", rr.Code)
@@ -662,62 +633,59 @@ func TestRouter_PostBlueskyConnect_NoConnector_ShowsError(t *testing.T) {
 	}
 }
 
-func TestRouter_PostBlueskyConnect_ConnectorError_ShowsError(t *testing.T) {
+func TestRouter_PostBufferConnect_ConnectorError_ShowsError(t *testing.T) {
 	userStore := NewMockUserStore()
-	connector := NewMockBlueskyConnector()
+	connector := NewMockBufferConnector()
 	connector.shouldError = true
-	router := NewRouterWithStores(userStore).WithBlueskyConnector(connector)
+	router := NewRouterWithStores(userStore).WithBufferConnector(connector)
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 	token := makeAuthToken(t, user.ID, user.Email)
 
 	form := url.Values{}
-	form.Set("handle", "test.bsky.social")
-	form.Set("app_password", "test-password")
-	rr := authPost(t, router, "/connections/bluesky/connect", form, token)
+	form.Set("access_token", "test-token")
+	rr := authPost(t, router, "/connections/buffer/connect", form, token)
 
 	if rr.Code != http.StatusOK {
 		t.Errorf("Expected 200, got %d", rr.Code)
 	}
 }
 
-func TestRouter_PostBlueskyConnect_NotSuccess_ShowsError(t *testing.T) {
+func TestRouter_PostBufferConnect_NotSuccess_ShowsError(t *testing.T) {
 	userStore := NewMockUserStore()
-	connector := NewMockBlueskyConnector()
-	connector.result = &BlueskyConnectResult{
+	connector := NewMockBufferConnector()
+	connector.result = &BufferConnectResult{
 		Success: false,
-		Error:   "invalid credentials",
+		Error:   "invalid token",
 	}
-	router := NewRouterWithStores(userStore).WithBlueskyConnector(connector)
+	router := NewRouterWithStores(userStore).WithBufferConnector(connector)
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 	token := makeAuthToken(t, user.ID, user.Email)
 
 	form := url.Values{}
-	form.Set("handle", "test.bsky.social")
-	form.Set("app_password", "test-password")
-	rr := authPost(t, router, "/connections/bluesky/connect", form, token)
+	form.Set("access_token", "test-token")
+	rr := authPost(t, router, "/connections/buffer/connect", form, token)
 
 	if rr.Code != http.StatusOK {
 		t.Errorf("Expected 200, got %d", rr.Code)
 	}
-	if !strings.Contains(rr.Body.String(), "invalid credentials") {
+	if !strings.Contains(rr.Body.String(), "invalid token") {
 		t.Error("Expected error message from result")
 	}
 }
 
-func TestRouter_PostBlueskyConnect_Success_RedirectsToConnections(t *testing.T) {
+func TestRouter_PostBufferConnect_Success_RedirectsToConnections(t *testing.T) {
 	userStore := NewMockUserStore()
-	connector := NewMockBlueskyConnector()
-	router := NewRouterWithStores(userStore).WithBlueskyConnector(connector)
+	connector := NewMockBufferConnector()
+	router := NewRouterWithStores(userStore).WithBufferConnector(connector)
 
 	user, _ := userStore.CreateUser(context.Background(), "test@example.com", hashPassword("password123"))
 	token := makeAuthToken(t, user.ID, user.Email)
 
 	form := url.Values{}
-	form.Set("handle", "test.bsky.social")
-	form.Set("app_password", "test-password")
-	rr := authPost(t, router, "/connections/bluesky/connect", form, token)
+	form.Set("access_token", "test-token")
+	rr := authPost(t, router, "/connections/buffer/connect", form, token)
 
 	if rr.Code != http.StatusSeeOther {
 		t.Errorf("Expected redirect 303, got %d", rr.Code)
@@ -1408,7 +1376,7 @@ func TestRouter_GetDashboard_WithActivityPagination(t *testing.T) {
 	}
 	postLister := &MockPostLister{
 		posts: []*DashboardPost{
-			{ID: "post1", Platform: "bluesky", Content: "test", Status: "published"},
+			{ID: "post1", Platform: "buffer", Content: "test", Status: "published"},
 		},
 	}
 	router := NewRouterWithActivityLister(userStore, repoStore, commitLister, postLister, activityLister, nil, "")
@@ -2115,19 +2083,19 @@ func TestNewRouterWithActivityLister(t *testing.T) {
 }
 
 // =============================================================================
-// NewRouterWithBlueskyConnector constructor
+// NewRouterWithBufferConnector constructor
 // =============================================================================
 
-func TestNewRouterWithBlueskyConnector(t *testing.T) {
+func TestNewRouterWithBufferConnector(t *testing.T) {
 	userStore := NewMockUserStore()
-	connector := NewMockBlueskyConnector()
-	router := NewRouterWithBlueskyConnector(userStore, connector)
+	connector := NewMockBufferConnector()
+	router := NewRouterWithBufferConnector(userStore, connector)
 
 	if router == nil {
-		t.Fatal("NewRouterWithBlueskyConnector should not return nil")
+		t.Fatal("NewRouterWithBufferConnector should not return nil")
 	}
-	if router.blueskyConnector == nil {
-		t.Error("blueskyConnector should be set")
+	if router.bufferConnector == nil {
+		t.Error("bufferConnector should be set")
 	}
 }
 

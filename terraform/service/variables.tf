@@ -95,13 +95,6 @@ variable "bedrock_model_id" {
   default     = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 }
 
-variable "buffer_access_token" {
-  description = "Buffer personal access token for cross-platform social posting"
-  type        = string
-  sensitive   = true
-  default     = ""
-}
-
 variable "tags" {
   description = "Common tags for all resources"
   type        = map(string)
